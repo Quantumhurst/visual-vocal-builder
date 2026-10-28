@@ -27,14 +27,16 @@ Open http://localhost:3000, allow mic access, and speak. (On a machine without a
 ## Demo beats
 
 1. Jurisdiction comparison table (headline-level — enough to show the choice and why). Rows are fictional places (Mars, Europa, Andromeda Galaxy) with dummy values, for liability: nothing here resembles a real filing fact.
-2. Draggable equity slider (splits total 100%, enforced both directions).
-3. Filing checklist.
-4. Grounded s.85 rollover fact card.
+2. Draggable equity slider (splits total 100%, enforced both directions through the one shared-state update path in `lib/equity.ts`; invariant tests in `tests/equity.test.mjs`, run with `npm test`).
+3. Filing checklist (guidance + grounded facts from the Corp Plan checklist pack; voice or click, never a filing).
+4. Grounded s.85 rollover fact card (fact text and grounding — pack id + fact id — come from the Corp Plan s.85 pack in `lib/knowledge.ts`; ungrounded answers render no card).
 5. "Send to a lawyer for a second opinion" — prepares a summary package (jurisdiction choice, equity split, checklist state) for the user to forward. The demo does NOT actually send email.
+
+Day 2 catalog: fresh entries in `lib/catalog.ts` for the jurisdiction table, equity slider, filing checklist, and rollover fact card, all written in-window and driven by CopilotKit shared state (A2UI contained mode).
 
 ## Fresh-build note
 
-All code in this repo was written in the hackathon window. Anything small ported from earlier work will be listed here, one line each. (None as of the Day 1 commit.)
+All code in this repo was written in the hackathon window. Anything small ported from earlier work will be listed here, one line each. (None as of the Day 2 commit — catalog, knowledge packs, and beat 2–4 components were written in-window.)
 
 ## Credits
 

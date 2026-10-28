@@ -8,8 +8,20 @@ import {
   useCopilotChat,
   useCopilotReadable,
 } from "@copilotkit/react-core";
+import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import JurisdictionTable from "./JurisdictionTable";
-import { DEMO_COMPANY_NAME, DEMO_JURISDICTIONS } from "../lib/demo-data";
+import EquitySlider from "./EquitySlider";
+import FilingChecklist from "./FilingChecklist";
+import RolloverFactCard from "./RolloverFactCard";
+import LawyerSummary from "./LawyerSummary";
+import {
+  DEMO_CHECKLIST,
+  DEMO_COMPANY_NAME,
+  DEMO_FOUNDERS,
+  DEMO_JURISDICTIONS,
+} from "../lib/demo-data";
+import { setFounderShare } from "../lib/equity";
+import { S85_PACK, findFactById } from "../lib/knowledge";
 import type { SharedState } from "../lib/state";
 
 const INITIAL_STATE: SharedState = {
@@ -17,6 +29,11 @@ const INITIAL_STATE: SharedState = {
   transcript: "",
   jurisdictions: DEMO_JURISDICTIONS,
   selectedJurisdiction: null,
+  founders: DEMO_FOUNDERS,
+  equityNote: "",
+  checklist: DEMO_CHECKLIST,
+  rolloverCard: null,
+  rolloverNote: "",
 };
 
 function Canvas() {
@@ -34,26 +51,69 @@ function Canvas() {
   const [notice, setNotice] = useState("");
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
-  // Message ids come from a handler-local counter, not crypto.randomUUID():
-  // Next 16's prerender flags randomUUID() in a client component even when
-  // it only runs in an event handler.
   const messageIdRef = useRef(0);
 
-  // Grounding for the agent: the demo's fictional company and places. The
-  // agent reads this; it never becomes a real filing fact.
+  // THE one shared-state update path for equity (beat 2 invariant).
+  // Slider drags call this directly; the voice-agent action below calls
+  // the same function. Both normalize through setFounderShare(), so
+  // neither surface can leave the split inconsistent — it totals 100%.
+  function updateEquity(index: number, percent: number, via: string) {
+    setState((prev) => {
+      const base = { ...INITIAL_STATE, ...prev };
+      const founders = setFounderShare(base.founders, index, percent);
+      const changed = founders[index];
+      return {
+        ...base,
+        currentBeat: "equity" as const,
+        founders,
+        equityNote: changed
+          ? `${changed.name} set to ${changed.percent}% (${via}); other founder(s) adjusted so the split totals 100%.`
+          : base.equityNote,
+      };
+    });
+  }
+
+  // THE one shared-state update path for the checklist (beat 3):
+  // clicks and voice-agent actions both go through here.
+  function updateChecklistItem(itemId: string, done: boolean) {
+    setState((prev) => {
+      const base = { ...INITIAL_STATE, ...prev };
+      return {
+        ...base,
+        currentBeat: "checklist" as const,
+        checklist: base.checklist.map((item) =>
+          item.id === itemId ? { ...item, done } : item,
+        ),
+      };
+    });
+  }
+
+  // Grounding for the agent: fictional company/places, current equity
+  // and checklist state, and the s.85 pack's fact ids + topics. The
+  // agent picks a factId; the card text itself comes from the pack.
   useCopilotReadable({
     description:
-      "Fictional demo company and fictional places for the incorporation demo",
+      "Fictional demo company, places, equity split, checklist state, and s.85 knowledge-pack fact index for the incorporation demo",
     value: {
       company: DEMO_COMPANY_NAME,
       places: DEMO_JURISDICTIONS.map((row) => row.jurisdiction),
-      note: "All demo data. Nothing here is a real jurisdiction or filing.",
+      founders: view.founders,
+      checklist: view.checklist.map((item) => ({
+        id: item.id,
+        label: item.label,
+        done: item.done,
+      })),
+      s85PackId: S85_PACK.packId,
+      s85Facts: S85_PACK.facts.map((fact) => ({
+        factId: fact.factId,
+        topic: fact.topic,
+      })),
+      note: "All demo data. Nothing here is a real jurisdiction or filing. For a rollover question, call showRolloverFact with a factId from s85Facts — never invent rollover content.",
     },
   });
 
-  // The ONLY thing that sets jurisdiction-table state from voice is this
-  // agent action. The transcript is forwarded to the agent untouched — no
-  // client-side keyword parsing, no shortcut.
+  // Beat 1 action (unchanged path): only the agent sets jurisdiction
+  // state from voice. No client-side keyword parsing, no shortcut.
   useCopilotAction({
     name: "showJurisdictionComparison",
     description:
@@ -85,16 +145,118 @@ function Canvas() {
     },
   });
 
+  // Beat 2 voice path: "make me 70%" -> same updateEquity() the slider
+  // drags use, so 60/40 with a 70% request lands on 70/30, total 100%.
+  useCopilotAction({
+    name: "setFounderEquity",
+    description:
+      "Set one DEMO founder's equity percent (e.g. the user says 'make me 70%'). The other founder(s) auto-adjust so the split always totals 100%. Founders: DEMO Founder Nova (fictional), DEMO Founder Orbit (fictional).",
+    parameters: [
+      {
+        name: "founder",
+        type: "string",
+        description: "Founder name, or 'me' for the first founder.",
+        required: true,
+      },
+      {
+        name: "percent",
+        type: "number",
+        description: "Target percent for that founder, 0-100.",
+        required: true,
+      },
+    ],
+    handler: async ({ founder, percent }) => {
+      const base = { ...INITIAL_STATE, ...state };
+      const wanted = (founder ?? "").toLowerCase();
+      let index = base.founders.findIndex((entry) =>
+        entry.name.toLowerCase().includes(wanted),
+      );
+      if (index < 0 && (wanted === "me" || wanted === "i" || wanted === "")) {
+        index = 0;
+      }
+      if (index < 0) index = 0;
+      updateEquity(index, Number(percent), "voice");
+    },
+  });
+
+  // Beat 3 voice paths: check/uncheck one item, or advance the walk.
+  useCopilotAction({
+    name: "setChecklistItem",
+    description:
+      "Check or uncheck one filing-checklist item by its id (ids are in the readable checklist state). Use when the user answers a checklist step or asks to mark one done/not done.",
+    parameters: [
+      { name: "itemId", type: "string", description: "Checklist item id.", required: true },
+      { name: "done", type: "boolean", description: "True to check, false to uncheck.", required: true },
+    ],
+    handler: async ({ itemId, done }) => {
+      updateChecklistItem(itemId, Boolean(done));
+    },
+  });
+
+  useCopilotAction({
+    name: "advanceChecklist",
+    description:
+      "Mark the first not-yet-done filing-checklist item done and move the walk forward. Use as the user answers each checklist step.",
+    parameters: [],
+    handler: async () => {
+      const base = { ...INITIAL_STATE, ...state };
+      const next = base.checklist.find((item) => !item.done);
+      if (next) updateChecklistItem(next.id, true);
+    },
+  });
+
+  // Beat 4: grounded s.85 fact card. The handler looks the fact up in
+  // the knowledge pack — the card text is the pack text verbatim and
+  // shows pack/fact grounding. An unknown factId renders NO card.
+  useCopilotAction({
+    name: "showRolloverFact",
+    description:
+      "Show a grounded s.85 rollover fact card. Call with a factId from the readable s85Facts index when the user asks a rollover / section 85 question. Never invent rollover content; only pack facts become cards.",
+    parameters: [
+      { name: "factId", type: "string", description: "Fact id from the s85Facts index.", required: true },
+      { name: "question", type: "string", description: "The user's rollover question.", required: false },
+    ],
+    handler: async ({ factId, question }) => {
+      const found = findFactById(factId ?? "");
+      setState((prev) => {
+        const base = { ...INITIAL_STATE, ...prev };
+        if (!found) {
+          return {
+            ...base,
+            currentBeat: "rollover" as const,
+            rolloverCard: null,
+            rolloverNote:
+              "No grounded fact matched that request in the knowledge pack, so no fact card is shown. An ungrounded answer would fail this beat.",
+          };
+        }
+        return {
+          ...base,
+          currentBeat: "rollover" as const,
+          rolloverCard: {
+            question: question ?? "Rollover question",
+            answer: found.fact.text,
+            packId: found.pack.packId,
+            factId: found.fact.factId,
+            packTitle: found.pack.title,
+          },
+          rolloverNote: "",
+        };
+      });
+    },
+  });
+
   async function sendToAgent(text: string) {
     const trimmed = text.trim();
     if (!trimmed) return;
     setState((prev) => ({ ...INITIAL_STATE, ...prev, transcript: trimmed }));
     messageIdRef.current += 1;
-    await appendMessage({
-      id: `msg-${messageIdRef.current}`,
-      role: "user",
-      content: trimmed,
-    } as never);
+    await appendMessage(
+      new TextMessage({
+        id: `msg-${messageIdRef.current}`,
+        role: Role.User,
+        content: trimmed,
+      }),
+    );
   }
 
   async function toggleRecording() {
@@ -191,7 +353,6 @@ function Canvas() {
         rows={view.jurisdictions}
         selected={view.selectedJurisdiction}
         onSelect={(jurisdiction) =>
-          // Row clicks write shared state directly — no new prompt needed.
           setState((prev) => ({
             ...INITIAL_STATE,
             ...prev,
@@ -199,14 +360,22 @@ function Canvas() {
           }))
         }
       />
+
+      <EquitySlider
+        founders={view.founders}
+        equityNote={view.equityNote}
+        onShareChange={(index, percent) => updateEquity(index, percent, "slider")}
+      />
+
+      <FilingChecklist items={view.checklist} onToggle={updateChecklistItem} />
+
+      <RolloverFactCard card={view.rolloverCard} rolloverNote={view.rolloverNote} />
+
+      <LawyerSummary view={view} companyName={DEMO_COMPANY_NAME} />
     </main>
   );
 }
 
-// CopilotKit generates thread/message ids during render, which Next 16's
-// static prerender rejects as unstable values. This host therefore always
-// renders behind a Suspense boundary (see app/page.tsx), so it renders
-// per request at runtime, never at build time.
 export default function CanvasHost() {
   return (
     <CopilotKit runtimeUrl="/api/copilotkit">
