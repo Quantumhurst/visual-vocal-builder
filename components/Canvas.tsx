@@ -9,7 +9,11 @@ import {
   useCopilotReadable,
 } from "@copilotkit/react-core";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
+import dynamic from "next/dynamic";
 import JurisdictionTable from "./JurisdictionTable";
+
+// Pixi canvas must never render on the server (Day 4 hero island).
+const GalaxyHero = dynamic(() => import("./GalaxyHero"), { ssr: false });
 import EquitySlider from "./EquitySlider";
 import FilingChecklist from "./FilingChecklist";
 import FilingSteps from "./FilingSteps";
@@ -441,6 +445,18 @@ function Canvas() {
           </p>
         ) : null}
       </section>
+
+      <GalaxyHero
+        rows={view.jurisdictions}
+        selected={view.selectedJurisdiction}
+        onSelect={(jurisdiction) =>
+          setState((prev) => ({
+            ...INITIAL_STATE,
+            ...prev,
+            selectedJurisdiction: jurisdiction,
+          }))
+        }
+      />
 
       <JurisdictionTable
         rows={view.jurisdictions}
