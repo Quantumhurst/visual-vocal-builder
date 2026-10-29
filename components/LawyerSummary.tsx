@@ -2,55 +2,30 @@
 
 import { useState } from "react";
 import type { SharedState } from "../lib/state";
+import { buildLawyerSummary } from "../lib/lawyer-summary";
+
+export { buildLawyerSummary };
 
 type Props = {
   view: SharedState;
   companyName: string;
+  lawyerPackage: string;
+  lawyerNote: string;
+  onPrepare: () => void;
 };
 
-// Step 5 — lawyer-summary PREP only. This prepares a summary package
-// of the session for the user to forward themselves. It does NOT send
-// email: there is no send path in this code, not even a disabled one —
-// only copy-to-clipboard and download of a local text file.
-export function buildLawyerSummary(view: SharedState, companyName: string): string {
-  const equityLines = view.founders
-    .map((founder) => `- ${founder.name}: ${founder.percent}%`)
-    .join("\n");
-  const checklistLines = view.checklist
-    .map((item) => `- [${item.done ? "x" : " "}] ${item.label}`)
-    .join("\n");
-  return [
-    "Visual Vocal Builder — session summary for a lawyer (second opinion)",
-    "Demo data only. This is not legal advice, not a filing, and nothing here is submitted to any registry.",
-    "",
-    `Company (fictional demo): ${companyName}`,
-    `Jurisdiction choice: ${view.selectedJurisdiction ?? "(none selected yet)"}`,
-    "",
-    "Equity split (DEMO):",
-    equityLines || "- (no founders yet)",
-    view.equityNote ? `Agent note: ${view.equityNote}` : "",
-    "",
-    "Checklist state:",
-    checklistLines || "- (no checklist items yet)",
-    "",
-    view.rolloverCard
-      ? `Rollover fact reviewed: ${view.rolloverCard.packId} / ${view.rolloverCard.factId}`
-      : "Rollover fact reviewed: (none)",
-    "",
-    "Prepared for the user to forward themselves. This app does not send email.",
-  ]
-    .filter((line) => line !== "")
-    .join("\n");
-}
-
-export default function LawyerSummary({ view, companyName }: Props) {
-  const [prepared, setPrepared] = useState("");
+// Catalog entry vvb-lawyer-summary-v1 (lib/catalog.ts), Day 3. Renders
+// beat 5's prepared package from CopilotKit shared state (stateSlice
+// lawyerPackage), whether the user clicked Prepare or the agent ran
+// prepareLawyerSummary. PREP only: no send path in this code, not even
+// a disabled one — only copy-to-clipboard and local download.
+export default function LawyerSummary({
+  lawyerPackage,
+  lawyerNote,
+  onPrepare,
+}: Props) {
   const [notice, setNotice] = useState("");
-
-  function prepare() {
-    setPrepared(buildLawyerSummary(view, companyName));
-    setNotice("Summary prepared. Copy or download it and forward it yourself — this app does not send email.");
-  }
+  const prepared = lawyerPackage;
 
   async function copyPrepared() {
     try {
@@ -74,19 +49,32 @@ export default function LawyerSummary({ view, companyName }: Props) {
 
   return (
     <section aria-label="Lawyer summary">
-      <h2>Send to a lawyer for a second opinion</h2>
+      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+        <h2>Send to a lawyer for a second opinion</h2>
+        <span
+          style={{
+            border: "1px solid currentColor",
+            borderRadius: "999px",
+            padding: "0.1rem 0.6rem",
+            fontSize: "0.8rem",
+          }}
+        >
+          DEMO data — package display, no send
+        </span>
+      </div>
       <p>
         Demo data only. This prepares a summary package of the session
         (jurisdiction choice, equity split, checklist state) for you to
         forward yourself. This app does not send email.
       </p>
-      <button onClick={prepare}>Prepare lawyer summary</button>{" "}
+      <button onClick={onPrepare}>Prepare lawyer summary</button>{" "}
       {prepared ? (
         <>
           <button onClick={copyPrepared}>Copy summary</button>{" "}
           <button onClick={downloadPrepared}>Download summary (.txt)</button>
         </>
       ) : null}
+      {lawyerNote ? <p>{lawyerNote}</p> : null}
       {notice ? <p>{notice}</p> : null}
       {prepared ? (
         <pre

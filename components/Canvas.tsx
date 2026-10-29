@@ -12,6 +12,7 @@ import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import JurisdictionTable from "./JurisdictionTable";
 import EquitySlider from "./EquitySlider";
 import FilingChecklist from "./FilingChecklist";
+import FilingSteps from "./FilingSteps";
 import RolloverFactCard from "./RolloverFactCard";
 import LawyerSummary from "./LawyerSummary";
 import {
@@ -21,7 +22,13 @@ import {
   DEMO_JURISDICTIONS,
 } from "../lib/demo-data";
 import { setFounderShare } from "../lib/equity";
-import { S85_PACK, findFactById } from "../lib/knowledge";
+import {
+  FILING_STEPS_PACK,
+  S85_PACK,
+  findFact,
+  findFactById,
+} from "../lib/knowledge";
+import { buildLawyerSummary } from "../lib/lawyer-summary";
 import type { SharedState } from "../lib/state";
 
 const INITIAL_STATE: SharedState = {
@@ -34,6 +41,10 @@ const INITIAL_STATE: SharedState = {
   checklist: DEMO_CHECKLIST,
   rolloverCard: null,
   rolloverNote: "",
+  filingStepsCard: null,
+  filingStepsNote: "",
+  lawyerPackage: "",
+  lawyerNote: "",
 };
 
 function Canvas() {
@@ -108,7 +119,12 @@ function Canvas() {
         factId: fact.factId,
         topic: fact.topic,
       })),
-      note: "All demo data. Nothing here is a real jurisdiction or filing. For a rollover question, call showRolloverFact with a factId from s85Facts — never invent rollover content.",
+      filingStepsPackId: FILING_STEPS_PACK.packId,
+      filingStepsFacts: FILING_STEPS_PACK.facts.map((fact) => ({
+        factId: fact.factId,
+        topic: fact.topic,
+      })),
+      note: "All demo data. Nothing here is a real jurisdiction or filing. For a rollover question, call showRolloverFact with a factId from s85Facts — never invent rollover content. For filing steps or fees, call showFilingSteps with factIds from filingStepsFacts — never invent steps or fees. To prepare the lawyer package, call prepareLawyerSummary.",
     },
   });
 
@@ -245,6 +261,83 @@ function Canvas() {
     },
   });
 
+  // Day 3: grounded filing-steps/fees card. The handler looks every
+  // fact up in the filing-steps pack — card text is pack text verbatim
+  // with pack/fact grounding. Any unknown factId renders NO card.
+  useCopilotAction({
+    name: "showFilingSteps",
+    description:
+      "Show grounded filing steps and fees facts. Call with factIds from the readable filingStepsFacts index when the user asks about filing steps, process order, or fees. Never invent steps or fees; only pack facts become cards.",
+    parameters: [
+      {
+        name: "factIds",
+        type: "string[]",
+        description: "Fact ids from the filingStepsFacts index.",
+        required: true,
+      },
+      { name: "question", type: "string", description: "The user's question.", required: false },
+    ],
+    handler: async ({ factIds, question }) => {
+      const ids = Array.isArray(factIds) ? factIds : [];
+      const found = ids
+        .map((factId) => findFact(FILING_STEPS_PACK.packId, String(factId)))
+        .filter((entry) => entry !== null);
+      setState((prev) => {
+        const base = { ...INITIAL_STATE, ...prev };
+        if (found.length === 0) {
+          return {
+            ...base,
+            currentBeat: "filingsteps" as const,
+            filingStepsCard: null,
+            filingStepsNote:
+              "No grounded fact matched that request in the filing-steps pack, so no card is shown. An ungrounded answer would fail this component.",
+          };
+        }
+        return {
+          ...base,
+          currentBeat: "filingsteps" as const,
+          filingStepsCard: {
+            question: question ?? "Filing steps and fees",
+            packId: FILING_STEPS_PACK.packId,
+            packTitle: FILING_STEPS_PACK.title,
+            facts: found.map((entry) => ({
+              factId: entry.fact.factId,
+              topic: entry.fact.topic,
+              text: entry.fact.text,
+            })),
+          },
+          filingStepsNote: "",
+        };
+      });
+    },
+  });
+
+  // Day 3: lawyer-summary package display. The Prepare button and this
+  // agent action share buildLawyerSummary() over shared state — one
+  // package, rendered on the canvas. Prep only; nothing is sent.
+  function prepareLawyerPackage() {
+    setState((prev) => {
+      const base = { ...INITIAL_STATE, ...prev };
+      return {
+        ...base,
+        currentBeat: "summary" as const,
+        lawyerPackage: buildLawyerSummary(base, DEMO_COMPANY_NAME),
+        lawyerNote:
+          "Summary prepared. Copy or download it and forward it yourself — this app does not send email.",
+      };
+    });
+  }
+
+  useCopilotAction({
+    name: "prepareLawyerSummary",
+    description:
+      "Prepare the lawyer-summary package (jurisdiction choice, equity split, checklist state) and display it on the canvas. Use when the user asks to prepare, show, or send-to-lawyer the summary. This only prepares the package for the user to forward; it never sends email.",
+    parameters: [],
+    handler: async () => {
+      prepareLawyerPackage();
+    },
+  });
+
   async function sendToAgent(text: string) {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -369,9 +462,17 @@ function Canvas() {
 
       <FilingChecklist items={view.checklist} onToggle={updateChecklistItem} />
 
+      <FilingSteps card={view.filingStepsCard} filingStepsNote={view.filingStepsNote} />
+
       <RolloverFactCard card={view.rolloverCard} rolloverNote={view.rolloverNote} />
 
-      <LawyerSummary view={view} companyName={DEMO_COMPANY_NAME} />
+      <LawyerSummary
+        view={view}
+        companyName={DEMO_COMPANY_NAME}
+        lawyerPackage={view.lawyerPackage}
+        lawyerNote={view.lawyerNote}
+        onPrepare={prepareLawyerPackage}
+      />
     </main>
   );
 }

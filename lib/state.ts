@@ -15,6 +15,13 @@ export type ChecklistItem = {
   done: boolean;
 };
 
+export type FilingStepsCard = {
+  question: string;
+  packId: string; // grounding shown on the card
+  packTitle: string;
+  facts: { factId: string; topic: string; text: string }[]; // verbatim pack text
+} | null;
+
 export type RolloverCard = {
   question: string;
   answer: string; // verbatim grounded fact text from the knowledge pack
@@ -24,7 +31,13 @@ export type RolloverCard = {
 } | null;
 
 export type SharedState = {
-  currentBeat: "jurisdiction" | "equity" | "checklist" | "rollover";
+  currentBeat:
+    | "jurisdiction"
+    | "equity"
+    | "checklist"
+    | "rollover"
+    | "filingsteps"
+    | "summary";
   transcript: string; // last transcript, shown on canvas
   jurisdictions: JurisdictionRow[];
   selectedJurisdiction: string | null; // set by voice (agent) OR by row click
@@ -33,6 +46,10 @@ export type SharedState = {
   checklist: ChecklistItem[];
   rolloverCard: RolloverCard;
   rolloverNote: string; // set when a rollover answer has no grounded fact
+  filingStepsCard: FilingStepsCard;
+  filingStepsNote: string; // set when a filing-steps answer has no grounded fact
+  lawyerPackage: string; // agent- or button-prepared package; "" when none
+  lawyerNote: string;
 };
 
 export type { FounderShare };

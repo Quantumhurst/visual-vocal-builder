@@ -34,6 +34,8 @@ Open http://localhost:3000, allow mic access, and speak. (On a machine without a
 
 Day 2 catalog: fresh entries in `lib/catalog.ts` for the jurisdiction table, equity slider, filing checklist, and rollover fact card, all written in-window and driven by CopilotKit shared state (A2UI contained mode).
 
+Day 3 catalog + knowledge extension (two components, both fresh in-window): a grounded filing-steps/fees knowledge pack (`corp-plan-filing-steps-fees-v1` in `lib/knowledge.ts`) rendered by the `FilingSteps` card (catalog `vvb-filing-steps-v1`) — pack text verbatim with pack/fact grounding, unknown ids show no card, every fee figure DEMO-labeled and fictional; and the lawyer-summary package display (catalog `vvb-lawyer-summary-v1`) — beat 5's package built by `lib/lawyer-summary.ts` from shared state and rendered on the canvas whether prepared by button or by the agent action `prepareLawyerSummary`. Prep only; no send path. Tests in `tests/day3.test.mjs` (12/12 with the Day 2 suite).
+
 ## Fresh-build note
 
 All code in this repo was written in the hackathon window. Anything small ported from earlier work will be listed here, one line each. (None as of the Day 2 commit — catalog, knowledge packs, and beat 2–4 components were written in-window.)

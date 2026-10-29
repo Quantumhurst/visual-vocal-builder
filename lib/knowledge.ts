@@ -88,7 +88,55 @@ export const CHECKLIST_PACK: KnowledgePack = {
   ],
 };
 
-export const KNOWLEDGE_PACKS: KnowledgePack[] = [S85_PACK, CHECKLIST_PACK];
+// Filing steps + fees pack — written in-window for Day 3 (Step 1).
+// General public procedure facts only: the ORDER of steps and the
+// CONCEPT of a fee, never a real jurisdiction's live fee schedule.
+// Every figure reference stays DEMO-labeled and fictional; a real fee
+// is always jurisdiction- and date-specific and is never stated here.
+export const FILING_STEPS_PACK: KnowledgePack = {
+  packId: "corp-plan-filing-steps-fees-v1",
+  title: "Corp Plan — filing steps and fees (educational pack)",
+  jurisdictionNote:
+    "DEMO guidance summary of general incorporation procedure concepts for the fictional demo only — not legal advice, not a filing.",
+  facts: [
+    {
+      factId: "steps-order-overview",
+      topic: "The usual order of steps",
+      text: "General procedure: (1) choose where to incorporate, (2) pick and check a company name, (3) agree the founders' equity split, (4) prepare articles, (5) file the articles with the registry and pay the filing fee, (6) complete organizational records. This demo walks the same order as guidance only and files nothing. (DEMO — not legal advice.)",
+    },
+    {
+      factId: "steps-name-check",
+      topic: "Name check comes before filing",
+      text: "General procedure: a name availability check normally happens before articles are prepared, so a clashed name is caught early. This demo uses Galactic Bagels Inc. (fictional) and checks nothing. (DEMO — not legal advice.)",
+    },
+    {
+      factId: "steps-articles-content",
+      topic: "What articles generally cover",
+      text: "General procedure: articles generally set out the company name, registered office, share classes and transfer restrictions, and director rules. This demo shows guidance only and prepares no filing. (DEMO — not legal advice.)",
+    },
+    {
+      factId: "fees-concept",
+      topic: "How filing fees work (concept)",
+      text: "Fee concept: incorporating generally involves a one-time government filing fee paid when articles are filed, plus possible name-search and ongoing annual maintenance fees. Amounts vary by jurisdiction and change over time, so this demo states no real amount — demo figures are labeled DEMO and fictional. (DEMO — not legal advice.)",
+    },
+    {
+      factId: "fees-demo-figures",
+      topic: "Demo fee figures are fictional",
+      text: "Every fee figure in this demo (e.g. DEMO 500 Mars credits) is invented for a fictional place and labeled DEMO in the data file and on the page. No figure here is a real filing fee. (DEMO — not legal advice.)",
+    },
+    {
+      factId: "steps-after-filing",
+      topic: "After filing (guidance only)",
+      text: "General procedure: after filing, founders typically hold organizational meetings, issue shares per the agreed split, and keep corporate records. This demo stops at guidance and submits nothing to any registry. (DEMO — not legal advice.)",
+    },
+  ],
+};
+
+export const KNOWLEDGE_PACKS: KnowledgePack[] = [
+  S85_PACK,
+  CHECKLIST_PACK,
+  FILING_STEPS_PACK,
+];
 
 export function findFact(
   packId: string,
