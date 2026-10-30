@@ -14,6 +14,8 @@ import JurisdictionTable from "./JurisdictionTable";
 
 // Pixi canvas must never render on the server (Day 4 hero island).
 const GalaxyHero = dynamic(() => import("./GalaxyHero"), { ssr: false });
+// Day 8 colony board: second Pixi island, same ssr rule.
+const ColonyView = dynamic(() => import("./ColonyView"), { ssr: false });
 import EquitySlider from "./EquitySlider";
 import FilingChecklist from "./FilingChecklist";
 import FilingSteps from "./FilingSteps";
@@ -61,6 +63,17 @@ const BEATS = [
   { id: "rollover", label: "Rollover" },
   { id: "filingsteps", label: "Filing steps" },
   { id: "summary", label: "Summary" },
+] as const;
+
+// Day 8: one-click example commands for judges without a mic. Each chip
+// sends its command through the same sendToAgent path as typed/voice
+// input — no shortcut state writes, the agent still drives the beats.
+const EXAMPLE_COMMANDS = [
+  { label: "Pick Mars", command: "Pick Mars as our home base" },
+  { label: "Make Orbit 70%", command: "Make Orbit 70%" },
+  { label: "s.85 rollover?", command: "What is a section 85 rollover?" },
+  { label: "Filing steps & fees", command: "What are the filing steps and fees?" },
+  { label: "Prepare lawyer summary", command: "Prepare the lawyer summary" },
 ] as const;
 
 function Canvas() {
@@ -479,6 +492,18 @@ function Canvas() {
         >
           Send to agent
         </button>
+        <div aria-label="Example commands" style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+          <span>Try:</span>
+          {EXAMPLE_COMMANDS.map((chip) => (
+            <button
+              key={chip.label}
+              data-testid={`example-chip-${chip.label}`}
+              onClick={async () => { await sendToAgent(chip.command); }}
+            >
+              {chip.label}
+            </button>
+          ))}
+        </div>
         {isLoading ? <p>Agent is working…</p> : null}
         {notice ? <p>{notice}</p> : null}
         {view.transcript ? (
@@ -504,6 +529,13 @@ function Canvas() {
           </span>
         ))}
       </nav>
+
+      <ColonyView
+        selected={view.selectedJurisdiction}
+        checklist={view.checklist}
+        founders={view.founders}
+        lawyerPackage={view.lawyerPackage}
+      />
 
       <div data-beat="jurisdiction" data-beat-active={view.currentBeat === "jurisdiction"}>
       <GalaxyHero
