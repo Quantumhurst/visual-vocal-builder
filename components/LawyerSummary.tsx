@@ -62,11 +62,7 @@ export default function LawyerSummary({
           DEMO data — package display, no send
         </span>
       </div>
-      <p>
-        Demo data only. This prepares a summary package of the session
-        (jurisdiction choice, equity split, checklist state) for you to
-        forward yourself. This app does not send email.
-      </p>
+      <p>Prepares a summary package for you to forward yourself.</p>
       <button onClick={onPrepare}>Prepare lawyer summary</button>{" "}
       {prepared ? (
         <>

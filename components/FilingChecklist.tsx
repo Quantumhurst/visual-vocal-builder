@@ -30,10 +30,7 @@ export default function FilingChecklist({ items, onToggle, flags }: Props) {
           DEMO — guidance only, not a filing
         </span>
       </div>
-      <p>
-        Demo data only. Guidance and grounded facts only — nothing here is
-        submitted to any registry. Check items by click or by voice.
-      </p>
+      <p>Check items by click or by voice.</p>
       <p>
         {doneCount} of {items.length} done
       </p>

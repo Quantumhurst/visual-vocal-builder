@@ -45,10 +45,6 @@ export default function RolloverFactCard({ card, rolloverNote, flagReason }: Pro
             Grounding: pack <code>{card.packId}</code> ({card.packTitle}),
             fact <code>{card.factId}</code>
           </p>
-          <p>
-            Demo data only. This is not legal advice, not a filing, and
-            nothing here is submitted to any registry.
-          </p>
           {flagReason ? (
             <p data-testid="rollover-flag">
               <strong>FLAGGED</strong> — verifier: {flagReason}. Shown as

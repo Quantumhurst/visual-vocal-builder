@@ -1,26 +1,60 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
+:root { --background: #0b1026; --foreground: #eef1ff; }
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+body { background: #0b1026; color: #eef1ff; font-family: Arial, Helvetica, sans-serif; }
+main { color: #eef1ff; }
+section {
+  background: #141a38; border: 1px solid #2c376e; border-radius: 12px;
+  padding: 1rem 1.25rem; margin: 1rem 0;
 }
-
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+h1 { color: #ffffff; letter-spacing: -0.02em; }
+h2 { color: #dbe4ff; }
+p, li, label, span { color: #e6eaff; }
+a { color: #8ec5ff; }
+button {
+  background: #2b3a8f; color: #ffffff; border: 1px solid #6f83e8;
+  border-radius: 8px; padding: 0.45rem 0.9rem; cursor: pointer; font-weight: 600;
 }
+button:hover { background: #3a4db3; }
+button:focus-visible, input:focus-visible { outline: 3px solid #ffd166; outline-offset: 2px; }
+input {
+  background: #0d1330; color: #ffffff; border: 1px solid #5563a8;
+  border-radius: 8px; padding: 0.45rem 0.7rem;
+}
+input::placeholder { color: #aab4e8; }
+input[type="range"] { accent-color: #7aa2ff; }
+input[type="checkbox"] { accent-color: #7aa2ff; }
+table { border-collapse: collapse; width: 100%; background: #101736; color: #eef1ff; }
+th, td { border: 1px solid #33407a; padding: 0.5rem 0.6rem; text-align: left; }
+th { background: #1d2650; color: #ffffff; }
+article, pre { background: #101736 !important; color: #eef1ff; }
+code { color: #ffd9a0; }
+/* DEMO badges: keep high contrast on dark */
+span { border-color: #8fa0e8; }
+/* Grounded badge: sober green, legible */
+[data-status="grounded"] {
+  background: #123d2a; color: #b8f5d3; border: 1px solid #2f9e6b;
+  border-radius: 8px; padding: 0.5rem 0.7rem;
+}
+/* Flagged: must NOT blend — bright red/orange on dark */
+[data-testid="rollover-flag"], [data-testid="filing-steps-flag"],
+[data-testid^="checklist-flag-"], [data-status="flagged"] {
+  background: #4a0f14; color: #ffd7d7; border: 2px solid #ff5a5a;
+  border-radius: 8px; padding: 0.6rem 0.8rem; font-weight: 700;
+}
+[data-testid="trust-strip"] { background: #101a33; border-color: #35507a; }
+/* Quest + active beat */
+[data-testid="quest-progress"] { background: #101736; border: 1px solid #2c376e; border-radius: 12px; padding: 0.75rem 1rem; }
+[data-beat-active="true"] { outline: 3px solid #ffd166; outline-offset: 2px; border-radius: 12px; }
+[data-beat-active="true"] > section { border-color: #ffd166; box-shadow: 0 0 0 2px #ffd16655; }
+[data-testid="host-prompt"] {
+  background: #2a2110; border: 2px dashed #ffb454; border-radius: 12px;
+  padding: 1rem 1.25rem; margin: 1rem 0; color: #ffe9c4;
+}
+[data-testid="host-prompt"] p { color: #ffe9c4; }

@@ -51,10 +51,6 @@ export default function FilingSteps({ card, filingStepsNote, flagReason }: Props
           <p>
             Grounding: pack <code>{card.packId}</code> ({card.packTitle})
           </p>
-          <p>
-            Demo data only. This is not legal advice, not a filing, and
-            nothing here is submitted to any registry.
-          </p>
           {flagReason ? (
             <p data-testid="filing-steps-flag">
               <strong>FLAGGED</strong> — verifier: {flagReason}. Shown as

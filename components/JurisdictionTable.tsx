@@ -27,11 +27,6 @@ export default function JurisdictionTable({ rows, selected, onSelect }: Props) {
           Demo data — fictional places
         </span>
       </div>
-      <p>
-        Demo data only — fictional places, not real jurisdictions. This is not
-        legal advice, not a filing, and nothing here is submitted to any
-        registry.
-      </p>
       <table>
         <thead>
           <tr>

@@ -185,9 +185,8 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
       <h2>Incorporate by voice</h2>
       <p>
         <span style={{ border: "1px solid currentColor", borderRadius: "999px", padding: "0.1rem 0.6rem", fontSize: "0.8rem" }}>DEMO</span>{" "}
-        Demo data only. Pick a fictional world below — or ask by voice — and the
-        incorporation walk starts there. This is not legal advice, not a filing,
-        and nothing here is submitted to any registry.
+        Pick a fictional world below — or ask by voice — and the
+        incorporation walk starts there.
       </p>
 
       {useFallback ? (

@@ -31,10 +31,7 @@ export default function EquitySlider({ founders, equityNote, onShareChange }: Pr
           DEMO data — fictional founders
         </span>
       </div>
-      <p>
-        Demo data only — fictional founders, DEMO figures. Drag a slider or
-        say e.g. “make me 70%”. Splits always total 100%.
-      </p>
+      <p>Drag a slider or say e.g. “make me 70%”. Splits always total 100%.</p>
       {founders.map((founder, index) => (
         <div key={founder.name} style={{ marginBottom: "0.75rem" }}>
           <label>

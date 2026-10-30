@@ -1,11 +1,11 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CopilotKit,
   useCoAgent,
   useCopilotAction,
-  useCopilotChat,
+  useCopilotChatInternal,
   useCopilotReadable,
 } from "@copilotkit/react-core";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
@@ -36,6 +36,7 @@ import { buildLawyerSummary } from "../lib/lawyer-summary";
 import type { SharedState } from "../lib/state";
 import TrustStrip from "./TrustStrip";
 import { verifyPaintedCards } from "../lib/verifier";
+import { resolveHostPrompt } from "../lib/host-questions";
 
 const INITIAL_STATE: SharedState = {
   currentBeat: "jurisdiction",
@@ -52,6 +53,15 @@ const INITIAL_STATE: SharedState = {
   lawyerPackage: "",
   lawyerNote: "",
 };
+
+const BEATS = [
+  { id: "jurisdiction", label: "Jurisdiction" },
+  { id: "equity", label: "Equity" },
+  { id: "checklist", label: "Checklist" },
+  { id: "rollover", label: "Rollover" },
+  { id: "filingsteps", label: "Filing steps" },
+  { id: "summary", label: "Summary" },
+] as const;
 
 function Canvas() {
   const { state, setState } = useCoAgent<SharedState>({
@@ -77,7 +87,7 @@ function Canvas() {
       checklistFlags[v.cardId] = `${v.reason}: ${v.detail}`;
     }
   }
-  const { appendMessage, isLoading } = useCopilotChat();
+  const { appendMessage, isLoading, messages } = useCopilotChatInternal();
   const [recording, setRecording] = useState(false);
   const [typed, setTyped] = useState("");
   const [notice, setNotice] = useState("");
@@ -180,6 +190,7 @@ function Canvas() {
           : (prev?.selectedJurisdiction ?? null),
       }));
     },
+    render: () => <></>,
   });
 
   // Beat 2 voice path: "make me 70%" -> same updateEquity() the slider
@@ -422,6 +433,14 @@ function Canvas() {
     }
   }
 
+  const prevBeatRef = useRef(view.currentBeat);
+  useEffect(() => {
+    if (prevBeatRef.current === view.currentBeat) return;
+    prevBeatRef.current = view.currentBeat;
+    document.querySelector(`[data-beat="${view.currentBeat}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [view.currentBeat]);
+  const hostPrompt = resolveHostPrompt(messages as never, view.currentBeat, view.founders.map((f) => f.name.includes("Orbit") ? "Orbit" : f.name.includes("Nova") ? "Nova" : f.name));
+
   return (
     <main style={{ maxWidth: "900px", margin: "0 auto", padding: "2rem" }}>
       <h1>Visual Vocal Builder</h1>
@@ -443,6 +462,12 @@ function Canvas() {
         <input
           value={typed}
           onChange={(event) => setTyped(event.target.value)}
+          onKeyDown={async (event) => {
+            if (event.key === "Enter") {
+              await sendToAgent(typed);
+              setTyped("");
+            }
+          }}
           placeholder="Or type a command for the agent"
           style={{ minWidth: "320px" }}
         />{" "}
@@ -463,8 +488,24 @@ function Canvas() {
         ) : null}
       </section>
 
+      <section data-testid="host-prompt" aria-label="Host prompt">
+        <h2>Host (unverified conversation)</h2>
+        <p data-testid="host-prompt-text">{hostPrompt.text}</p>
+        <p>Host speech only — not a grounded fact card. Verify facts on the grounded cards below.</p>
+      </section>
+
       <TrustStrip result={verification} />
 
+      <nav data-testid="quest-progress" aria-label="Quest progress">
+        <strong>Mission progress:</strong>{" "}
+        {BEATS.map((beat, i) => (
+          <span key={beat.id} data-testid={`quest-beat-${beat.id}`} data-active={view.currentBeat === beat.id}>
+            {i > 0 ? " → " : ""}{view.currentBeat === beat.id ? "▶ " : ""}{beat.label}
+          </span>
+        ))}
+      </nav>
+
+      <div data-beat="jurisdiction" data-beat-active={view.currentBeat === "jurisdiction"}>
       <GalaxyHero
         rows={view.jurisdictions}
         selected={view.selectedJurisdiction}
@@ -488,19 +529,29 @@ function Canvas() {
           }))
         }
       />
+      </div>
 
+      <div data-beat="equity" data-beat-active={view.currentBeat === "equity"}>
       <EquitySlider
         founders={view.founders}
         equityNote={view.equityNote}
         onShareChange={(index, percent) => updateEquity(index, percent, "slider")}
       />
+      </div>
 
+      <div data-beat="checklist" data-beat-active={view.currentBeat === "checklist"}>
       <FilingChecklist items={view.checklist} onToggle={updateChecklistItem} flags={checklistFlags} />
+      </div>
 
+      <div data-beat="filingsteps" data-beat-active={view.currentBeat === "filingsteps"}>
       <FilingSteps card={view.filingStepsCard} filingStepsNote={view.filingStepsNote} flagReason={filingFlag ? `${filingFlag.reason}: ${filingFlag.detail}` : null} />
+      </div>
 
+      <div data-beat="rollover" data-beat-active={view.currentBeat === "rollover"}>
       <RolloverFactCard card={view.rolloverCard} rolloverNote={view.rolloverNote} flagReason={rolloverFlag ? `${rolloverFlag.reason}: ${rolloverFlag.detail}` : null} />
+      </div>
 
+      <div data-beat="summary" data-beat-active={view.currentBeat === "summary"}>
       <LawyerSummary
         view={view}
         companyName={DEMO_COMPANY_NAME}
@@ -508,6 +559,7 @@ function Canvas() {
         lawyerNote={view.lawyerNote}
         onPrepare={prepareLawyerPackage}
       />
+      </div>
     </main>
   );
 }
