@@ -34,6 +34,8 @@ import {
 } from "../lib/knowledge";
 import { buildLawyerSummary } from "../lib/lawyer-summary";
 import type { SharedState } from "../lib/state";
+import TrustStrip from "./TrustStrip";
+import { verifyPaintedCards } from "../lib/verifier";
 
 const INITIAL_STATE: SharedState = {
   currentBeat: "jurisdiction",
@@ -60,6 +62,21 @@ function Canvas() {
   // also arrive as an empty or partial object. Merge over the initial state
   // so every render read has a value; never dereference `state` directly.
   const view = { ...INITIAL_STATE, ...state };
+  // Day 5: separate verifier over the painted cards (pure, on state
+  // change, outside the voice turn path — it never blocks a turn).
+  const verification = verifyPaintedCards(view);
+  const rolloverFlag = verification.verdicts.find(
+    (v) => v.cardKind === "rollover" && v.status === "flagged",
+  );
+  const filingFlag = verification.verdicts.find(
+    (v) => v.cardKind === "filingSteps" && v.status === "flagged",
+  );
+  const checklistFlags: Record<string, string> = {};
+  for (const v of verification.verdicts) {
+    if (v.cardKind === "checklist" && v.status === "flagged") {
+      checklistFlags[v.cardId] = `${v.reason}: ${v.detail}`;
+    }
+  }
   const { appendMessage, isLoading } = useCopilotChat();
   const [recording, setRecording] = useState(false);
   const [typed, setTyped] = useState("");
@@ -446,6 +463,8 @@ function Canvas() {
         ) : null}
       </section>
 
+      <TrustStrip result={verification} />
+
       <GalaxyHero
         rows={view.jurisdictions}
         selected={view.selectedJurisdiction}
@@ -476,11 +495,11 @@ function Canvas() {
         onShareChange={(index, percent) => updateEquity(index, percent, "slider")}
       />
 
-      <FilingChecklist items={view.checklist} onToggle={updateChecklistItem} />
+      <FilingChecklist items={view.checklist} onToggle={updateChecklistItem} flags={checklistFlags} />
 
-      <FilingSteps card={view.filingStepsCard} filingStepsNote={view.filingStepsNote} />
+      <FilingSteps card={view.filingStepsCard} filingStepsNote={view.filingStepsNote} flagReason={filingFlag ? `${filingFlag.reason}: ${filingFlag.detail}` : null} />
 
-      <RolloverFactCard card={view.rolloverCard} rolloverNote={view.rolloverNote} />
+      <RolloverFactCard card={view.rolloverCard} rolloverNote={view.rolloverNote} flagReason={rolloverFlag ? `${rolloverFlag.reason}: ${rolloverFlag.detail}` : null} />
 
       <LawyerSummary
         view={view}

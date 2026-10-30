@@ -6,12 +6,14 @@ type Props = {
   items: ChecklistItem[];
   // One shared update path for voice (agent actions) and clicks.
   onToggle: (itemId: string, done: boolean) => void;
+  // Day 5: verifier flags per item id, shown on the item itself.
+  flags?: Record<string, string>;
 };
 
 // Catalog entry vvb-filing-checklist-v1 (lib/catalog.ts). Content is
 // guidance + grounded facts from the Corp Plan checklist pack only —
 // never an actual registry filing, and there is no submission path.
-export default function FilingChecklist({ items, onToggle }: Props) {
+export default function FilingChecklist({ items, onToggle, flags }: Props) {
   const doneCount = items.filter((item) => item.done).length;
   return (
     <section aria-label="Filing checklist">
@@ -48,6 +50,15 @@ export default function FilingChecklist({ items, onToggle }: Props) {
             </label>
             <br />
             <span>{item.guidance}</span>
+            {flags?.[item.id] ? (
+              <>
+                <br />
+                <span data-testid={`checklist-flag-${item.id}`}>
+                  <strong>FLAGGED</strong> — verifier: {flags[item.id]}. Shown
+                  as painted; never silently dropped or rewritten.
+                </span>
+              </>
+            ) : null}
           </li>
         ))}
       </ul>
