@@ -63,6 +63,67 @@ export function detectWebGL(): boolean {
   }
 }
 
+// Seeded PRNG (mulberry32): stable starfield across renders/frames.
+function mulberry32(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export type HeroStar = {
+  x: number;
+  y: number;
+  r: number;
+  alpha: number;
+  layer: 0 | 1; // 0 = far (slower), 1 = near (faster)
+  speed: number; // px per 60fps frame
+  phase: number; // twinkle phase, radians
+  twinkleSpeed: number; // radians per ms
+};
+
+// Precomputed once by the component; the ticker only mutates x/alpha.
+export function starfieldPoints(
+  width: number,
+  height: number,
+  count = 140,
+  seed = 1337,
+): HeroStar[] {
+  const rand = mulberry32(seed);
+  const stars: HeroStar[] = [];
+  for (let i = 0; i < count; i++) {
+    const layer = (rand() < 0.55 ? 0 : 1) as 0 | 1;
+    stars.push({
+      x: rand() * width,
+      y: rand() * height,
+      r: layer === 0 ? 0.6 + rand() * 0.9 : 1.1 + rand() * 1.4,
+      alpha: layer === 0 ? 0.35 + rand() * 0.35 : 0.6 + rand() * 0.4,
+      layer,
+      speed: layer === 0 ? 0.03 + rand() * 0.03 : 0.1 + rand() * 0.08,
+      phase: rand() * Math.PI * 2,
+      twinkleSpeed: 0.0008 + rand() * 0.0016,
+    });
+  }
+  return stars;
+}
+
+// Slow pulse ring around the selected planet (radius grows, alpha fades, loops).
+export function pulseRing(radius: number, elapsedMs: number, periodMs = 1800) {
+  const phase = (((elapsedMs % periodMs) + periodMs) % periodMs) / periodMs;
+  return { radius: radius + 10 + phase * 16, alpha: 0.75 * (1 - phase), phase };
+}
+
+// One-shot burst on select: expands and fades over 600ms, then is done.
+export function burstRing(radius: number, ageMs: number, durationMs = 600) {
+  if (ageMs < 0 || ageMs >= durationMs) return null;
+  const phase = ageMs / durationMs;
+  return { radius: radius + 6 + phase * 38, alpha: 0.9 * (1 - phase), phase };
+}
+
 // Lifecycle guard: tracks a Pixi application's destroyed state so unmount
 // teardown is idempotent and testable without a renderer.
 export function createHeroLifecycle() {

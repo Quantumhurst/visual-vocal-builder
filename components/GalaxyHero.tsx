@@ -9,12 +9,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  burstRing,
   createHeroLifecycle,
   detectWebGL,
   heroPlanets,
   highlightIndex,
+  pulseRing,
   selectFromHero,
   shouldUseDomFallback,
+  starfieldPoints,
 } from "../lib/hero";
 import type { JurisdictionRow } from "../lib/state";
 
@@ -32,6 +35,7 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
   const selectedRef = useRef<string | null>(selected);
   const hoverRef = useRef<number>(-1);
   const redrawRef = useRef<(() => void) | null>(null);
+  const burstRef = useRef<((index: number) => void) | null>(null);
   const [useFallback, setUseFallback] = useState<boolean>(
     () => typeof window !== "undefined" && shouldUseDomFallback(detectWebGL()),
   );
@@ -85,31 +89,31 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
       const scene = new Container();
       app.stage.addChild(scene);
 
-      // Starfield: precomputed once; ticker only drifts x (no per-frame allocs).
-      const stars = new Graphics();
-      const starPts: { x: number; y: number; r: number }[] = [];
-      for (let i = 0; i < 140; i++) {
-        starPts.push({
-          x: (i * 613) % WIDTH,
-          y: (i * 389) % HEIGHT,
-          r: 1 + ((i * 7) % 3) * 0.6,
-        });
-      }
-      const drawStars = () => {
-        stars.clear();
-        for (const s of starPts) stars.circle(s.x, s.y, s.r);
-        stars.fill({ color: 0xffffff, alpha: 0.8 });
-      };
-      drawStars();
-      scene.addChild(stars);
+      // Starfield: seeded points precomputed once; ticker only mutates
+      // each star node's x/alpha (no per-frame allocation).
+      const starPts = starfieldPoints(WIDTH, HEIGHT, 140, 1337);
+      const starNodes = starPts.map((s) => {
+        const g = new Graphics();
+        g.circle(0, 0, s.r);
+        g.fill({ color: 0xffffff, alpha: 1 });
+        g.x = s.x;
+        g.y = s.y;
+        g.alpha = s.alpha;
+        scene.addChild(g);
+        return g;
+      });
 
       const planetNodes = planets.map((planet, i) => {
         const node = new Container();
         node.x = planet.x * WIDTH;
         node.y = planet.y * HEIGHT;
         const halo = new Graphics();
+        const pulse = new Graphics();
+        pulse.circle(0, 0, planet.radius + 10);
+        pulse.stroke({ color: planet.color, width: 2, alpha: 0.8 });
+        pulse.visible = false;
         const body = new Graphics();
-        node.addChild(halo, body);
+        node.addChild(pulse, halo, body);
         const label = new Text({
           text: planet.name,
           style: new TextStyle({ fill: "#ffffff", fontSize: 15, fontFamily: "sans-serif" }),
@@ -123,11 +127,38 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
         node.on("pointerout", () => { hoverRef.current = -1; redrawRef.current?.(); });
         node.on("pointertap", () => {
           const pick = selectFromHero(names, planet.name);
-          if (pick) onSelect(pick);
+          if (pick) {
+            burstRef.current?.(i);
+            onSelect(pick);
+          }
         });
         scene.addChild(node);
-        return { node, halo, body, planet };
+        return { node, halo, body, pulse, planet };
       });
+
+      // Fixed burst pool: reused ring graphics, no per-click allocation.
+      let elapsedMs = 0;
+      const burstPool = Array.from({ length: 4 }, () => {
+        const g = new Graphics();
+        g.visible = false;
+        scene.addChild(g);
+        return { g, start: -1, planetIndex: -1 };
+      });
+      let burstSlot = 0;
+      burstRef.current = (index: number) => {
+        if (reduced || index < 0 || index >= planetNodes.length) return;
+        const slot = burstPool[burstSlot % burstPool.length];
+        burstSlot++;
+        const planet = planetNodes[index].planet;
+        slot.start = elapsedMs;
+        slot.planetIndex = index;
+        slot.g.clear();
+        slot.g.circle(0, 0, planet.radius + 6);
+        slot.g.stroke({ color: planet.color, width: 3, alpha: 0.9 });
+        slot.g.x = planet.x * WIDTH;
+        slot.g.y = planet.y * HEIGHT;
+        slot.g.visible = true;
+      };
 
       const redraw = () => {
         const sel = highlightIndex(names, selectedRef.current);
@@ -150,12 +181,43 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
       redraw();
 
       if (!reduced) {
-        app.ticker.add(() => {
-          for (const s of starPts) {
-            s.x -= 0.15;
-            if (s.x < 0) s.x += WIDTH;
+        app.ticker.add((ticker) => {
+          elapsedMs += ticker.deltaMS;
+          const dt = ticker.deltaTime;
+          for (let i = 0; i < starPts.length; i++) {
+            const s = starPts[i];
+            s.x -= s.speed * dt;
+            if (s.x < -s.r) s.x += WIDTH + s.r * 2;
+            const g = starNodes[i];
+            g.x = s.x;
+            g.alpha = s.alpha * (0.65 + 0.35 * Math.sin(elapsedMs * s.twinkleSpeed + s.phase));
           }
-          drawStars();
+          const sel = highlightIndex(names, selectedRef.current);
+          for (let i = 0; i < planetNodes.length; i++) {
+            const { pulse, planet } = planetNodes[i];
+            if (i === sel) {
+              const frame = pulseRing(planet.radius, elapsedMs);
+              pulse.visible = true;
+              const s = frame.radius / (planet.radius + 10);
+              pulse.scale.set(s, s);
+              pulse.alpha = frame.alpha;
+            } else {
+              pulse.visible = false;
+            }
+          }
+          for (const slot of burstPool) {
+            if (slot.start < 0) continue;
+            const frame = burstRing(planetNodes[slot.planetIndex].planet.radius, elapsedMs - slot.start);
+            if (!frame) {
+              slot.start = -1;
+              slot.g.visible = false;
+            } else {
+              const base = planetNodes[slot.planetIndex].planet.radius + 6;
+              const s = frame.radius / base;
+              slot.g.scale.set(s, s);
+              slot.g.alpha = frame.alpha;
+            }
+          }
         });
       }
 
@@ -171,6 +233,7 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
     return () => {
       cancelled = true;
       redrawRef.current = null;
+      burstRef.current = null;
       const hostEl = host as unknown as { __heroDestroy?: () => void };
       hostEl.__heroDestroy?.();
       delete hostEl.__heroDestroy;
@@ -182,7 +245,7 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
 
   return (
     <section aria-label="Galaxy hero — pick a demo world">
-      <h2>Incorporate by voice</h2>
+      <h2>Mission 1: pick your home base</h2>
       <p>
         <span style={{ border: "1px solid currentColor", borderRadius: "999px", padding: "0.1rem 0.6rem", fontSize: "0.8rem" }}>DEMO</span>{" "}
         Pick a fictional world below — or ask by voice — and the
@@ -208,7 +271,7 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
         {planets.map((planet, i) => (
           <button
             key={planet.name}
-            onClick={() => { const pick = selectFromHero(names, planet.name); if (pick) onSelect(pick); }}
+            onClick={() => { const pick = selectFromHero(names, planet.name); if (pick) { burstRef.current?.(i); onSelect(pick); } }}
             aria-pressed={i === active}
           >
             {planet.name}
