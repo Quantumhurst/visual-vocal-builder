@@ -1026,6 +1026,22 @@ function Canvas() {
   const turnPhase = recording ? "recording" : transcribing ? "transcribing" : sending ? "sending" : isLoading ? "agent-busy" : "idle";
   const micLabel = turnPhase === "recording" ? "Stop recording" : turnPhase === "transcribing" ? "Transcribing…" : turnPhase === "sending" ? "Sending…" : turnPhase === "agent-busy" ? "Agent working…" : "Speak (mic)";
   const busy = turnPhase === "sending" || turnPhase === "agent-busy";
+  // While talking or waiting, the sticky dock slims to a single bar
+  // (mic + status + live line) so it never covers the graphics it is
+  // supposed to be guiding the user to. Full controls return at Ready.
+  const [recentDone, setRecentDone] = useState(false);
+  const wasBusyRef = useRef(false);
+  useEffect(() => {
+    if (wasBusyRef.current && !busy) {
+      setRecentDone(true);
+      const t = setTimeout(() => setRecentDone(false), 5000);
+      wasBusyRef.current = busy;
+      return () => clearTimeout(t);
+    }
+    wasBusyRef.current = busy;
+    return undefined;
+  }, [busy]);
+  const dockCompact = recording || transcribing || busy || recentDone;
   useEffect(() => {
     if (!busy) {
       busySinceRef.current = null;
@@ -1108,7 +1124,9 @@ function Canvas() {
       const el = document.querySelector(`[data-beat="${beat}"]`) as HTMLElement | null;
       if (!el) return;
       if (lenisRef.current) {
-        lenisRef.current.scrollTo(el, { offset: -90, duration: reduced ? 0 : 1.35, immediate: reduced });
+        // Land the section just below the (variably tall) sticky dock.
+        const dockH = latestTurnRef.current?.offsetHeight ?? 90;
+        lenisRef.current.scrollTo(el, { offset: -(dockH + 16), duration: reduced ? 0 : 1.35, immediate: reduced });
       } else {
         el.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
       }
@@ -1136,8 +1154,8 @@ function Canvas() {
         real company. All places and figures below are invented.
       </p>
 
-      <div ref={latestTurnRef} data-testid="latest-turn" style={{ position: "sticky", top: "0.5rem", zIndex: 30, background: "#0b1026", borderRadius: "12px" }}>
-      <section aria-label="Voice input" data-testid="voice-input" data-phase={turnPhase}>
+      <div ref={latestTurnRef} data-testid="latest-turn" data-compact={dockCompact ? "true" : "false"} style={{ position: "sticky", top: "0.5rem", zIndex: 30, background: "#0b1026", borderRadius: "12px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)" }}>
+      <section aria-label="Voice input" data-testid="voice-input" data-phase={turnPhase} style={dockCompact ? { margin: 0, padding: "0.45rem 0.7rem" } : { margin: 0 }}>
         <button onClick={toggleRecording} disabled={!recording && (transcribing || sending || isLoading)} data-testid="mic-button">
           {micLabel}
         </button>{" "}
@@ -1172,7 +1190,7 @@ function Canvas() {
         >
           Undo
         </button>{" "}
-        <button
+        <span style={dockCompact ? { display: "none" } : undefined}><button
           type="button"
           data-testid="restart-conversation"
           onClick={() => window.location.reload()}
@@ -1212,11 +1230,11 @@ function Canvas() {
             <option value="native">System (curated)</option>
           </select>
         </label>{" "}
-        <span data-testid="kokoro-status" role="status">Neural voice: {kokoroStatus}</span>
-        <p data-testid="recording-hint">Say one short command — it paints live as you speak, and sends itself when you pause. Stop recording still works if you prefer it.</p>
-        <p data-testid="flow-status" role="status">{flowStatus}</p>
+        <span data-testid="kokoro-status" role="status">Neural voice: {kokoroStatus}</span></span>
+        {!dockCompact ? <p data-testid="recording-hint">Say one short command — it paints live as you speak, and sends itself when you pause. Stop recording still works if you prefer it.</p> : null}
+        {!dockCompact ? <p data-testid="flow-status" role="status">{flowStatus}</p> : null}
         {recording || liveTranscript || livePreview ? (
-          <div data-testid="live-voice-panel" style={{ border: "1px solid #6f83e8", borderRadius: "10px", padding: "0.6rem 0.8rem", marginTop: "0.5rem" }}>
+          <div data-testid="live-voice-panel" style={dockCompact ? { marginTop: "0.3rem" } : { border: "1px solid #6f83e8", borderRadius: "10px", padding: "0.6rem 0.8rem", marginTop: "0.5rem" }}>
             {recording ? (
               <div data-testid="mic-meter" aria-label={`Microphone level, recording ${recordSeconds} seconds`}>
                 <div style={{ display: "flex", gap: "3px", alignItems: "flex-end", height: "22px" }} aria-hidden="true">
@@ -1239,7 +1257,7 @@ function Canvas() {
             ) : null}
           </div>
         ) : null}
-        <div aria-label="Example commands" style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+        {!dockCompact ? (<div aria-label="Example commands" style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
           <span>Try:</span>
           {EXAMPLE_COMMANDS.map((chip) => (
             <button
@@ -1250,8 +1268,8 @@ function Canvas() {
               {chip.label}
             </button>
           ))}
-        </div>
-        {busy ? <p data-testid="agent-busy" role="status">Agent working…</p> : null}
+        </div>) : null}
+        {busy && !recording ? <p data-testid="agent-busy" role="status">Agent working…</p> : null}
         {turnError ? <p data-testid="turn-error" role="alert">{turnError}</p> : null}
         {transcribeFailure ? (
           <div data-testid="transcribe-failure">
@@ -1273,13 +1291,14 @@ function Canvas() {
             )}
           </div>
         ) : null}
-        {notice ? <p>{notice}</p> : null}
-        {shownTranscript ? (
+        {notice && !dockCompact ? <p>{notice}</p> : null}
+        {shownTranscript && !dockCompact ? (
           <p data-testid="last-transcript">
             Last transcript: <q>{shownTranscript}</q>
           </p>
         ) : null}
       </section>
+      </div>
 
       <section data-testid="host-prompt" aria-label="Host prompt">
         <h2>Host (unverified conversation)</h2>
@@ -1287,7 +1306,6 @@ function Canvas() {
         {ack ? <p data-testid="host-ack" role="status">{ack}</p> : null}
         <p>Host speech only — not a grounded fact card. Verify facts on the grounded cards below.</p>
       </section>
-      </div>
 
       <section data-testid="mission-banner" data-beat={mission.beat} data-celebrated={celebrated ? "true" : "false"} aria-label="Current mission" style={celebrated ? { border: "2px solid #ffd166", boxShadow: "0 0 0 3px #ffd16655" } : undefined}>
         <div style={{ display: "flex", gap: "0.6rem", alignItems: "center", flexWrap: "wrap" }}>
