@@ -1,5 +1,6 @@
 import { handleTranscribe } from "../../../lib/transcribe-handler";
 import { createRateLimiter } from "../../../lib/request-guard";
+import { buildAsrHandshake } from "../../../lib/meta-models";
 import WebSocket from "ws";
 
 // NOTE: no `export const runtime` here — route handlers already run on the
@@ -62,21 +63,14 @@ function transcribePcm(pcm: Buffer, apiKey: string): Promise<string> {
 
     socket.on("open", () => {
       // First frame: handshake + auth. The header is ignored by this
-      // endpoint, so the credential goes here and nowhere else.
-      socket.send(
-        JSON.stringify({
-          authorization: { accessToken: `Bearer ${apiKey}` },
-          audioEncoding: "PCM_16KHZ",
-          model: "muse-voice-transcribe-1.0",
-          mode: "ENDPOINTING",
-          partialMode: "CUMULATIVE",
-          emitAudioProgress: false,
-        }),
-      );
+      // endpoint, so the credential goes here and nowhere else. The
+      // handshake also carries ASR keyword/language biasing (it cannot
+      // change mid-session) — see lib/meta-models.ts.
+      socket.send(JSON.stringify(buildAsrHandshake(apiKey)));
     });
 
     let handshakeDone = false;
-    socket.on("message", (data: WebSocket.RawData) => {
+    socket.on("message", async (data: WebSocket.RawData) => {
       let message: Record<string, unknown>;
       try {
         message = JSON.parse(data.toString()) as Record<string, unknown>;
@@ -97,11 +91,17 @@ function transcribePcm(pcm: Buffer, apiKey: string): Promise<string> {
           return;
         }
         handshakeDone = true;
+        // Pace the buffered audio instead of dumping it as fast as the
+        // network allows: the realtime docs reject streams that run
+        // far ahead of real time ("Audio processing backlog"). 100 ms
+        // of audio every 10 ms is ~10x real time — fast, not a flood.
         const chunkSize = 3200; // 100 ms of 16 kHz mono 16-bit audio
         for (let i = 0; i < pcm.length; i += chunkSize) {
+          if (settled) return;
           socket.send(pcm.subarray(i, i + chunkSize));
+          if (i + chunkSize < pcm.length) await new Promise((r) => setTimeout(r, 10));
         }
-        socket.send(JSON.stringify({ type: "endStream" }));
+        if (!settled) socket.send(JSON.stringify({ type: "endStream" }));
         return;
       }
       if (type === "transcript") {

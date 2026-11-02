@@ -7,6 +7,7 @@ import { BuiltInAgent } from "@copilotkit/runtime/v2";
 import OpenAI from "openai";
 import { checkOrigin, clientKey, createRateLimiter } from "../../../../lib/request-guard";
 import { VVB_SYSTEM_PROMPT } from "../../../../lib/agent-prompt";
+import { BRAIN_MODEL } from "../../../../lib/meta-models";
 
 const copilotLimiter = createRateLimiter({ limit: 60, windowMs: 60_000 });
 
@@ -36,7 +37,7 @@ function buildHandler() {
       baseURL: "https://api.meta.ai/v1",
       apiKey,
     }),
-    model: "muse-spark-1.3",
+    model: BRAIN_MODEL,
   });
   // Register the agent the UI binds to (useCoAgent name "vvb") alongside
   // "default" (useCopilotChat's implicit agent). Both use the same model
