@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary } from "../lib/state-updates.ts";
+import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber } from "../lib/state-updates.ts";
+import { DEMO_JURISDICTIONS } from "../lib/demo-data.ts";
 
 const base = () => withDefaults(null);
 test("withDefaults partial/null", () => {
@@ -51,6 +52,36 @@ test("applyFilingSteps grounded and unknown", () => {
   assert.equal(ok.filingStepsCard.packId, "corp-plan-filing-steps-fees-v1");
   assert.equal(ok.filingStepsCard.facts[0].factId, "steps-order-overview");
   assert.equal(applyFilingSteps(base(), ["nope"]).filingStepsCard, null);
+});
+test("applyChecklistItems ticks several at once", () => {
+  const b = base();
+  const ids = [b.checklist[0].id, b.checklist[1].id];
+  const s = applyChecklistItems(b, ids, true);
+  assert.equal(s.checklist.filter((i) => i.done).length, 2);
+  assert.equal(applyChecklistItems(s, ids, false).checklist.filter((i) => i.done).length, 0);
+});
+test("applyStartOver keeps transcript, resets canvas", () => {
+  let s = applyJurisdiction(base(), "Mars");
+  s = { ...applyEquity(s, 1, 70, "test"), transcript: "keep me" };
+  const out = applyStartOver(s);
+  assert.equal(out.transcript, "keep me");
+  assert.equal(out.selectedJurisdiction, null);
+  assert.equal(out.founders[0].percent, 60);
+  assert.equal(out.checklist.filter((i) => i.done).length, 0);
+  assert.equal(out.lawyerPackage, "");
+});
+test("applyFocusJurisdiction does not change selection", () => {
+  const s = applyJurisdiction(base(), "Mars");
+  const out = applyFocusJurisdiction(s, "Europa", "cheapest by number");
+  assert.equal(out.selectedJurisdiction, "Mars");
+  assert.equal(out.focusJurisdiction, "Europa");
+  assert.match(out.focusReason, /cheapest/);
+});
+test("cheapestByNumber returns Europa with sameCurrency false", () => {
+  const c = cheapestByNumber(DEMO_JURISDICTIONS);
+  assert.equal(c.name, "Europa");
+  assert.match(c.fee, /DEMO 400/);
+  assert.equal(c.sameCurrency, false);
 });
 test("applyLawyerSummary", () => {
   const s = applyLawyerSummary(base());
