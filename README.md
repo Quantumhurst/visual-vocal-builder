@@ -37,8 +37,9 @@ npm run typecheck
 - Voice loop: Muse Voice Transcribe (STT only) → Muse Spark brain via the Meta Model API → CopilotKit `useCoAgent` shared state → canvas re-renders. Board interactions (e.g. clicking a table row) write shared state back without a new prompt.
 - Live flow (no dead air while speaking): partial transcripts paint a *live preview* the instant a command is recognisable — "Pick Mars" lights the planet mid-sentence — through the same state appliers the agent uses (`lib/live-intent.ts`), and a natural pause auto-sends the turn (client endpointing), so Stop recording is optional. The Meta transcript + Muse Spark turn that follow confirm or correct the preview; grounded fact cards are never painted locally, only by the agent from the knowledge packs. Browsers with a built-in speech recogniser use it for interim words; the rest get periodic Muse Voice previews of the audio captured so far. The final Meta transcription is still the authority sent to the agent.
 - Meta model choices (`lib/meta-models.ts`): brain is `muse-spark-1.3` (latest Spark, recommended for tight agentic tool loops — Muse Wonder targets long-horizon coding/computer use at higher latency, the wrong fit here); STT is `muse-voice-transcribe-1.0` with keyword biasing (Mars, Europa, section 85…) and English language bias in the realtime handshake, which previously went unused.
-- Stack: Next.js + CopilotKit + AG-UI, with A2UI in contained mode. CopilotKit is the frontend SDK; the brain is Muse Spark. Spoken replies use local Kokoro (Meta has no TTS) — Mac-lane work, not in the Day 1 slice.
-- Pinned versions live in `package.json` + `package-lock.json` (see the Day 1 brief for the verified set). The app calls `api.meta.ai` only — no OpenRouter, no CLI subscription session.
+- Stack: Next.js + CopilotKit + AG-UI, with A2UI in contained mode. CopilotKit is the frontend SDK; the brain is Muse Spark. Spoken replies use Kokoro-82M (Meta has no TTS model): it runs in the browser in a Web Worker, downloads ~92 MB from Hugging Face on first use, then runs from cache, with a curated system voice as permanent fallback.
+- Pinned versions live in `package.json` + `package-lock.json`. Network destinations: the Meta Model API (agent brain + final transcripts), jsDelivr and Hugging Face (Kokoro voice bundle and weights), and, in Chrome/Edge only, interim words from the browser's built-in speech recognition — a browser feature, not a Meta call and not local: the browser may send audio to its vendor's speech service. Final transcripts are always Meta.
+- No OpenRouter, no CLI subscription session, no pre-existing project code or private service called at runtime.
 
 ## Demo beats
 
@@ -56,11 +57,12 @@ Day 3 catalog + knowledge extension (two components, both fresh in-window): a gr
 
 - CopilotKit v2 migration.
 - Shared rate-limit store (e.g. Upstash/Redis) instead of per-instance in-memory counts.
-- Kokoro TTS.
 
-## Fresh-build note
+## Provenance
 
-All code in this repo was written in the hackathon window. Anything small ported from earlier work will be listed here, one line each. (None as of the Day 2 commit — catalog, knowledge packs, and beat 2–4 components were written in-window.)
+Built from October 27, 2026, during the hackathon window. It does not include or call any pre-existing project code or private service.
+
+Open-source libraries, Next.js, CopilotKit, PixiJS, Kokoro, and the rest in THIRD-PARTY-NOTICES.md, are used as libraries. This work was built with Muse agent assistance, Nuntuk, within the same window, under my direction.
 
 ## Credits
 

@@ -39,14 +39,13 @@ function buildHandler() {
     }),
     model: BRAIN_MODEL,
   });
-  // Reasoning-effort A/B (trial only): Muse always reasons; "minimal"
-  // is the lowest accepted setting. Unset = provider default. Set
-  // META_REASONING_EFFORT=minimal to trial it; the harness decides.
-  const effort = process.env.META_REASONING_EFFORT;
+  // No reasoning-effort knob: the AI SDK drops `reasoningEffort` for
+  // muse-spark (non-reasoning model in its list), so any such option
+  // is a no-op with a warning. Speed comes from the client-side loop
+  // (live preview, ack, short turns), not a model parameter.
   const agentConfig = {
     model: serviceAdapter.getLanguageModel(),
     prompt: VVB_SYSTEM_PROMPT,
-    ...(effort ? { providerOptions: { openai: { reasoningEffort: effort } } } : {}),
   };
   // Register the agent the UI binds to (useCoAgent name "vvb") alongside
   // "default" (useCopilotChat's implicit agent). Both use the same model

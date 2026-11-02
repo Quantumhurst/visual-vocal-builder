@@ -50,6 +50,7 @@ import { cueForChange, CUES, type CueName } from "../lib/sound-cues";
 import { missionFor } from "../lib/mission";
 import { spokenHostText } from "../lib/spoken-text";
 import { pickVoice, prosodyFor } from "../lib/voice-select";
+import { summarizeTimings, type TurnTimings } from "../lib/turn-timing";
 
 
 const BEATS = [
@@ -169,6 +170,20 @@ function Canvas() {
   const kokoroDoneRef = useRef(true);
   const kokoroFallbackIdsRef = useRef<Set<number>>(new Set());
   const [voiceDiag, setVoiceDiag] = useState("");
+  // Turn timing: stamped as a turn flows, one summary line per turn.
+  const turnTimingRef = useRef<TurnTimings>({});
+  const kokoroGenMsRef = useRef<number | undefined>(undefined);
+
+  function stampTiming(field: keyof TurnTimings, value?: number) {
+    if (turnTimingRef.current[field] === undefined) {
+      (turnTimingRef.current as Record<string, number>)[field as string] =
+        value ?? performance.now();
+    }
+  }
+
+  function logToolCall() {
+    stampTiming("firstToolCall");
+  }
 
   function isSpeechActive(): boolean {
     if (typeof window !== "undefined" && Boolean(window.speechSynthesis?.speaking)) return true;
@@ -251,6 +266,9 @@ function Canvas() {
         } else if (msg.type === "audio" && msg.buffer && msg.id === speakIdRef.current) {
           if (kokoroFallbackIdsRef.current.has(msg.id)) return;
           lastChunkAtRef.current = performance.now();
+          if (kokoroGenMsRef.current === undefined) {
+            kokoroGenMsRef.current = lastChunkAtRef.current - speechStartedAtRef.current;
+          }
           void playKokoroChunk(msg.buffer);
         } else if (msg.type === "done" && msg.id === speakIdRef.current) {
           kokoroDoneRef.current = true;
@@ -382,6 +400,7 @@ function Canvas() {
     }
     stateRef.current = after;
     setState(after);
+    stampTiming("firstPaint");
     const cue = cueForChange(before, after);
     if (cue) playCue(cue);
     return describeChange(before, after);
@@ -481,6 +500,7 @@ function Canvas() {
   function handleLiveTranscript(text: string) {
     const trimmed = text.trim();
     if (!trimmed) return;
+    stampTiming("firstPartial");
     setLiveTranscript(trimmed);
     applyLiveIntent(trimmed, "live");
   }
@@ -502,6 +522,7 @@ function Canvas() {
       },
     ],
     handler: async ({ jurisdiction }) => {
+      logToolCall();
       return commit("jurisdiction", (s) => applyJurisdiction(s, jurisdiction ?? null));
     },
     render: () => <></>,
@@ -528,6 +549,7 @@ function Canvas() {
       },
     ],
     handler: async ({ founder, percent }) => {
+      logToolCall();
       const base = withDefaults(stateRef.current);
       const index = resolveFounderIndex(base.founders, founder ?? "");
       if (index < 0) {
@@ -547,6 +569,7 @@ function Canvas() {
       { name: "done", type: "boolean", description: "True to check, false to uncheck.", required: true },
     ],
     handler: async ({ itemId, done }) => {
+      logToolCall();
       return commit("checklist", (s) => applyChecklistItem(s, itemId, Boolean(done)));
     },
   });
@@ -560,6 +583,7 @@ function Canvas() {
       { name: "done", type: "boolean", description: "True to check, false to uncheck.", required: true },
     ],
     handler: async ({ itemIds, done }) => {
+      logToolCall();
       const ids = Array.isArray(itemIds) ? itemIds.map(String) : [];
       return commit("checklist", (s) => applyChecklistItems(s, ids, Boolean(done)));
     },
@@ -571,6 +595,7 @@ function Canvas() {
       "Reverse the last canvas change (voice, slider, or click). Call when the user says undo that, revert, or go back. Never claim an undo without calling this.",
     parameters: [],
     handler: async () => {
+      logToolCall();
       return undoLast();
     },
   });
@@ -581,6 +606,7 @@ function Canvas() {
       "Reset the canvas only (selection, equity, checklist, cards, lawyer package) and keep the chat history. Call when the user says start over or fresh start. Never claim a reset without calling this.",
     parameters: [],
     handler: async () => {
+      logToolCall();
       return commit("start-over", (s) => applyStartOver(s));
     },
   });
@@ -594,6 +620,7 @@ function Canvas() {
       { name: "focus", type: "string", description: "Fictional place to DEMO-highlight, if one fits; otherwise omit.", required: false },
     ],
     handler: async ({ question, focus }) => {
+      logToolCall();
       const cheapest = cheapestByNumber(DEMO_JURISDICTIONS);
       const focusName = focus ?? cheapest.name;
       const result = commit("compare", (s) =>
@@ -612,6 +639,7 @@ function Canvas() {
       "Mark the first not-yet-done filing-checklist item done and move the walk forward. Use as the user answers each checklist step.",
     parameters: [],
     handler: async () => {
+      logToolCall();
       return commit("checklist", (s) => applyAdvanceChecklist(s));
     },
   });
@@ -628,6 +656,7 @@ function Canvas() {
       { name: "question", type: "string", description: "The user's rollover question.", required: false },
     ],
     handler: async ({ factId, question }) => {
+      logToolCall();
       return commit("rollover", (s) => applyRolloverFact(s, factId ?? "", question));
     },
   });
@@ -649,6 +678,7 @@ function Canvas() {
       { name: "question", type: "string", description: "The user's question.", required: false },
     ],
     handler: async ({ factIds, question }) => {
+      logToolCall();
       const ids = Array.isArray(factIds) ? factIds.map(String) : [];
       return commit("filingsteps", (s) => applyFilingSteps(s, ids, question));
     },
@@ -667,6 +697,7 @@ function Canvas() {
       "Prepare the lawyer-summary package (jurisdiction choice, equity split, checklist state) and display it on the canvas. Use when the user asks to prepare, show, or send-to-lawyer the summary. This only prepares the package for the user to forward; it never sends email.",
     parameters: [],
     handler: async () => {
+      logToolCall();
       return commit("summary", (s) => applyLawyerSummary(s));
     },
   });
@@ -695,6 +726,9 @@ function Canvas() {
   async function sendToAgent(text: string, fromVoice = false) {
     const trimmed = text.trim();
     if (!trimmed || sending || isLoading) return;
+    if (turnTimingRef.current.micStart === undefined) {
+      turnTimingRef.current = { micStart: performance.now() };
+    }
     cancelSpeech();
     setDockOpen(false);
     clearTurnErrors();
@@ -897,6 +931,7 @@ function Canvas() {
     setNotice("Transcribing…");
     try {
       const transcript = await fetchTranscript(buf);
+      stampTiming("finalTranscript");
       setNotice("");
       await sendToAgent(transcript, true);
     } catch (error) {
@@ -982,6 +1017,8 @@ function Canvas() {
   }
 
   async function startRecording() {
+    turnTimingRef.current = { micStart: performance.now() };
+    kokoroGenMsRef.current = undefined;
     // Barge-in: the host stops talking the moment the user speaks.
     cancelSpeech();
     unlockedRef.current = true;
@@ -1212,6 +1249,14 @@ function Canvas() {
       } else {
         setLivePreview((p) => (p ? { ...p, status: "confirmed" } : p));
       }
+      // One timing line per completed turn; Kokoro gen time lands here
+      // if speech synthesis already started, otherwise stays blank.
+      turnTimingRef.current.done = performance.now();
+      turnTimingRef.current.hostChars = hostPrompt.text.length;
+      if (kokoroGenMsRef.current !== undefined) {
+        turnTimingRef.current.kokoroGenMs = kokoroGenMsRef.current;
+      }
+      console.info(`[vvb-timing] turn ${summarizeTimings(turnTimingRef.current)}`);
     }
     wasLoadingRef.current = isLoading;
     // eslint-disable-next-line react-hooks/exhaustive-deps
