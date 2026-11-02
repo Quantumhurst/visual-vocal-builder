@@ -50,6 +50,8 @@ export type SharedState = {
   filingStepsNote: string; // set when a filing-steps answer has no grounded fact
   lawyerPackage: string; // agent- or button-prepared package; "" when none
   lawyerNote: string;
+  focusJurisdiction: string | null; // DEMO highlight for comparison; never the user's pick
+  focusReason: string; // short host note for the DEMO highlight
 };
 
 export type { FounderShare };

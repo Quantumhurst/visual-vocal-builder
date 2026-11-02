@@ -3,7 +3,7 @@ import { setFounderShare } from "./equity.ts";
 import type { FounderShare } from "./equity.ts";
 import { FILING_STEPS_PACK, findFact, findFactById } from "./knowledge.ts";
 import { buildLawyerSummary } from "./lawyer-summary.ts";
-import type { SharedState } from "./state.ts";
+import type { JurisdictionRow, SharedState } from "./state.ts";
 
 export const INITIAL_STATE: SharedState = {
   currentBeat: "jurisdiction",
@@ -19,6 +19,8 @@ export const INITIAL_STATE: SharedState = {
   filingStepsNote: "",
   lawyerPackage: "",
   lawyerNote: "",
+  focusJurisdiction: null,
+  focusReason: "",
 };
 
 export function withDefaults(s: Partial<SharedState> | null | undefined): SharedState {
@@ -112,6 +114,58 @@ export function applyFilingSteps(state: SharedState, factIds: string[], question
       facts: found.map((entry) => ({ factId: entry.fact.factId, topic: entry.fact.topic, text: entry.fact.text })),
     },
     filingStepsNote: "",
+  };
+}
+
+export function applyChecklistItems(state: SharedState, itemIds: string[], done: boolean): SharedState {
+  const ids = new Set((Array.isArray(itemIds) ? itemIds : []).map(String));
+  return {
+    ...state,
+    currentBeat: "checklist",
+    checklist: state.checklist.map((item) => (ids.has(item.id) ? { ...item, done } : item)),
+  };
+}
+
+export function applyFocusJurisdiction(state: SharedState, name: string | null, reason: string): SharedState {
+  // DEMO highlight only — never touches selectedJurisdiction.
+  const match = name
+    ? DEMO_JURISDICTIONS.find((row) => row.jurisdiction.toLowerCase() === name.toLowerCase())
+    : undefined;
+  return {
+    ...state,
+    focusJurisdiction: match ? match.jurisdiction : null,
+    focusReason: match ? reason : "",
+  };
+}
+
+export function applyStartOver(state: SharedState): SharedState {
+  // Canvas only (selection, equity, checklist, cards, lawyer package);
+  // chat history lives outside SharedState, and the transcript line is kept.
+  return { ...INITIAL_STATE, transcript: state.transcript };
+}
+
+export function cheapestByNumber(rows: JurisdictionRow[]): {
+  name: string;
+  fee: string;
+  sameCurrency: boolean;
+} {
+  let best: { name: string; fee: string; value: number } | null = null;
+  const currencies = new Set<string>();
+  for (const row of rows) {
+    const m = row.filingFee.match(/([\d.]+)\s*(million)?/i);
+    const value = m ? parseFloat(m[1]) * (m[2] ? 1_000_000 : 1) : Number.POSITIVE_INFINITY;
+    const currency = row.filingFee
+      .replace(/^DEMO\s+/i, "")
+      .replace(/^[\d.]+\s*(million\s+)?/i, "")
+      .trim()
+      .toLowerCase();
+    if (currency) currencies.add(currency);
+    if (!best || value < best.value) best = { name: row.jurisdiction, fee: row.filingFee, value };
+  }
+  return {
+    name: best?.name ?? "",
+    fee: best?.fee ?? "",
+    sameCurrency: currencies.size <= 1,
   };
 }
 
