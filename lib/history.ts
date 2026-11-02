@@ -5,9 +5,12 @@ export const HISTORY_CAP = 20;
 export const COALESCE_MS = 600;
 
 // Deep equality for undo purposes. The transcript line is excluded:
-// undo never rewinds what the user said.
+// undo never rewinds what the user said. equityNote is excluded too:
+// it is a derived label, so a live preview (via "voice-live") followed
+// by the agent's confirming commit (via "voice") is ONE undo step, not
+// a phantom note-only step that undo would silently "restore".
 export function statesEqual(a: SharedState, b: SharedState): boolean {
-  const strip = (s: SharedState) => ({ ...s, transcript: "" });
+  const strip = (s: SharedState) => ({ ...s, transcript: "", equityNote: "" });
   return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
 }
 

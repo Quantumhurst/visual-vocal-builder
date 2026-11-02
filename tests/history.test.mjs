@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pushHistory, popHistory, HISTORY_CAP, COALESCE_MS } from "../lib/history.ts";
+import { pushHistory, popHistory, statesEqual, HISTORY_CAP, COALESCE_MS } from "../lib/history.ts";
 import { withDefaults, applyEquity } from "../lib/state-updates.ts";
 
 const base = () => withDefaults(null);
@@ -45,4 +45,18 @@ test("identical state (ignoring transcript) is skipped", () => {
   let stack = pushHistory([], s0, "a", 1000);
   stack = pushHistory(stack, { ...s0, transcript: "hello" }, "b", 2000);
   assert.equal(stack.length, 1);
+});
+
+test("equityNote-only difference is equal: preview + agent confirm = one undo step", () => {
+  const s0 = base();
+  const preview = applyEquity(s0, 1, 70, "voice-live");
+  const confirmed = applyEquity(s0, 1, 70, "voice");
+  assert.notEqual(preview.equityNote, confirmed.equityNote);
+  assert.ok(statesEqual(preview, confirmed));
+  // Commit path: preview pushes the pre-change state; the confirming
+  // commit must not push a second, note-only entry for undo to land on.
+  let stack = pushHistory([], s0, "live-preview", 1000);
+  assert.equal(stack.length, 1);
+  const { entry } = popHistory(stack);
+  assert.equal(entry.state.founders[1].percent, 40);
 });

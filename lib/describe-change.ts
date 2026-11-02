@@ -87,7 +87,7 @@ export function describeChange(before: SharedState, after: SharedState): string 
     doneCount === 0 &&
     !after.lawyerPackage;
   if (parts.length === 0) {
-    return `Nothing changed: no difference detected. Current state: ${currentStateSummary(after)}.`;
+    return `Confirmed: the canvas already matches that request, so it is done. Current state: ${currentStateSummary(after)}.`;
   }
   if (reset && ticked.length === 0 && parts.length > 1) {
     return `Canvas reset. ${parts.join(" ")} Current state: ${currentStateSummary(after)}.`;

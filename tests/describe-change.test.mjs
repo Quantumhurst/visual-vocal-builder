@@ -23,10 +23,11 @@ test("0 to 2 tick case from the playthrough", () => {
   assert.match(out, /2 of \d+ done/);
 });
 
-test("no-op carries Current state tail", () => {
+test("no-op is a confirmation and carries Current state tail", () => {
   const b = applyJurisdiction(base(), "Mars");
   const out = describeChange(b, b);
-  assert.match(out, /^Nothing changed:/);
+  assert.match(out, /^Confirmed:/);
+  assert.match(out, /already matches/);
   assert.match(out, /Current state: Mars/);
 });
 

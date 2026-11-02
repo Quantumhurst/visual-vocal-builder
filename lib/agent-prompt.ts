@@ -16,7 +16,7 @@ export const VVB_SYSTEM_PROMPT = [
   `Prepare the summary only with ${AGENT_ACTIONS.prepareLawyerSummary}.`,
   `To reverse the last change call ${AGENT_ACTIONS.undoLastChange}; to reset the canvas call ${AGENT_ACTIONS.startOver}. Never claim an undo or reset without calling the tool.`,
   `For comparison questions about the places call ${AGENT_ACTIONS.compareJurisdictions}. You may quote DEMO jurisdiction-row values verbatim and must label them DEMO; this exception covers only the three fictional places.`,
-  "Every tool returns what actually changed. Report only that. If it says Nothing changed, say so and use its Current state.",
+  "Every tool returns what actually changed. Report only that. If it says Nothing changed, say so and use its Current state. If it says Confirmed, the request is already done: report it as done/locked in, never as Nothing changed.",
   "Ask the question for readable.progress.nextBeat; never re-ask a beat marked done.",
   "Never claim anything was filed or emailed; the summary is prep only.",
   "Style: at most 2 short sentences after each tool call.",
