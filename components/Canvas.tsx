@@ -35,6 +35,7 @@ import { resolveHostPrompt, shortFounderNames } from "../lib/host-questions";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
 import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary } from "../lib/state-updates";
 import { concatFloat32, toPcm16k } from "../lib/pcm";
+import { computeSectionScrollTop, firstChangedBeat, shouldAutoScroll, turnResultSignature } from "../lib/scroll";
 import { MAX_PCM_BYTES } from "../lib/request-guard";
 
 
@@ -426,13 +427,37 @@ function Canvas() {
     }
   }
 
-  const prevBeatRef = useRef(view.currentBeat);
-  useEffect(() => {
-    if (prevBeatRef.current === view.currentBeat) return;
-    prevBeatRef.current = view.currentBeat;
-    document.querySelector(`[data-beat="${view.currentBeat}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [view.currentBeat]);
   const hostPrompt = resolveHostPrompt(messages as never, view.currentBeat, shortFounderNames(view.founders), view.selectedJurisdiction);
+  // Auto-scroll to the latest turn: once a turn completes with a new result,
+  // bring the section it changed into view below the sticky latest-turn
+  // header (which keeps the transcript + host reply visible). Fires once
+  // per result signature — never on every render, never mid-stream.
+  const latestTurnRef = useRef<HTMLDivElement | null>(null);
+  const scrolledSignatureRef = useRef<string | null>(null);
+  const resultSignature = turnResultSignature(view, hostPrompt.text);
+  useEffect(() => {
+    if (scrolledSignatureRef.current === null) {
+      scrolledSignatureRef.current = resultSignature;
+      return;
+    }
+    if (!shouldAutoScroll(isLoading, scrolledSignatureRef.current, resultSignature)) return;
+    const previousSignature = scrolledSignatureRef.current;
+    scrolledSignatureRef.current = resultSignature;
+    const beat = firstChangedBeat(previousSignature, resultSignature, view.currentBeat);
+    const scrollToTarget = () => {
+      const el = document.querySelector(`[data-beat="${beat}"]`) as HTMLElement | null;
+      if (!el) return;
+      const elTop = el.getBoundingClientRect().top + window.scrollY;
+      window.scrollTo({ top: computeSectionScrollTop(elTop, el.offsetHeight, window.innerHeight), behavior: "instant" as ScrollBehavior });
+    };
+    scrollToTarget();
+    // One bounded settle pass: Pixi canvases can shift layout just after a
+    // turn lands, which would otherwise strand the scroll short of target.
+    const settle = setTimeout(() => {
+      if (scrolledSignatureRef.current === resultSignature) scrollToTarget();
+    }, 900);
+    return () => clearTimeout(settle);
+  }, [resultSignature, isLoading, view.currentBeat]);
 
   return (
     <main style={{ maxWidth: "900px", margin: "0 auto", padding: "2rem" }}>
@@ -448,6 +473,7 @@ function Canvas() {
         real company. All places and figures below are invented.
       </p>
 
+      <div ref={latestTurnRef} data-testid="latest-turn" style={{ position: "sticky", top: "0.5rem", zIndex: 30, background: "#0b1026", borderRadius: "12px" }}>
       <section aria-label="Voice input">
         <button onClick={toggleRecording}>
           {recording ? "Stop recording" : "Speak (mic)"}
@@ -498,6 +524,7 @@ function Canvas() {
         <p data-testid="host-prompt-text">{hostPrompt.text}</p>
         <p>Host speech only — not a grounded fact card. Verify facts on the grounded cards below.</p>
       </section>
+      </div>
 
       <TrustStrip result={verification} />
 
