@@ -146,6 +146,13 @@ function Canvas() {
   // Game layer: sound cues + spoken host + mission celebration.
   const [soundOn, setSoundOn] = useState(true);
   const [voiceOn, setVoiceOn] = useState(true);
+  // Continuous conversation (OpenClaw pattern): talk, agent answers
+  // out loud, mic re-opens by itself. On by default; a manual Stop
+  // ends it. The full control set lives in a pop-out, not the bar.
+  const [convoOn, setConvoOn] = useState(true);
+  const [convoActive, setConvoActive] = useState(false);
+  const convoRef = useRef(false);
+  const [dockOpen, setDockOpen] = useState(false);
   const [voiceEngine, setVoiceEngine] = useState<"kokoro" | "native">("kokoro");
   const [kokoroStatus, setKokoroStatus] = useState("not loaded yet");
   const kokoroWorkerRef = useRef<Worker | null>(null);
@@ -628,11 +635,27 @@ function Canvas() {
     commit("click", (s) => ({ ...s, selectedJurisdiction: jurisdiction }));
   }
 
-  async function sendToAgent(text: string) {
+  async function sendToAgent(text: string, fromVoice = false) {
     const trimmed = text.trim();
     if (!trimmed || sending || isLoading) return;
     cancelSpeech();
+    setDockOpen(false);
     clearTurnErrors();
+    // Immediate acknowledgment (OpenClaw pattern): a one-breath spoken
+    // "on it" from the neural voice while the model thinks, so a slow
+    // turn never feels like dead air. The host answer replaces it.
+    if (fromVoice && voiceOn && kokoroReadyRef.current) {
+      const intent = parseLiveIntent(trimmed);
+      const ack =
+        intent?.kind === "jurisdiction"
+          ? `Picking ${intent.jurisdiction}.`
+          : intent?.kind === "equity"
+            ? "Adjusting the split."
+            : intent?.kind === "checklist-advance"
+              ? "Building that now."
+              : "On it.";
+      kokoroSpeak(ack);
+    }
     // Paint instantly, confirm asynchronously: a typed/spoken command
     // moves the canvas now; the agent turn below is the authority and
     // corrects the preview if it heard something different.
@@ -818,7 +841,7 @@ function Canvas() {
     try {
       const transcript = await fetchTranscript(buf);
       setNotice("");
-      await sendToAgent(transcript);
+      await sendToAgent(transcript, true);
     } catch (error) {
       setNotice("");
       setTranscribeFailure(
@@ -880,9 +903,28 @@ function Canvas() {
 
   async function toggleRecording() {
     if (recording) {
+      // A manual stop ends the conversation, not just the turn.
+      convoRef.current = false;
+      setConvoActive(false);
       await finishRecording();
       return;
     }
+    if (convoRef.current && (transcribing || sending || isLoading)) {
+      // Ending a conversation while the agent is mid-turn: just stop
+      // re-arming the mic; the current turn finishes on its own.
+      convoRef.current = false;
+      setConvoActive(false);
+      return;
+    }
+    if (convoOn) {
+      convoRef.current = true;
+      setConvoActive(true);
+    }
+    setDockOpen(false);
+    await startRecording();
+  }
+
+  async function startRecording() {
     // Barge-in: the host stops talking the moment the user speaks.
     cancelSpeech();
     unlockedRef.current = true;
@@ -988,6 +1030,39 @@ function Canvas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoading, hostPrompt.text, hostPrompt.source, voiceOn]);
 
+  // Conversation loop: when the agent has finished speaking, re-open
+  // the mic automatically so the talk never "just ends". Any error
+  // pauses the loop instead of retrying into a wall.
+  useEffect(() => {
+    if (!convoActive || recording || transcribing || sending || isLoading) return;
+    if (turnError || transcribeFailure) {
+      const t = setTimeout(() => {
+        convoRef.current = false;
+        setConvoActive(false);
+        setNotice("Conversation paused after an error — press Speak (mic) to resume.");
+      }, 0);
+      return () => clearTimeout(t);
+    }
+    let quietPolls = 0;
+    let waitedMs = 0;
+    const timer = setInterval(() => {
+      waitedMs += 400;
+      const speaking =
+        (typeof window !== "undefined" && Boolean(window.speechSynthesis?.speaking)) ||
+        kokoroSourcesRef.current.size > 0;
+      quietPolls = speaking ? 0 : quietPolls + 1;
+      // Two quiet polls (~0.8s of silence after speech) and we listen
+      // again. If nothing was spoken at all, the same rule re-arms.
+      if (quietPolls >= 2) {
+        clearInterval(timer);
+        if (convoRef.current) void startRecording();
+      }
+      if (waitedMs > 25000) clearInterval(timer);
+    }, 400);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convoActive, recording, transcribing, sending, isLoading, turnError, transcribeFailure]);
+
   // Errors get a dull buzz, never silence.
   useEffect(() => {
     if (turnError || transcribeFailure) playCue("error");
@@ -1024,24 +1099,8 @@ function Canvas() {
   const [elapsed, setElapsed] = useState(0);
   const busySinceRef = useRef<number | null>(null);
   const turnPhase = recording ? "recording" : transcribing ? "transcribing" : sending ? "sending" : isLoading ? "agent-busy" : "idle";
-  const micLabel = turnPhase === "recording" ? "Stop recording" : turnPhase === "transcribing" ? "Transcribing…" : turnPhase === "sending" ? "Sending…" : turnPhase === "agent-busy" ? "Agent working…" : "Speak (mic)";
+  const micLabel = turnPhase === "recording" ? (convoActive ? "End conversation" : "Stop recording") : convoActive ? "End conversation" : turnPhase === "transcribing" ? "Transcribing…" : turnPhase === "sending" ? "Sending…" : turnPhase === "agent-busy" ? "Agent working…" : "Speak (mic)";
   const busy = turnPhase === "sending" || turnPhase === "agent-busy";
-  // While talking or waiting, the sticky dock slims to a single bar
-  // (mic + status + live line) so it never covers the graphics it is
-  // supposed to be guiding the user to. Full controls return at Ready.
-  const [recentDone, setRecentDone] = useState(false);
-  const wasBusyRef = useRef(false);
-  useEffect(() => {
-    if (wasBusyRef.current && !busy) {
-      setRecentDone(true);
-      const t = setTimeout(() => setRecentDone(false), 5000);
-      wasBusyRef.current = busy;
-      return () => clearTimeout(t);
-    }
-    wasBusyRef.current = busy;
-    return undefined;
-  }, [busy]);
-  const dockCompact = recording || transcribing || busy || recentDone;
   useEffect(() => {
     if (!busy) {
       busySinceRef.current = null;
@@ -1154,11 +1213,20 @@ function Canvas() {
         real company. All places and figures below are invented.
       </p>
 
-      <div ref={latestTurnRef} data-testid="latest-turn" data-compact={dockCompact ? "true" : "false"} style={{ position: "sticky", top: "0.5rem", zIndex: 30, background: "#0b1026", borderRadius: "12px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)" }}>
-      <section aria-label="Voice input" data-testid="voice-input" data-phase={turnPhase} style={dockCompact ? { margin: 0, padding: "0.45rem 0.7rem" } : { margin: 0 }}>
-        <button onClick={toggleRecording} disabled={!recording && (transcribing || sending || isLoading)} data-testid="mic-button">
+      <div ref={latestTurnRef} data-testid="latest-turn" style={{ position: "sticky", top: "0.5rem", zIndex: 30, background: "#0b1026", borderRadius: "12px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)" }}>
+      <section aria-label="Voice input" data-testid="voice-input" data-phase={turnPhase} style={{ margin: 0, padding: "0.45rem 0.7rem", position: "relative" }}>
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+        <button onClick={toggleRecording} disabled={!recording && !convoActive && (transcribing || sending || isLoading)} data-testid="mic-button">
           {micLabel}
         </button>{" "}
+        <span data-testid="convo-status" role="status">{convoActive ? (recording ? "Conversation live — listening" : busy ? "Conversation live — agent is answering" : "Conversation live") : "Conversation off — press Speak to start"}</span>
+        <span data-testid="turn-phase" role="status">{turnPhase === "recording" ? "Recording…" : turnPhase === "transcribing" ? "Transcribing…" : turnPhase === "sending" ? "Sending…" : turnPhase === "agent-busy" ? `Agent working… ${elapsed}s` : "Ready"}</span>
+        <button type="button" data-testid="dock-expand" aria-expanded={dockOpen} onClick={() => setDockOpen((v) => !v)}>
+          {dockOpen ? "Close controls" : "Controls"}
+        </button>
+        </div>
+        {dockOpen ? (
+        <div data-testid="dock-popout" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, background: "#0b1026", border: "1px solid #2c376e", borderRadius: "12px", padding: "0.8rem", boxShadow: "0 18px 40px rgba(0,0,0,0.6)", zIndex: 40 }}>
         <input
           value={typed}
           disabled={recording || transcribing || sending || isLoading}
@@ -1181,7 +1249,6 @@ function Canvas() {
         >
           {busy ? "Agent working…" : "Send to agent"}
         </button>
-        <span data-testid="turn-phase" role="status">{turnPhase === "recording" ? "Recording…" : turnPhase === "transcribing" ? "Transcribing…" : turnPhase === "sending" ? "Sending…" : turnPhase === "agent-busy" ? `Agent working… ${elapsed}s` : "Ready"}</span>{" "}
         <button
           type="button"
           data-testid="undo-button"
@@ -1190,7 +1257,7 @@ function Canvas() {
         >
           Undo
         </button>{" "}
-        <span style={dockCompact ? { display: "none" } : undefined}><button
+        <span><button
           type="button"
           data-testid="restart-conversation"
           onClick={() => window.location.reload()}
@@ -1216,6 +1283,21 @@ function Canvas() {
         >
           {voiceOn ? "Agent voice: on" : "Agent voice: off"}
         </button>{" "}
+        <button
+          type="button"
+          data-testid="convo-toggle"
+          aria-pressed={convoOn}
+          onClick={() => {
+            const next = !convoOn;
+            setConvoOn(next);
+            if (!next) {
+              convoRef.current = false;
+              setConvoActive(false);
+            }
+          }}
+        >
+          {convoOn ? "Conversation: auto-listen on" : "Conversation: auto-listen off"}
+        </button>{" "}
         <label>
           Voice{" "}
           <select
@@ -1231,10 +1313,10 @@ function Canvas() {
           </select>
         </label>{" "}
         <span data-testid="kokoro-status" role="status">Neural voice: {kokoroStatus}</span></span>
-        {!dockCompact ? <p data-testid="recording-hint">Say one short command — it paints live as you speak, and sends itself when you pause. Stop recording still works if you prefer it.</p> : null}
-        {!dockCompact ? <p data-testid="flow-status" role="status">{flowStatus}</p> : null}
+        <p data-testid="recording-hint">Say one short command — it paints live as you speak, and sends itself when you pause. Stop recording still works if you prefer it.</p>
+        <p data-testid="flow-status" role="status">{flowStatus}</p>
         {recording || liveTranscript || livePreview ? (
-          <div data-testid="live-voice-panel" style={dockCompact ? { marginTop: "0.3rem" } : { border: "1px solid #6f83e8", borderRadius: "10px", padding: "0.6rem 0.8rem", marginTop: "0.5rem" }}>
+          <div data-testid="live-voice-panel" style={{ marginTop: "0.3rem" }}>
             {recording ? (
               <div data-testid="mic-meter" aria-label={`Microphone level, recording ${recordSeconds} seconds`}>
                 <div style={{ display: "flex", gap: "3px", alignItems: "flex-end", height: "22px" }} aria-hidden="true">
@@ -1257,7 +1339,7 @@ function Canvas() {
             ) : null}
           </div>
         ) : null}
-        {!dockCompact ? (<div aria-label="Example commands" style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+        <div aria-label="Example commands" style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
           <span>Try:</span>
           {EXAMPLE_COMMANDS.map((chip) => (
             <button
@@ -1268,6 +1350,7 @@ function Canvas() {
               {chip.label}
             </button>
           ))}
+        </div>
         </div>) : null}
         {busy && !recording ? <p data-testid="agent-busy" role="status">Agent working…</p> : null}
         {turnError ? <p data-testid="turn-error" role="alert">{turnError}</p> : null}
@@ -1291,8 +1374,8 @@ function Canvas() {
             )}
           </div>
         ) : null}
-        {notice && !dockCompact ? <p>{notice}</p> : null}
-        {shownTranscript && !dockCompact ? (
+        {notice ? <p>{notice}</p> : null}
+        {shownTranscript && dockOpen ? (
           <p data-testid="last-transcript">
             Last transcript: <q>{shownTranscript}</q>
           </p>
