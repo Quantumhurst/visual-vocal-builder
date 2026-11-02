@@ -194,7 +194,10 @@ async function oneRun(browser, idx) {
     // Game layer (trial only; baseline main records these as failures).
     G4: s2.oscCount > 0 && s2.hasSoundToggle,
     G5: s1.spoken.length > 0 && s1.spoken[s1.spoken.length - 1] === spokenHostText(s1.host) && s1.hasVoiceToggle,
-    G6: s1.missionBeat === "equity" && s6.missionBeat === "rollover",
+    // Mission tracks the next incomplete beat: equity after the Mars
+    // pick, checklist after equity, back to jurisdiction after the
+    // two undos + start-over reset the board.
+    G6: s1.missionBeat === "equity" && s2.missionBeat === "checklist" && s8.missionBeat === "jurisdiction",
   };
   await page.close();
   return { run: idx, turns, checks, httpErrors };
