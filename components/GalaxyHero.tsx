@@ -59,7 +59,7 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     (async () => {
-      const { Application, Container, Graphics, Text, TextStyle } =
+      const { Application, Circle, Container, Graphics, Text, TextStyle } =
         await import("pixi.js");
       if (cancelled) return;
       const app = new Application();
@@ -121,6 +121,7 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
         label.anchor.set(0.5, 0);
         label.y = planet.radius + 10;
         node.addChild(label);
+        node.hitArea = new Circle(0, 0, planet.radius + 16);
         node.eventMode = "static";
         node.cursor = "pointer";
         node.on("pointerover", () => { hoverRef.current = i; redrawRef.current?.(); });
@@ -164,6 +165,7 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
         const sel = highlightIndex(names, selectedRef.current);
         for (let i = 0; i < planetNodes.length; i++) {
           const { halo, body, planet } = planetNodes[i];
+          if (reduced) planetNodes[i].node.scale.set(i === hoverRef.current ? 1.15 : i === sel ? 1.1 : 1);
           const glowing = i === sel || i === hoverRef.current;
           halo.clear();
           if (glowing) {
@@ -193,6 +195,12 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
             g.alpha = s.alpha * (0.65 + 0.35 * Math.sin(elapsedMs * s.twinkleSpeed + s.phase));
           }
           const sel = highlightIndex(names, selectedRef.current);
+          for (let i = 0; i < planetNodes.length; i++) {
+            const entry = planetNodes[i];
+            const target = i === hoverRef.current ? 1.15 : i === sel ? 1.1 : 1;
+            const cur = entry.node.scale.x;
+            entry.node.scale.set(cur + (target - cur) * 0.18, cur + (target - cur) * 0.18);
+          }
           for (let i = 0; i < planetNodes.length; i++) {
             const { pulse, planet } = planetNodes[i];
             if (i === sel) {

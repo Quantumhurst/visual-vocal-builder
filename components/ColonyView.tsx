@@ -44,6 +44,8 @@ export default function ColonyView({ selected, checklist, founders, lawyerPackag
   const burstRef = useRef<((x: number) => void) | null>(null);
   const stateRef = useRef({ selected, checklist, founders, lawyerPackage });
   const prevBuiltRef = useRef<number>(-1);
+  const prevSelectedRef = useRef<string | null>(null);
+  const [landing, setLanding] = useState<string | null>(null);
   const [useFallback, setUseFallback] = useState<boolean>(
     () => typeof window !== "undefined" && shouldUseDomFallback(detectWebGL()),
   );
@@ -54,9 +56,16 @@ export default function ColonyView({ selected, checklist, founders, lawyerPackag
   const launch = launchState(checklist, lawyerPackage);
 
   // Shared-state changes redraw the board; a newly built structure bursts.
+  // A new home-base selection lands the pad: burst on the first structure.
   useEffect(() => {
     stateRef.current = { selected, checklist, founders, lawyerPackage };
     redrawRef.current?.();
+    if (selected && prevSelectedRef.current !== selected) {
+      setLanding(selected);
+      const pad = structures[0];
+      if (pad) burstRef.current?.(pad.x * WIDTH);
+    }
+    prevSelectedRef.current = selected;
     if (prevBuiltRef.current >= 0 && progress.built > prevBuiltRef.current) {
       const idx = structures.map((s, i) => (s.built ? i : -1)).filter((i) => i >= 0).pop() ?? -1;
       if (idx >= 0) burstRef.current?.(structures[idx].x * WIDTH);
@@ -161,11 +170,12 @@ export default function ColonyView({ selected, checklist, founders, lawyerPackag
 
       const drawStructure = (g: InstanceType<typeof Graphics>, kind: string, built: boolean, st: typeof stateRef.current) => {
         const pal = colonyPalette(st.selected);
-        const alpha = built ? 1 : 0.22;
+        const landed = kind === "landingPad" && Boolean(st.selected);
+        const alpha = built || landed ? 1 : 0.22;
         g.clear();
         if (kind === "landingPad") {
           g.ellipse(0, 0, 52, 10);
-          g.fill({ color: pal.accent, alpha: built ? 0.9 : 0.25 });
+          g.fill({ color: pal.accent, alpha: built || landed ? 0.9 : 0.25 });
           g.rect(-2, -34, 4, 34);
           g.fill({ color: 0xdbe4ff, alpha });
           g.poly([2, -34, 20, -29, 2, -24]);
@@ -325,6 +335,12 @@ export default function ColonyView({ selected, checklist, founders, lawyerPackag
         Colony built: {progress.built} of {progress.total} structures ({progress.percent}%)
         {" · "}Launch: {launch === "launched" ? "launched" : launch === "ready" ? "ready on the pad" : "not ready"}
       </p>
+      {landing ? (
+        <p data-testid="colony-landing" data-selected={landing} role="status" style={{ display: "inline-block", border: "2px solid #ffd166", borderRadius: "999px", padding: "0.25rem 0.75rem", animation: "colonyLandingPulse 0.9s ease-in-out 3" }}>
+          <style>{`@keyframes colonyLandingPulse { 0% { box-shadow: 0 0 0 0 rgba(255,209,102,0.8); } 100% { box-shadow: 0 0 0 14px rgba(255,209,102,0); } }`}</style>
+          Landing on {landing} — landing pad building
+        </p>
+      ) : null}
 
       {useFallback ? (
         <div role="img" aria-label="Static colony board" style={{ background: "#0b1026", padding: "1rem", borderRadius: "8px" }}>

@@ -87,6 +87,11 @@ function Canvas() {
   const [recording, setRecording] = useState(false);
   const [typed, setTyped] = useState("");
   const [notice, setNotice] = useState("");
+  const [sending, setSending] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [lastTranscript, setLastTranscript] = useState("");
+  const [ack, setAck] = useState("");
+  const [turnError, setTurnError] = useState("");
   const audioContextRef = useRef<AudioContext | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -269,18 +274,47 @@ function Canvas() {
     },
   });
 
+  // One selection path for planet clicks, table rows, and button picks.
+  // Re-picking the current home base is never silent: it confirms aloud.
+  function handleSelectJurisdiction(jurisdiction: string) {
+    if (view.selectedJurisdiction && view.selectedJurisdiction.toLowerCase() === jurisdiction.toLowerCase()) {
+      setAck(`${jurisdiction} again — confirming ${jurisdiction} as your home base.`);
+    } else {
+      setAck("");
+    }
+    setTurnError("");
+    setState((prev) => ({ ...withDefaults(prev), selectedJurisdiction: jurisdiction }));
+  }
+
   async function sendToAgent(text: string) {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed || sending || isLoading) return;
+    setLastTranscript(trimmed);
     setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
+    const sel = view.selectedJurisdiction;
+    const mentioned = DEMO_JURISDICTIONS.map((r) => r.jurisdiction).find((name) => trimmed.toLowerCase().includes(name.toLowerCase()));
+    if (sel && mentioned && mentioned.toLowerCase() === sel.toLowerCase()) {
+      setAck(`${sel} again — confirming ${sel} as your home base.`);
+    } else {
+      setAck("");
+    }
+    setTurnError("");
+    pendingTurnRef.current = { signature: turnResultSignature(view, hostPrompt.text), text: trimmed };
+    setSending(true);
     messageIdRef.current += 1;
-    await appendMessage(
-      new TextMessage({
-        id: `msg-${messageIdRef.current}`,
-        role: Role.User,
-        content: trimmed,
-      }),
-    );
+    try {
+      await appendMessage(
+        new TextMessage({
+          id: `msg-${messageIdRef.current}`,
+          role: Role.User,
+          content: trimmed,
+        }),
+      );
+    } catch (error) {
+      setTurnError(`Agent error: ${error instanceof Error ? error.message : "the agent run failed"}. Nothing was changed by that turn — type the command again.`);
+    } finally {
+      setSending(false);
+    }
   }
 
   function cleanupAudio() {
@@ -350,6 +384,7 @@ function Canvas() {
       const blob = new Blob([buf], { type: "audio/L16" });
       const form = new FormData();
       form.append("audio", blob, "recording.pcm");
+      setTranscribing(true);
       setNotice("Transcribing…");
       try {
         const res = await fetch("/api/transcribe", {
@@ -367,6 +402,8 @@ function Canvas() {
         setNotice(
           `Transcribe failed: ${error instanceof Error ? error.message : "unknown error"}`,
         );
+      } finally {
+        setTranscribing(false);
       }
     } finally {
       finishingRef.current = false;
@@ -428,13 +465,36 @@ function Canvas() {
   }
 
   const hostPrompt = resolveHostPrompt(messages as never, view.currentBeat, shortFounderNames(view.founders), view.selectedJurisdiction);
+  const turnPhase = recording ? "recording" : transcribing ? "transcribing" : sending ? "sending" : isLoading ? "agent-busy" : "idle";
+  const micLabel = turnPhase === "recording" ? "Stop recording" : turnPhase === "transcribing" ? "Transcribing…" : turnPhase === "sending" ? "Sending…" : turnPhase === "agent-busy" ? "Agent working…" : "Speak (mic)";
+  const busy = turnPhase === "sending" || turnPhase === "agent-busy";
+  const shownTranscript = lastTranscript || view.transcript;
   // Auto-scroll to the latest turn: once a turn completes with a new result,
   // bring the section it changed into view below the sticky latest-turn
   // header (which keeps the transcript + host reply visible). Fires once
   // per result signature — never on every render, never mid-stream.
   const latestTurnRef = useRef<HTMLDivElement | null>(null);
   const scrolledSignatureRef = useRef<string | null>(null);
+  const pendingTurnRef = useRef<{ signature: string; text: string } | null>(null);
+  const wasLoadingRef = useRef(false);
   const resultSignature = turnResultSignature(view, hostPrompt.text);
+  // No silent turn: a completed turn that changed nothing (and is not a
+  // re-pick, which already acknowledged) surfaces a visible error line.
+  useEffect(() => {
+    if (wasLoadingRef.current && !isLoading && pendingTurnRef.current) {
+      const pending = pendingTurnRef.current;
+      pendingTurnRef.current = null;
+      if (pending.signature === resultSignature) {
+        const sel = view.selectedJurisdiction;
+        const mentioned = DEMO_JURISDICTIONS.map((r) => r.jurisdiction).find((n) => pending.text.toLowerCase().includes(n.toLowerCase()));
+        if (!(sel && mentioned && mentioned.toLowerCase() === sel.toLowerCase())) {
+          setTurnError("Agent finished without changing anything — the turn may have hit a locked thread or an agent error. Nothing was changed; type the command again.");
+        }
+      }
+    }
+    wasLoadingRef.current = isLoading;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading, resultSignature]);
   useEffect(() => {
     if (scrolledSignatureRef.current === null) {
       scrolledSignatureRef.current = resultSignature;
@@ -460,7 +520,7 @@ function Canvas() {
   }, [resultSignature, isLoading, view.currentBeat]);
 
   return (
-    <main style={{ maxWidth: "900px", margin: "0 auto", padding: "2rem" }}>
+    <main style={{ maxWidth: "900px", margin: "0 auto", padding: "1rem 2rem 2rem" }}>
       <h1>Visual Vocal Builder</h1>
       <p>
         <strong>
@@ -474,12 +534,13 @@ function Canvas() {
       </p>
 
       <div ref={latestTurnRef} data-testid="latest-turn" style={{ position: "sticky", top: "0.5rem", zIndex: 30, background: "#0b1026", borderRadius: "12px" }}>
-      <section aria-label="Voice input">
-        <button onClick={toggleRecording}>
-          {recording ? "Stop recording" : "Speak (mic)"}
+      <section aria-label="Voice input" data-testid="voice-input" data-phase={turnPhase}>
+        <button onClick={toggleRecording} disabled={!recording && (transcribing || sending || isLoading)} data-testid="mic-button">
+          {micLabel}
         </button>{" "}
         <input
           value={typed}
+          disabled={recording || transcribing || sending || isLoading}
           onChange={(event) => setTyped(event.target.value)}
           onKeyDown={async (event) => {
             if (event.key === "Enter") {
@@ -491,13 +552,15 @@ function Canvas() {
           style={{ minWidth: "320px" }}
         />{" "}
         <button
+          disabled={recording || transcribing || sending || isLoading || !typed.trim()}
           onClick={async () => {
             await sendToAgent(typed);
             setTyped("");
           }}
         >
-          Send to agent
+          {busy ? "Agent working…" : "Send to agent"}
         </button>
+        <span data-testid="turn-phase" role="status">{turnPhase === "recording" ? "Recording…" : turnPhase === "transcribing" ? "Transcribing…" : turnPhase === "sending" ? "Sending…" : turnPhase === "agent-busy" ? "Agent working…" : "Ready"}</span>
         <div aria-label="Example commands" style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
           <span>Try:</span>
           {EXAMPLE_COMMANDS.map((chip) => (
@@ -510,11 +573,12 @@ function Canvas() {
             </button>
           ))}
         </div>
-        {isLoading ? <p>Agent is working…</p> : null}
+        {busy ? <p data-testid="agent-busy" role="status">Agent working…</p> : null}
+        {turnError ? <p data-testid="turn-error" role="alert">{turnError}</p> : null}
         {notice ? <p>{notice}</p> : null}
-        {view.transcript ? (
-          <p>
-            Last transcript: <q>{view.transcript}</q>
+        {shownTranscript ? (
+          <p data-testid="last-transcript">
+            Last transcript: <q>{shownTranscript}</q>
           </p>
         ) : null}
       </section>
@@ -522,11 +586,24 @@ function Canvas() {
       <section data-testid="host-prompt" aria-label="Host prompt">
         <h2>Host (unverified conversation)</h2>
         <p data-testid="host-prompt-text">{hostPrompt.text}</p>
+        {ack ? <p data-testid="host-ack" role="status">{ack}</p> : null}
         <p>Host speech only — not a grounded fact card. Verify facts on the grounded cards below.</p>
       </section>
       </div>
 
-      <TrustStrip result={verification} />
+      <div data-beat="jurisdiction" data-beat-active={view.currentBeat === "jurisdiction"}>
+      <GalaxyHero
+        rows={view.jurisdictions}
+        selected={view.selectedJurisdiction}
+        onSelect={handleSelectJurisdiction}
+      />
+
+      <JurisdictionTable
+        rows={view.jurisdictions}
+        selected={view.selectedJurisdiction}
+        onSelect={handleSelectJurisdiction}
+      />
+      </div>
 
       <nav data-testid="quest-progress" aria-label="Quest progress">
         <strong>Mission progress:</strong>{" "}
@@ -544,23 +621,7 @@ function Canvas() {
         lawyerPackage={view.lawyerPackage}
       />
 
-      <div data-beat="jurisdiction" data-beat-active={view.currentBeat === "jurisdiction"}>
-      <GalaxyHero
-        rows={view.jurisdictions}
-        selected={view.selectedJurisdiction}
-        onSelect={(jurisdiction) =>
-          setState((prev) => ({ ...withDefaults(prev), selectedJurisdiction: jurisdiction }))
-        }
-      />
-
-      <JurisdictionTable
-        rows={view.jurisdictions}
-        selected={view.selectedJurisdiction}
-        onSelect={(jurisdiction) =>
-          setState((prev) => ({ ...withDefaults(prev), selectedJurisdiction: jurisdiction }))
-        }
-      />
-      </div>
+      <TrustStrip result={verification} />
 
       <div data-beat="equity" data-beat-active={view.currentBeat === "equity"}>
       <EquitySlider
