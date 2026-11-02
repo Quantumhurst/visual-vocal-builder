@@ -34,6 +34,8 @@ import { verifyPaintedCards } from "../lib/verifier";
 import { resolveHostPrompt, shortFounderNames } from "../lib/host-questions";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
 import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary } from "../lib/state-updates";
+import { concatFloat32, toPcm16k } from "../lib/pcm";
+import { MAX_PCM_BYTES } from "../lib/request-guard";
 
 
 const BEATS = [
@@ -84,8 +86,12 @@ function Canvas() {
   const [recording, setRecording] = useState(false);
   const [typed, setTyped] = useState("");
   const [notice, setNotice] = useState("");
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const chunksRef = useRef<Float32Array[]>([]);
+  const finishingRef = useRef(false);
   const messageIdRef = useRef(0);
 
   // THE one shared-state update path for equity (beat 2 invariant).
@@ -276,52 +282,147 @@ function Canvas() {
     );
   }
 
-  async function toggleRecording() {
-    if (recording) {
-      mediaRecorderRef.current?.stop();
-      setRecording(false);
-      return;
+  function cleanupAudio() {
+    try {
+      workletNodeRef.current?.disconnect();
+    } catch {
+      // ignore
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      if (workletNodeRef.current) workletNodeRef.current.port.onmessage = null;
+    } catch {
+      // ignore
+    }
+    workletNodeRef.current = null;
+    try {
+      sourceNodeRef.current?.disconnect();
+    } catch {
+      // ignore
+    }
+    sourceNodeRef.current = null;
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+    const ctx = audioContextRef.current;
+    audioContextRef.current = null;
+    if (ctx && ctx.state !== "closed") {
+      void ctx.close().catch(() => undefined);
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      cleanupAudio();
+    };
+  }, []);
+
+  async function finishRecording() {
+    if (finishingRef.current) return;
+    finishingRef.current = true;
+    setRecording(false);
+    const ctx = audioContextRef.current;
+    const inputRate = ctx?.sampleRate ?? 0;
+    const chunks = chunksRef.current;
+    chunksRef.current = [];
+    cleanupAudio();
+    try {
+      if (!inputRate || inputRate <= 0) {
+        setNotice("Transcribe failed: microphone capture failed (no audio context).");
+        return;
+      }
+      const samples = concatFloat32(chunks);
+      if (samples.length === 0) {
+        setNotice("Transcribe failed: no audio captured.");
+        return;
+      }
+      const pcm = toPcm16k(samples, inputRate);
+      const byteLength = pcm.byteLength;
+      if (byteLength === 0 || byteLength % 2 !== 0) {
+        setNotice("Transcribe failed: invalid PCM audio.");
+        return;
+      }
+      if (byteLength > MAX_PCM_BYTES) {
+        setNotice("Transcribe failed: recording too long (60s max).");
+        return;
+      }
+      const buf = new ArrayBuffer(pcm.byteLength);
+      new Int16Array(buf).set(pcm);
+      const blob = new Blob([buf], { type: "audio/L16" });
+      const form = new FormData();
+      form.append("audio", blob, "recording.pcm");
+      setNotice("Transcribing…");
+      try {
+        const res = await fetch("/api/transcribe", {
+          method: "POST",
+          body: form,
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setNotice(`Transcribe failed: ${data.error ?? res.statusText}`);
+          return;
+        }
+        setNotice("");
+        await sendToAgent(data.transcript ?? "");
+      } catch (error) {
+        setNotice(
+          `Transcribe failed: ${error instanceof Error ? error.message : "unknown error"}`,
+        );
+      }
+    } finally {
+      finishingRef.current = false;
+    }
+  }
+
+  async function toggleRecording() {
+    if (recording) {
+      await finishRecording();
+      return;
+    }
+    let stream: MediaStream | null = null;
+    let ctx: AudioContext | null = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
       });
-      const recorder = new MediaRecorder(stream);
+      mediaStreamRef.current = stream;
+      ctx = new AudioContext();
+      audioContextRef.current = ctx;
+      await ctx.audioWorklet.addModule("/pcm-capture-worklet.js");
+      const node = new AudioWorkletNode(ctx, "pcm-capture");
+      workletNodeRef.current = node;
       chunksRef.current = [];
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) chunksRef.current.push(event.data);
-      };
-      recorder.onstop = async () => {
-        stream.getTracks().forEach((track) => track.stop());
-        const blob = new Blob(chunksRef.current, {
-          type: recorder.mimeType || "audio/webm",
-        });
-        const form = new FormData();
-        form.append("audio", blob, "recording.webm");
-        setNotice("Transcribing…");
-        try {
-          const res = await fetch("/api/transcribe", {
-            method: "POST",
-            body: form,
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            setNotice(`Transcribe failed: ${data.error ?? res.statusText}`);
-            return;
+      finishingRef.current = false;
+      node.port.onmessage = (event: MessageEvent) => {
+        const block = event.data as Float32Array;
+        if (!block || block.length === 0) return;
+        chunksRef.current.push(block);
+        const rate = audioContextRef.current?.sampleRate ?? 0;
+        if (rate > 0) {
+          const total = chunksRef.current.reduce((s, c) => s + c.length, 0);
+          const estBytes = Math.round(total / (rate / 16000)) * 2;
+          if (estBytes > MAX_PCM_BYTES) {
+            void finishRecording();
           }
-          setNotice("");
-          await sendToAgent(data.transcript ?? "");
-        } catch (error) {
-          setNotice(
-            `Transcribe failed: ${error instanceof Error ? error.message : "unknown error"}`,
-          );
         }
       };
-      mediaRecorderRef.current = recorder;
-      recorder.start();
+      const source = ctx.createMediaStreamSource(stream);
+      sourceNodeRef.current = source;
+      source.connect(node);
+      if (ctx.state === "suspended") {
+        await ctx.resume();
+      }
       setRecording(true);
-    } catch {
-      setNotice("Microphone access was not granted.");
+    } catch (error) {
+      cleanupAudio();
+      setRecording(false);
+      const detail =
+        error instanceof Error && error.name !== "NotAllowedError"
+          ? `: ${error.message}`
+          : "";
+      setNotice(
+        detail
+          ? `Microphone capture failed${detail}. Type a command instead.`
+          : "Microphone access was not granted.",
+      );
     }
   }
 
