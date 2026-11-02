@@ -42,6 +42,9 @@ import { clearedVoiceErrors, hasRetryAudio, makeTranscribeFailure, type Transcri
 import { computeSectionScrollTop, firstChangedBeat, shouldAutoScroll, turnResultSignature } from "../lib/scroll";
 import { MAX_PCM_BYTES } from "../lib/request-guard";
 import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, IDLE_ACTIVITY, type VoiceActivity } from "../lib/live-intent";
+import { cueForChange, CUES, type CueName } from "../lib/sound-cues";
+import { missionFor } from "../lib/mission";
+import { spokenHostText } from "../lib/spoken-text";
 
 
 const BEATS = [
@@ -135,16 +138,76 @@ function Canvas() {
   }, [view]);
   const historyRef = useRef<HistoryEntry[]>([]);
   const [historySize, setHistorySize] = useState(0);
+  // Game layer: sound cues + spoken host + mission celebration.
+  const [soundOn, setSoundOn] = useState(true);
+  const [voiceOn, setVoiceOn] = useState(true);
+  const [celebrated, setCelebrated] = useState("");
+  const sfxCtxRef = useRef<AudioContext | null>(null);
+  const unlockedRef = useRef(false);
+  const lastSpokenRef = useRef("");
+  const prevDoneCountRef = useRef(-1);
+
+  // Synthesised cues only (no assets). Browsers refuse audio before a
+  // user gesture, so cues stay silent until the first interaction.
+  function playCue(name: CueName) {
+    if (!soundOn || !unlockedRef.current || typeof window === "undefined") return;
+    try {
+      const ctx = sfxCtxRef.current ?? new AudioContext();
+      sfxCtxRef.current = ctx;
+      if (ctx.state === "suspended") void ctx.resume();
+      const recipe = CUES[name];
+      const t0 = ctx.currentTime;
+      for (const note of recipe.notes) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = recipe.type;
+        osc.frequency.value = note.freq;
+        const start = t0 + note.atMs / 1000;
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(0.12, start + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + note.durMs / 1000);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(start);
+        osc.stop(start + note.durMs / 1000 + 0.05);
+      }
+    } catch {
+      // Sound is garnish; a failed cue must never break a turn.
+    }
+  }
+
+  function cancelSpeech() {
+    try {
+      window.speechSynthesis?.cancel();
+    } catch {
+      // ignore
+    }
+  }
+
+  function speakHost(text: string) {
+    if (!voiceOn || !unlockedRef.current || typeof window === "undefined" || !window.speechSynthesis) return;
+    const spoken = spokenHostText(text);
+    if (!spoken || spoken === lastSpokenRef.current) return;
+    lastSpokenRef.current = spoken;
+    try {
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(spoken);
+      utter.rate = 1.05;
+      window.speechSynthesis.speak(utter);
+    } catch {
+      // Voice is garnish; text guidance always remains on screen.
+    }
+  }
   function commit(label: string, fn: (s: SharedState) => SharedState): string {
     const before = withDefaults(stateRef.current);
     const after = fn(before);
     if (!statesEqual(before, after)) {
-      // eslint-disable-next-line react-hooks/purity -- commit() only runs from handlers/actions, never during render; the timestamp is event time for drag coalescing
       historyRef.current = pushHistory(historyRef.current, before, label, performance.now());
       setHistorySize(historyRef.current.length);
     }
     stateRef.current = after;
     setState(after);
+    const cue = cueForChange(before, after);
+    if (cue) playCue(cue);
     return describeChange(before, after);
   }
   function undoLast(): string {
@@ -157,6 +220,7 @@ function Canvas() {
     const summary = describeChange(current, restored);
     stateRef.current = restored;
     setState(restored);
+    playCue("adjust");
     return `Undid: ${entry.label}. ${summary}`;
   }
 
@@ -455,6 +519,7 @@ function Canvas() {
   async function sendToAgent(text: string) {
     const trimmed = text.trim();
     if (!trimmed || sending || isLoading) return;
+    cancelSpeech();
     clearTurnErrors();
     // Paint instantly, confirm asynchronously: a typed/spoken command
     // moves the canvas now; the agent turn below is the authority and
@@ -706,6 +771,9 @@ function Canvas() {
       await finishRecording();
       return;
     }
+    // Barge-in: the host stops talking the moment the user speaks.
+    cancelSpeech();
+    unlockedRef.current = true;
     clearTurnErrors();
     lastAudioRef.current = null;
     setHasLastAudio(false);
@@ -782,6 +850,46 @@ function Canvas() {
   }
 
   const hostPrompt = resolveHostPrompt(messages as never, view.currentBeat, shortFounderNames(view.founders), view.selectedJurisdiction);
+  const progress = beatProgress(view);
+  const mission = missionFor(view);
+  const doneCount = Object.values(progress.done).filter(Boolean).length;
+
+  // First gesture unlocks audio/speech (browser autoplay policy).
+  useEffect(() => {
+    const unlock = () => {
+      unlockedRef.current = true;
+    };
+    window.addEventListener("pointerdown", unlock);
+    window.addEventListener("keydown", unlock);
+    return () => {
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+    };
+  }, []);
+
+  // The agent talks back: speak its latest line once a turn completes.
+  useEffect(() => {
+    if (!isLoading && hostPrompt.source === "agent") speakHost(hostPrompt.text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading, hostPrompt.text, hostPrompt.source, voiceOn]);
+
+  // Errors get a dull buzz, never silence.
+  useEffect(() => {
+    if (turnError || transcribeFailure) playCue("error");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turnError, transcribeFailure]);
+
+  // Beat completion celebrates on the mission banner.
+  useEffect(() => {
+    if (prevDoneCountRef.current >= 0 && doneCount > prevDoneCountRef.current) {
+      setCelebrated(mission.title);
+      const t = setTimeout(() => setCelebrated(""), 2200);
+      prevDoneCountRef.current = doneCount;
+      return () => clearTimeout(t);
+    }
+    prevDoneCountRef.current = doneCount;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doneCount]);
   const [elapsed, setElapsed] = useState(0);
   const busySinceRef = useRef<number | null>(null);
   const turnPhase = recording ? "recording" : transcribing ? "transcribing" : sending ? "sending" : isLoading ? "agent-busy" : "idle";
@@ -926,6 +1034,25 @@ function Canvas() {
           onClick={() => window.location.reload()}
         >
           Restart conversation
+        </button>{" "}
+        <button
+          type="button"
+          data-testid="sound-toggle"
+          aria-pressed={soundOn}
+          onClick={() => setSoundOn((v) => !v)}
+        >
+          {soundOn ? "Sound: on" : "Sound: off"}
+        </button>{" "}
+        <button
+          type="button"
+          data-testid="voice-toggle"
+          aria-pressed={voiceOn}
+          onClick={() => {
+            if (voiceOn) cancelSpeech();
+            setVoiceOn((v) => !v);
+          }}
+        >
+          {voiceOn ? "Agent voice: on" : "Agent voice: off"}
         </button>
         <p data-testid="recording-hint">Say one short command — it paints live as you speak, and sends itself when you pause. Stop recording still works if you prefer it.</p>
         <p data-testid="flow-status" role="status">{flowStatus}</p>
@@ -1002,6 +1129,31 @@ function Canvas() {
         <p>Host speech only — not a grounded fact card. Verify facts on the grounded cards below.</p>
       </section>
       </div>
+
+      <section data-testid="mission-banner" data-beat={mission.beat} data-celebrated={celebrated ? "true" : "false"} aria-label="Current mission" style={celebrated ? { border: "2px solid #ffd166", boxShadow: "0 0 0 3px #ffd16655" } : undefined}>
+        <div style={{ display: "flex", gap: "0.6rem", alignItems: "center", flexWrap: "wrap" }}>
+          <h2 style={{ margin: 0 }}>Mission {mission.step} of {mission.total}: {mission.title}</h2>
+          <span style={{ border: "1px solid currentColor", borderRadius: "999px", padding: "0.1rem 0.6rem", fontSize: "0.8rem" }}>{doneCount} of 6 missions done</span>
+        </div>
+        <div aria-hidden="true" style={{ height: "8px", background: "#2c376e", borderRadius: "999px", marginTop: "0.5rem", overflow: "hidden" }}>
+          <div style={{ width: `${Math.round((doneCount / 6) * 100)}%`, height: "100%", background: "#ffd166", transition: "width 400ms" }} />
+        </div>
+        <p data-testid="mission-prompt">{mission.prompt}</p>
+        {celebrated ? <p data-testid="mission-celebrated" role="status">Mission complete: {celebrated} — next mission unlocked.</p> : null}
+        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+          {mission.chips.map((chip) => (
+            <button
+              key={chip.label}
+              type="button"
+              data-testid={`mission-chip-${chip.label}`}
+              disabled={recording || transcribing || sending || isLoading}
+              onClick={async () => { await sendToAgent(chip.command); }}
+            >
+              {chip.label}
+            </button>
+          ))}
+        </div>
+      </section>
 
       <div data-beat="jurisdiction" data-beat-active={view.currentBeat === "jurisdiction"}>
       <GalaxyHero
