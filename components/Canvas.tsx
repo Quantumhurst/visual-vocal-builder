@@ -33,7 +33,10 @@ import TrustStrip from "./TrustStrip";
 import { verifyPaintedCards } from "../lib/verifier";
 import { resolveHostPrompt, shortFounderNames } from "../lib/host-questions";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
-import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary } from "../lib/state-updates";
+import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber } from "../lib/state-updates";
+import { pushHistory, popHistory, statesEqual, type HistoryEntry } from "../lib/history";
+import { describeChange, currentStateSummary } from "../lib/describe-change";
+import { beatProgress } from "../lib/beat-progress";
 import { concatFloat32, toPcm16k } from "../lib/pcm";
 import { clearedVoiceErrors, hasRetryAudio, makeTranscribeFailure, type TranscribeFailure } from "../lib/voice-reliability";
 import { computeSectionScrollTop, firstChangedBeat, shouldAutoScroll, turnResultSignature } from "../lib/scroll";
@@ -104,18 +107,52 @@ function Canvas() {
   const finishingRef = useRef(false);
   const messageIdRef = useRef(0);
 
+  // Shared commit path: every canvas change (voice, slider, click)
+  // funnels through here so handlers can report what actually changed
+  // and Undo can reverse manual edits too. History lives client-side
+  // in a ref; transcript is excluded from snapshots.
+  const stateRef = useRef(view);
+  useEffect(() => {
+    stateRef.current = view;
+  }, [view]);
+  const historyRef = useRef<HistoryEntry[]>([]);
+  const [historySize, setHistorySize] = useState(0);
+  function commit(label: string, fn: (s: SharedState) => SharedState): string {
+    const before = withDefaults(stateRef.current);
+    const after = fn(before);
+    if (!statesEqual(before, after)) {
+      historyRef.current = pushHistory(historyRef.current, before, label, Date.now());
+      setHistorySize(historyRef.current.length);
+    }
+    stateRef.current = after;
+    setState(after);
+    return describeChange(before, after);
+  }
+  function undoLast(): string {
+    const { stack, entry } = popHistory(historyRef.current);
+    const current = withDefaults(stateRef.current);
+    if (!entry) return `Nothing to undo. Current state: ${currentStateSummary(current)}.`;
+    historyRef.current = stack;
+    setHistorySize(stack.length);
+    const restored: SharedState = { ...entry.state, transcript: current.transcript };
+    const summary = describeChange(current, restored);
+    stateRef.current = restored;
+    setState(restored);
+    return `Undid: ${entry.label}. ${summary}`;
+  }
+
   // THE one shared-state update path for equity (beat 2 invariant).
   // Slider drags call this directly; the voice-agent action below calls
   // the same function. Both normalize through setFounderShare(), so
   // neither surface can leave the split inconsistent — it totals 100%.
   function updateEquity(index: number, percent: number, via: string) {
-    setState((prev) => applyEquity(withDefaults(prev), index, percent, via));
+    commit("slider", (s) => applyEquity(s, index, percent, via));
   }
 
   // THE one shared-state update path for the checklist (beat 3):
   // clicks and voice-agent actions both go through here.
   function updateChecklistItem(itemId: string, done: boolean) {
-    setState((prev) => applyChecklistItem(withDefaults(prev), itemId, done));
+    commit("click", (s) => applyChecklistItem(s, itemId, done));
   }
 
   // Grounding for the agent: fictional company/places, current equity
@@ -127,6 +164,10 @@ function Canvas() {
     value: {
       company: DEMO_COMPANY_NAME,
       places: DEMO_JURISDICTIONS.map((row) => row.jurisdiction),
+      jurisdictionRows: DEMO_JURISDICTIONS,
+      selectedJurisdiction: view.selectedJurisdiction,
+      progress: beatProgress(view),
+      canUndo: historySize > 0,
       founders: view.founders,
       checklist: view.checklist.map((item) => ({
         id: item.id,
@@ -163,7 +204,7 @@ function Canvas() {
       },
     ],
     handler: async ({ jurisdiction }) => {
-      setState((prev) => applyJurisdiction(withDefaults(prev), jurisdiction ?? null));
+      return commit("jurisdiction", (s) => applyJurisdiction(s, jurisdiction ?? null));
     },
     render: () => <></>,
   });
@@ -189,13 +230,12 @@ function Canvas() {
       },
     ],
     handler: async ({ founder, percent }) => {
-      const base = withDefaults(state);
+      const base = withDefaults(stateRef.current);
       const index = resolveFounderIndex(base.founders, founder ?? "");
       if (index < 0) {
-        return `Nothing changed: no founder matched "${founder}". Founders are ${base.founders.map((f) => f.name).join(", ")}. Nothing was edited; please ask again with one of those names.`;
+        return `Nothing changed: no founder matched "${founder}". Founders are ${base.founders.map((f) => f.name).join(", ")}. Nothing was edited; please ask again with one of those names. Current state: ${currentStateSummary(base)}.`;
       }
-      updateEquity(index, Number(percent), "voice");
-      return `Updated ${base.founders[index].name} to ${Number(percent)}%.`;
+      return commit("equity", (s) => applyEquity(s, index, Number(percent), "voice"));
     },
   });
 
@@ -209,7 +249,62 @@ function Canvas() {
       { name: "done", type: "boolean", description: "True to check, false to uncheck.", required: true },
     ],
     handler: async ({ itemId, done }) => {
-      updateChecklistItem(itemId, Boolean(done));
+      return commit("checklist", (s) => applyChecklistItem(s, itemId, Boolean(done)));
+    },
+  });
+
+  useCopilotAction({
+    name: AGENT_ACTIONS.setChecklistItems,
+    description:
+      "Check or uncheck several filing-checklist items at once by their ids (ids are in the readable checklist state). Use when the user asks to tick off multiple items in one command.",
+    parameters: [
+      { name: "itemIds", type: "string[]", description: "Checklist item ids.", required: true },
+      { name: "done", type: "boolean", description: "True to check, false to uncheck.", required: true },
+    ],
+    handler: async ({ itemIds, done }) => {
+      const ids = Array.isArray(itemIds) ? itemIds.map(String) : [];
+      return commit("checklist", (s) => applyChecklistItems(s, ids, Boolean(done)));
+    },
+  });
+
+  useCopilotAction({
+    name: AGENT_ACTIONS.undoLastChange,
+    description:
+      "Reverse the last canvas change (voice, slider, or click). Call when the user says undo that, revert, or go back. Never claim an undo without calling this.",
+    parameters: [],
+    handler: async () => {
+      return undoLast();
+    },
+  });
+
+  useCopilotAction({
+    name: AGENT_ACTIONS.startOver,
+    description:
+      "Reset the canvas only (selection, equity, checklist, cards, lawyer package) and keep the chat history. Call when the user says start over or fresh start. Never claim a reset without calling this.",
+    parameters: [],
+    handler: async () => {
+      return commit("start-over", (s) => applyStartOver(s));
+    },
+  });
+
+  useCopilotAction({
+    name: AGENT_ACTIONS.compareJurisdictions,
+    description:
+      "Answer a comparison question about the three fictional places (Mars, Europa, Andromeda Galaxy) from the DEMO rows and set a DEMO highlight. The highlight never changes the user's selected jurisdiction. DEMO values may be quoted verbatim, labeled DEMO, for these three fictional places only.",
+    parameters: [
+      { name: "question", type: "string", description: "The user's comparison question.", required: false },
+      { name: "focus", type: "string", description: "Fictional place to DEMO-highlight, if one fits; otherwise omit.", required: false },
+    ],
+    handler: async ({ question, focus }) => {
+      const cheapest = cheapestByNumber(DEMO_JURISDICTIONS);
+      const focusName = focus ?? cheapest.name;
+      const result = commit("compare", (s) =>
+        applyFocusJurisdiction(s, focusName, question ?? "comparison"),
+      );
+      const rowsText = DEMO_JURISDICTIONS.map(
+        (r) => `${r.jurisdiction} — ${r.filingFee}, ${r.timeline}`,
+      ).join("; ");
+      return `DEMO jurisdictions: ${rowsText}. DEMO cheapest by number: ${cheapest.name} (${cheapest.fee}). Currencies are fictional and don't convert (sameCurrency: ${cheapest.sameCurrency}), so there's no true cheapest. ${result}`;
     },
   });
 
@@ -219,7 +314,7 @@ function Canvas() {
       "Mark the first not-yet-done filing-checklist item done and move the walk forward. Use as the user answers each checklist step.",
     parameters: [],
     handler: async () => {
-      setState((prev) => applyAdvanceChecklist(withDefaults(prev)));
+      return commit("checklist", (s) => applyAdvanceChecklist(s));
     },
   });
 
@@ -235,7 +330,7 @@ function Canvas() {
       { name: "question", type: "string", description: "The user's rollover question.", required: false },
     ],
     handler: async ({ factId, question }) => {
-      setState((prev) => applyRolloverFact(withDefaults(prev), factId ?? "", question));
+      return commit("rollover", (s) => applyRolloverFact(s, factId ?? "", question));
     },
   });
 
@@ -257,7 +352,7 @@ function Canvas() {
     ],
     handler: async ({ factIds, question }) => {
       const ids = Array.isArray(factIds) ? factIds.map(String) : [];
-      setState((prev) => applyFilingSteps(withDefaults(prev), ids, question));
+      return commit("filingsteps", (s) => applyFilingSteps(s, ids, question));
     },
   });
 
@@ -265,7 +360,7 @@ function Canvas() {
   // agent action share buildLawyerSummary() over shared state — one
   // package, rendered on the canvas. Prep only; nothing is sent.
   function prepareLawyerPackage() {
-    setState((prev) => applyLawyerSummary(withDefaults(prev)));
+    commit("summary", (s) => applyLawyerSummary(s));
   }
 
   useCopilotAction({
@@ -274,7 +369,7 @@ function Canvas() {
       "Prepare the lawyer-summary package (jurisdiction choice, equity split, checklist state) and display it on the canvas. Use when the user asks to prepare, show, or send-to-lawyer the summary. This only prepares the package for the user to forward; it never sends email.",
     parameters: [],
     handler: async () => {
-      prepareLawyerPackage();
+      return commit("summary", (s) => applyLawyerSummary(s));
     },
   });
 
@@ -296,7 +391,7 @@ function Canvas() {
       setAck("");
     }
     clearTurnErrors();
-    setState((prev) => ({ ...withDefaults(prev), selectedJurisdiction: jurisdiction }));
+    commit("click", (s) => ({ ...s, selectedJurisdiction: jurisdiction }));
   }
 
   async function sendToAgent(text: string) {
@@ -498,9 +593,24 @@ function Canvas() {
   }
 
   const hostPrompt = resolveHostPrompt(messages as never, view.currentBeat, shortFounderNames(view.founders), view.selectedJurisdiction);
+  const [elapsed, setElapsed] = useState(0);
+  const busySinceRef = useRef<number | null>(null);
   const turnPhase = recording ? "recording" : transcribing ? "transcribing" : sending ? "sending" : isLoading ? "agent-busy" : "idle";
   const micLabel = turnPhase === "recording" ? "Stop recording" : turnPhase === "transcribing" ? "Transcribing…" : turnPhase === "sending" ? "Sending…" : turnPhase === "agent-busy" ? "Agent working…" : "Speak (mic)";
   const busy = turnPhase === "sending" || turnPhase === "agent-busy";
+  useEffect(() => {
+    if (!busy) {
+      busySinceRef.current = null;
+      return;
+    }
+    if (busySinceRef.current === null) busySinceRef.current = Date.now();
+    const id = setInterval(() => {
+      if (busySinceRef.current !== null) {
+        setElapsed(Math.floor((Date.now() - busySinceRef.current) / 1000));
+      }
+    }, 500);
+    return () => clearInterval(id);
+  }, [busy]);
   const shownTranscript = lastTranscript || view.transcript;
   // Auto-scroll to the latest turn: once a turn completes with a new result,
   // bring the section it changed into view below the sticky latest-turn
@@ -593,7 +703,15 @@ function Canvas() {
         >
           {busy ? "Agent working…" : "Send to agent"}
         </button>
-        <span data-testid="turn-phase" role="status">{turnPhase === "recording" ? "Recording…" : turnPhase === "transcribing" ? "Transcribing…" : turnPhase === "sending" ? "Sending…" : turnPhase === "agent-busy" ? "Agent working…" : "Ready"}</span>{" "}
+        <span data-testid="turn-phase" role="status">{turnPhase === "recording" ? "Recording…" : turnPhase === "transcribing" ? "Transcribing…" : turnPhase === "sending" ? "Sending…" : turnPhase === "agent-busy" ? `Agent working… ${elapsed}s` : "Ready"}</span>{" "}
+        <button
+          type="button"
+          data-testid="undo-button"
+          disabled={historySize === 0}
+          onClick={() => { undoLast(); }}
+        >
+          Undo
+        </button>{" "}
         <button
           type="button"
           data-testid="restart-conversation"
@@ -662,6 +780,8 @@ function Canvas() {
       <JurisdictionTable
         rows={view.jurisdictions}
         selected={view.selectedJurisdiction}
+        focus={view.focusJurisdiction}
+        focusReason={view.focusReason}
         onSelect={handleSelectJurisdiction}
       />
       </div>
