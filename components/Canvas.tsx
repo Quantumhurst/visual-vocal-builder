@@ -41,6 +41,7 @@ import { concatFloat32, toPcm16k } from "../lib/pcm";
 import { clearedVoiceErrors, hasRetryAudio, makeTranscribeFailure, type TranscribeFailure } from "../lib/voice-reliability";
 import { computeSectionScrollTop, firstChangedBeat, shouldAutoScroll, turnResultSignature } from "../lib/scroll";
 import { MAX_PCM_BYTES } from "../lib/request-guard";
+import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, IDLE_ACTIVITY, type VoiceActivity } from "../lib/live-intent";
 
 
 const BEATS = [
@@ -54,7 +55,8 @@ const BEATS = [
 
 // Day 8: one-click example commands for judges without a mic. Each chip
 // sends its command through the same sendToAgent path as typed/voice
-// input — no shortcut state writes, the agent still drives the beats.
+// input — sendToAgent paints a live preview instantly (same appliers
+// the agent uses), then the agent turn confirms or corrects it.
 const EXAMPLE_COMMANDS = [
   { label: "Pick Mars", command: "Pick Mars as our home base" },
   { label: "Make Orbit 70%", command: "Make Orbit 70%" },
@@ -98,6 +100,12 @@ function Canvas() {
   const [turnError, setTurnError] = useState("");
   const [transcribeFailure, setTranscribeFailure] = useState<TranscribeFailure | null>(null);
   const [hasLastAudio, setHasLastAudio] = useState(false);
+  // Live voice: interim transcript + speculative preview, updated while
+  // the user is still speaking so the canvas moves before Stop.
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [livePreview, setLivePreview] = useState<{ key: string; label: string; status: "live" | "confirming" | "confirmed" } | null>(null);
+  const [micLevel, setMicLevel] = useState(0);
+  const [recordSeconds, setRecordSeconds] = useState(0);
   const lastAudioRef = useRef<ArrayBuffer | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
@@ -106,6 +114,16 @@ function Canvas() {
   const chunksRef = useRef<Float32Array[]>([]);
   const finishingRef = useRef(false);
   const messageIdRef = useRef(0);
+  const activityRef = useRef<VoiceActivity>(IDLE_ACTIVITY);
+  const levelRef = useRef(0);
+  const previewKeyRef = useRef<string | null>(null);
+  const recordingRef = useRef(false);
+  const lastWebSpeechAtRef = useRef(0);
+  const webSpeechFailedRef = useRef(false);
+  const recognitionRef = useRef<{ stop: () => void; onresult: unknown; onerror: unknown; onend: unknown } | null>(null);
+  const previewInFlightRef = useRef(false);
+  const previewBytesRef = useRef(0);
+  const lastPreviewAtRef = useRef(0);
 
   // Shared commit path: every canvas change (voice, slider, click)
   // funnels through here so handlers can report what actually changed
@@ -121,7 +139,8 @@ function Canvas() {
     const before = withDefaults(stateRef.current);
     const after = fn(before);
     if (!statesEqual(before, after)) {
-      historyRef.current = pushHistory(historyRef.current, before, label, Date.now());
+      // eslint-disable-next-line react-hooks/purity -- commit() only runs from handlers/actions, never during render; the timestamp is event time for drag coalescing
+      historyRef.current = pushHistory(historyRef.current, before, label, performance.now());
       setHistorySize(historyRef.current.length);
     }
     stateRef.current = after;
@@ -188,8 +207,47 @@ function Canvas() {
     },
   });
 
-  // Beat 1 action (unchanged path): only the agent sets jurisdiction
-  // state from voice. No client-side keyword parsing, no shortcut.
+  // Live preview: a recognisable command in a partial transcript is
+  // painted immediately through the SAME appliers the agent actions
+  // below use, so the screen moves while the user is still speaking.
+  // The agent turn still runs on the final transcript and confirms or
+  // corrects the preview — grounded cards are never painted locally.
+  function applyLiveIntent(text: string, status: "live" | "confirming") {
+    const intent = parseLiveIntent(text);
+    if (!intent) return null;
+    if (intent.key !== previewKeyRef.current) {
+      previewKeyRef.current = intent.key;
+      // Previews go through commit() like every other canvas change, so
+      // they are undoable and the agent's confirming commit (same
+      // result) adds no second history entry.
+      if (intent.kind === "jurisdiction") {
+        commit("live-preview", (s) => applyJurisdiction(s, intent.jurisdiction));
+      } else if (intent.kind === "equity") {
+        const base = withDefaults(stateRef.current);
+        const index = resolveFounderIndex(base.founders, intent.founder);
+        if (index >= 0) commit("live-preview", (s) => applyEquity(s, index, intent.percent, "voice-live"));
+      } else if (intent.kind === "checklist-advance") {
+        commit("live-preview", (s) => applyAdvanceChecklist(s));
+      } else if (intent.kind === "lawyer-summary") {
+        prepareLawyerPackage();
+      }
+      // rollover/filing questions: no local card — the label below is
+      // the feedback; the grounded card comes from the agent + pack.
+    }
+    setLivePreview({ key: intent.key, label: intent.label, status });
+    return intent;
+  }
+
+  function handleLiveTranscript(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setLiveTranscript(trimmed);
+    applyLiveIntent(trimmed, "live");
+  }
+
+  // Beat 1 action: the agent's authoritative jurisdiction write. It
+  // lands on the same applyJurisdiction path as the live preview, so
+  // confirming a preview changes nothing twice.
   useCopilotAction({
     name: AGENT_ACTIONS.showJurisdictionComparison,
     description:
@@ -398,6 +456,12 @@ function Canvas() {
     const trimmed = text.trim();
     if (!trimmed || sending || isLoading) return;
     clearTurnErrors();
+    // Paint instantly, confirm asynchronously: a typed/spoken command
+    // moves the canvas now; the agent turn below is the authority and
+    // corrects the preview if it heard something different.
+    previewKeyRef.current = null;
+    applyLiveIntent(trimmed, "confirming");
+    setLiveTranscript(trimmed);
     setLastTranscript(trimmed);
     setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
     const sel = view.selectedJurisdiction;
@@ -452,33 +516,132 @@ function Canvas() {
     }
   }
 
+  async function fetchTranscript(buf: ArrayBuffer): Promise<string> {
+    const blob = new Blob([buf], { type: "audio/L16" });
+    const form = new FormData();
+    form.append("audio", blob, "recording.pcm");
+    const res = await fetch("/api/transcribe", { method: "POST", body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(String(data.error ?? res.statusText));
+    return String(data.transcript ?? "");
+  }
+
+  // Best-effort live preview for browsers without SpeechRecognition:
+  // transcribe everything captured so far. Failures are silent here —
+  // the final transcription after Stop reports errors properly.
+  async function previewChunksSoFar() {
+    if (previewInFlightRef.current || finishingRef.current || !recordingRef.current) return;
+    const rate = audioContextRef.current?.sampleRate ?? 0;
+    if (!rate || chunksRef.current.length === 0) return;
+    const pcm = toPcm16k(concatFloat32(chunksRef.current), rate);
+    if (pcm.byteLength < 16000 || pcm.byteLength <= previewBytesRef.current + 4000) return;
+    previewInFlightRef.current = true;
+    previewBytesRef.current = pcm.byteLength;
+    try {
+      const buf = new ArrayBuffer(pcm.byteLength);
+      new Int16Array(buf).set(pcm);
+      const transcript = await fetchTranscript(buf);
+      if (recordingRef.current && transcript) handleLiveTranscript(transcript);
+    } catch {
+      // Preview only; the authoritative path below owns error display.
+    } finally {
+      previewInFlightRef.current = false;
+    }
+  }
+
+  function stopWebSpeech() {
+    const rec = recognitionRef.current;
+    recognitionRef.current = null;
+    if (!rec) return;
+    rec.onresult = null;
+    rec.onerror = null;
+    rec.onend = null;
+    try {
+      rec.stop();
+    } catch {
+      // ignore
+    }
+  }
+
+  // Instant interim words where the browser offers them (Chrome/Edge).
+  // This is a *preview* recogniser only: the Meta transcript after Stop
+  // is still the authority that goes to the agent. Any error quietly
+  // hands over to the chunked Meta preview above — never a dead mic.
+  function startWebSpeech() {
+    if (webSpeechFailedRef.current || typeof window === "undefined") return;
+    const w = window as unknown as Record<string, unknown>;
+    const Ctor = (w.SpeechRecognition ?? w.webkitSpeechRecognition) as
+      | (new () => { lang: string; interimResults: boolean; continuous: boolean; start: () => void; stop: () => void; onresult: unknown; onerror: unknown; onend: unknown })
+      | undefined;
+    if (!Ctor) return;
+    try {
+      const rec = new Ctor();
+      rec.lang = "en-US";
+      rec.interimResults = true;
+      rec.continuous = true;
+      rec.onresult = (event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => {
+        lastWebSpeechAtRef.current = performance.now();
+        let text = "";
+        for (let i = 0; i < event.results.length; i++) text += event.results[i][0]?.transcript ?? "";
+        handleLiveTranscript(text);
+      };
+      rec.onerror = (event: { error?: string }) => {
+        if (event.error !== "no-speech" && event.error !== "aborted") webSpeechFailedRef.current = true;
+        recognitionRef.current = null;
+      };
+      rec.onend = () => {
+        recognitionRef.current = null;
+        // Chrome ends recognition after a pause; re-arm while the mic
+        // is still hot so a second sentence is heard too.
+        if (recordingRef.current && !webSpeechFailedRef.current) {
+          setTimeout(() => {
+            if (recordingRef.current) startWebSpeech();
+          }, 250);
+        }
+      };
+      recognitionRef.current = rec;
+      rec.start();
+    } catch {
+      webSpeechFailedRef.current = true;
+    }
+  }
+
   useEffect(() => {
     return () => {
       cleanupAudio();
+      stopWebSpeech();
     };
   }, []);
+
+  // While recording: meter + clock, and — when the browser has no live
+  // speech recogniser — periodic Meta-transcribe previews of the audio
+  // captured so far, so partial words still paint before Stop.
+  useEffect(() => {
+    if (!recording) return;
+    const meter = setInterval(() => {
+      setMicLevel(Math.min(1, levelRef.current * 3.5));
+      if (performance.now() - lastWebSpeechAtRef.current > 3000 && performance.now() - lastPreviewAtRef.current > 2800) {
+        lastPreviewAtRef.current = performance.now();
+        void previewChunksSoFar();
+      }
+    }, 200);
+    const clock = setInterval(() => setRecordSeconds((s) => s + 1), 1000);
+    return () => {
+      clearInterval(meter);
+      clearInterval(clock);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording]);
 
   // Same existing transcribe path for a fresh recording and for Retry.
   async function transcribeAndSend(buf: ArrayBuffer) {
     clearTurnErrors();
-    const blob = new Blob([buf], { type: "audio/L16" });
-    const form = new FormData();
-    form.append("audio", blob, "recording.pcm");
     setTranscribing(true);
     setNotice("Transcribing…");
     try {
-      const res = await fetch("/api/transcribe", {
-        method: "POST",
-        body: form,
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setNotice("");
-        setTranscribeFailure(makeTranscribeFailure(String(data.error ?? res.statusText)));
-        return;
-      }
+      const transcript = await fetchTranscript(buf);
       setNotice("");
-      await sendToAgent(data.transcript ?? "");
+      await sendToAgent(transcript);
     } catch (error) {
       setNotice("");
       setTranscribeFailure(
@@ -499,6 +662,9 @@ function Canvas() {
   async function finishRecording() {
     if (finishingRef.current) return;
     finishingRef.current = true;
+    recordingRef.current = false;
+    stopWebSpeech();
+    setMicLevel(0);
     setRecording(false);
     const ctx = audioContextRef.current;
     const inputRate = ctx?.sampleRate ?? 0;
@@ -543,6 +709,16 @@ function Canvas() {
     clearTurnErrors();
     lastAudioRef.current = null;
     setHasLastAudio(false);
+    activityRef.current = IDLE_ACTIVITY;
+    levelRef.current = 0;
+    previewKeyRef.current = null;
+    previewBytesRef.current = 0;
+    lastPreviewAtRef.current = 0;
+    lastWebSpeechAtRef.current = 0;
+    setLiveTranscript("");
+    setLivePreview(null);
+    setMicLevel(0);
+    setRecordSeconds(0);
     let stream: MediaStream | null = null;
     let ctx: AudioContext | null = null;
     try {
@@ -562,6 +738,16 @@ function Canvas() {
         if (!block || block.length === 0) return;
         chunksRef.current.push(block);
         const rate = audioContextRef.current?.sampleRate ?? 0;
+        // Live level + client endpointing: a natural pause after real
+        // speech ends the turn hands-free — no Stop click needed.
+        const level = rmsLevel(block);
+        levelRef.current = level;
+        const now = performance.now();
+        activityRef.current = nextVoiceActivity(activityRef.current, level, now, rate > 0 ? (block.length / rate) * 1000 : 0);
+        if (shouldAutoStop(activityRef.current, now)) {
+          void finishRecording();
+          return;
+        }
         if (rate > 0) {
           const total = chunksRef.current.reduce((s, c) => s + c.length, 0);
           const estBytes = Math.round(total / (rate / 16000)) * 2;
@@ -576,9 +762,12 @@ function Canvas() {
       if (ctx.state === "suspended") {
         await ctx.resume();
       }
+      recordingRef.current = true;
       setRecording(true);
+      startWebSpeech();
     } catch (error) {
       cleanupAudio();
+      recordingRef.current = false;
       setRecording(false);
       const detail =
         error instanceof Error && error.name !== "NotAllowedError"
@@ -611,6 +800,17 @@ function Canvas() {
     }, 500);
     return () => clearInterval(id);
   }, [busy]);
+  const flowStatus = recording
+    ? liveTranscript
+      ? "Listening — canvas is updating as you speak. Pause for a second and it sends itself."
+      : "Listening — say a command like “Pick Mars”. The canvas updates as you speak."
+    : transcribing
+      ? "Heard you — transcribing with Muse Voice…"
+      : busy
+        ? "Agent confirming — your live preview is already on the canvas."
+        : livePreview?.status === "confirmed"
+          ? "Done — painted and confirmed."
+          : "Ready — press Speak and just talk; no need to time a Stop click.";
   const shownTranscript = lastTranscript || view.transcript;
   // Auto-scroll to the latest turn: once a turn completes with a new result,
   // bring the section it changed into view below the sticky latest-turn
@@ -627,12 +827,20 @@ function Canvas() {
     if (wasLoadingRef.current && !isLoading && pendingTurnRef.current) {
       const pending = pendingTurnRef.current;
       pendingTurnRef.current = null;
-      if (pending.signature === resultSignature) {
+      // A live preview already painted this exact intent through the
+      // same appliers, so an agent turn that "changes nothing" has in
+      // fact confirmed the preview — never report it as a dead turn.
+      const previewConfirmed = Boolean(previewKeyRef.current) && parseLiveIntent(pending.text)?.key === previewKeyRef.current;
+      if (previewConfirmed) {
+        setLivePreview((p) => (p ? { ...p, status: "confirmed" } : p));
+      } else if (pending.signature === resultSignature) {
         const sel = view.selectedJurisdiction;
         const mentioned = DEMO_JURISDICTIONS.map((r) => r.jurisdiction).find((n) => pending.text.toLowerCase().includes(n.toLowerCase()));
         if (!(sel && mentioned && mentioned.toLowerCase() === sel.toLowerCase())) {
           setTurnError("Agent finished without changing anything — the turn may have hit a locked thread or an agent error. Nothing was changed; type the command again.");
         }
+      } else {
+        setLivePreview((p) => (p ? { ...p, status: "confirmed" } : p));
       }
     }
     wasLoadingRef.current = isLoading;
@@ -719,7 +927,32 @@ function Canvas() {
         >
           Restart conversation
         </button>
-        <p data-testid="recording-hint">Say one short command, then Stop recording to send it.</p>
+        <p data-testid="recording-hint">Say one short command — it paints live as you speak, and sends itself when you pause. Stop recording still works if you prefer it.</p>
+        <p data-testid="flow-status" role="status">{flowStatus}</p>
+        {recording || liveTranscript || livePreview ? (
+          <div data-testid="live-voice-panel" style={{ border: "1px solid #6f83e8", borderRadius: "10px", padding: "0.6rem 0.8rem", marginTop: "0.5rem" }}>
+            {recording ? (
+              <div data-testid="mic-meter" aria-label={`Microphone level, recording ${recordSeconds} seconds`}>
+                <div style={{ display: "flex", gap: "3px", alignItems: "flex-end", height: "22px" }} aria-hidden="true">
+                  {[0.15, 0.35, 0.55, 0.75, 0.95].map((bar) => (
+                    <span key={bar} style={{ width: "10px", height: `${6 + bar * 16}px`, borderRadius: "2px", background: micLevel >= bar ? "#ffd166" : "#2c376e", transition: "background 120ms" }} />
+                  ))}
+                  <span style={{ marginLeft: "0.5rem", fontSize: "0.85rem" }}>● Recording {recordSeconds}s{micLevel > 0.05 ? " — hearing you" : " — listening…"}</span>
+                </div>
+              </div>
+            ) : null}
+            {liveTranscript ? (
+              <p data-testid="live-transcript" style={{ margin: "0.4rem 0 0" }}>Hearing: <q>{liveTranscript}</q></p>
+            ) : recording ? (
+              <p data-testid="live-transcript" style={{ margin: "0.4rem 0 0" }}>Listening… start with “Pick Mars”.</p>
+            ) : null}
+            {livePreview ? (
+              <p data-testid="live-preview" role="status" style={{ margin: "0.4rem 0 0", display: "inline-block", border: "1px solid #ffd166", borderRadius: "999px", padding: "0.2rem 0.7rem" }}>
+                {livePreview.status === "confirmed" ? `Confirmed: ${livePreview.label}` : livePreview.status === "confirming" ? `Live preview: ${livePreview.label} Confirming with the agent…` : `Live preview: ${livePreview.label} — already on the canvas below`}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         <div aria-label="Example commands" style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
           <span>Try:</span>
           {EXAMPLE_COMMANDS.map((chip) => (
