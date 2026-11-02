@@ -4,6 +4,7 @@
 import { createRequire } from "node:module";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { spokenHostText } from "../lib/spoken-text.ts";
 
 const require = createRequire(import.meta.url);
 let puppeteer;
@@ -43,6 +44,11 @@ async function snapshot(page) {
       focus: txt('[data-testid="jurisdiction-focus"]') || null,
       turnError: txt('[data-testid="turn-error"]') || null,
       summaryBeatText: txt('[data-beat="summary"]'),
+      spoken: [...(window.__spoken ?? [])],
+      oscCount: window.__osc ?? 0,
+      missionBeat: document.querySelector('[data-testid="mission-banner"]')?.getAttribute("data-beat") ?? null,
+      hasSoundToggle: Boolean(document.querySelector('[data-testid="sound-toggle"]')),
+      hasVoiceToggle: Boolean(document.querySelector('[data-testid="voice-toggle"]')),
     };
   });
 }
@@ -85,6 +91,47 @@ function p90(xs) {
 
 async function oneRun(browser, idx) {
   const page = await browser.newPage();
+  // Capture (never produce) speech and sound: stubs record what the app
+  // tried to say/play so G4/G5 are asserted from real app calls.
+  await page.evaluateOnNewDocument(() => {
+    window.__spoken = [];
+    window.__osc = 0;
+    const synth = {
+      speak: (u) => window.__spoken.push(u.text),
+      cancel: () => {},
+      getVoices: () => [],
+    };
+    try {
+      Object.defineProperty(window, "speechSynthesis", { value: synth, configurable: true });
+    } catch {
+      window.speechSynthesis = synth;
+    }
+    window.SpeechSynthesisUtterance = class {
+      constructor(text) {
+        this.text = text;
+      }
+    };
+    class FakeAudioContext {
+      constructor() {
+        this.state = "running";
+        this.currentTime = 0;
+        this.destination = {};
+      }
+      resume() {}
+      createOscillator() {
+        window.__osc += 1;
+        return { type: "", frequency: { value: 0 }, connect: (n) => n, start() {}, stop() {} };
+      }
+      createGain() {
+        return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect: (n) => n };
+      }
+    }
+    try {
+      Object.defineProperty(window, "AudioContext", { value: FakeAudioContext, configurable: true });
+    } catch {
+      window.AudioContext = FakeAudioContext;
+    }
+  });
   const httpErrors = [];
   page.on("response", (res) => {
     if (res.status() >= 400) httpErrors.push(`${res.status()} ${res.url()}`);
@@ -144,6 +191,10 @@ async function oneRun(browser, idx) {
     G1c:
       eq(s8) === "60/40" && s8.selected === null && s8.ticked === 0 && !(s8.summaryBeatText ?? "").includes("Copy summary"),
     guard: /no|not/i.test(s9.host) && s9.ticked === 0,
+    // Game layer (trial only; baseline main records these as failures).
+    G4: s2.oscCount > 0 && s2.hasSoundToggle,
+    G5: s1.spoken.length > 0 && s1.spoken[s1.spoken.length - 1] === spokenHostText(s1.host) && s1.hasVoiceToggle,
+    G6: s1.missionBeat === "equity" && s6.missionBeat === "rollover",
   };
   await page.close();
   return { run: idx, turns, checks, httpErrors };
@@ -166,7 +217,7 @@ for (let i = 1; i <= RUNS; i++) {
 }
 await browser.close();
 
-const keys = ["step1Mars", "step2Equity3070", "G1a", "G1b", "G3a", "G3b", "G2a", "G2b", "G2c", "G1c", "guard"];
+const keys = ["step1Mars", "step2Equity3070", "G1a", "G1b", "G3a", "G3b", "G2a", "G2b", "G2c", "G1c", "guard", "G4", "G5", "G6"];
 const counts = {};
 for (const k of keys) {
   counts[k] = {
