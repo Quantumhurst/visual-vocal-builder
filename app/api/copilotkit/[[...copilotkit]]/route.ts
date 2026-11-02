@@ -6,6 +6,7 @@ import {
 import { BuiltInAgent } from "@copilotkit/runtime/v2";
 import OpenAI from "openai";
 import { checkOrigin, clientKey, createRateLimiter } from "../../../../lib/request-guard";
+import { VVB_SYSTEM_PROMPT } from "../../../../lib/agent-prompt";
 
 const copilotLimiter = createRateLimiter({ limit: 60, windowMs: 60_000 });
 
@@ -42,8 +43,8 @@ function buildHandler() {
   // construction the runtime itself uses for its auto-created default.
   const runtime = new CopilotRuntime({
     agents: {
-      default: new BuiltInAgent({ model: serviceAdapter.getLanguageModel() }),
-      vvb: new BuiltInAgent({ model: serviceAdapter.getLanguageModel() }),
+      default: new BuiltInAgent({ model: serviceAdapter.getLanguageModel(), prompt: VVB_SYSTEM_PROMPT }),
+      vvb: new BuiltInAgent({ model: serviceAdapter.getLanguageModel(), prompt: VVB_SYSTEM_PROMPT }),
     },
   });
   const { handleRequest } = copilotRuntimeNextJSAppRouterEndpoint({

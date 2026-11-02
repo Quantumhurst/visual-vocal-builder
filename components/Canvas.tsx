@@ -32,6 +32,7 @@ import type { SharedState } from "../lib/state";
 import TrustStrip from "./TrustStrip";
 import { verifyPaintedCards } from "../lib/verifier";
 import { resolveHostPrompt, shortFounderNames } from "../lib/host-questions";
+import { AGENT_ACTIONS } from "../lib/agent-actions";
 import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary } from "../lib/state-updates";
 
 
@@ -133,7 +134,7 @@ function Canvas() {
   // Beat 1 action (unchanged path): only the agent sets jurisdiction
   // state from voice. No client-side keyword parsing, no shortcut.
   useCopilotAction({
-    name: "showJurisdictionComparison",
+    name: AGENT_ACTIONS.showJurisdictionComparison,
     description:
       "Show the fictional jurisdiction comparison table and optionally select one of the fictional places (Mars, Europa, Andromeda Galaxy). Call this when the user asks to compare jurisdictions, choose a place to incorporate, or start incorporating the fictional company.",
     parameters: [
@@ -154,7 +155,7 @@ function Canvas() {
   // Beat 2 voice path: "make me 70%" -> same updateEquity() the slider
   // drags use, so 60/40 with a 70% request lands on 70/30, total 100%.
   useCopilotAction({
-    name: "setFounderEquity",
+    name: AGENT_ACTIONS.setFounderEquity,
     description:
       "Set one DEMO founder's equity percent (e.g. the user says 'make me 70%'). The other founder(s) auto-adjust so the split always totals 100%. Founders: DEMO Founder Nova (fictional), DEMO Founder Orbit (fictional).",
     parameters: [
@@ -184,7 +185,7 @@ function Canvas() {
 
   // Beat 3 voice paths: check/uncheck one item, or advance the walk.
   useCopilotAction({
-    name: "setChecklistItem",
+    name: AGENT_ACTIONS.setChecklistItem,
     description:
       "Check or uncheck one filing-checklist item by its id (ids are in the readable checklist state). Use when the user answers a checklist step or asks to mark one done/not done.",
     parameters: [
@@ -197,7 +198,7 @@ function Canvas() {
   });
 
   useCopilotAction({
-    name: "advanceChecklist",
+    name: AGENT_ACTIONS.advanceChecklist,
     description:
       "Mark the first not-yet-done filing-checklist item done and move the walk forward. Use as the user answers each checklist step.",
     parameters: [],
@@ -210,7 +211,7 @@ function Canvas() {
   // the knowledge pack — the card text is the pack text verbatim and
   // shows pack/fact grounding. An unknown factId renders NO card.
   useCopilotAction({
-    name: "showRolloverFact",
+    name: AGENT_ACTIONS.showRolloverFact,
     description:
       "Show a grounded s.85 rollover fact card. Call with a factId from the readable s85Facts index when the user asks a rollover / section 85 question. Never invent rollover content; only pack facts become cards.",
     parameters: [
@@ -226,7 +227,7 @@ function Canvas() {
   // fact up in the filing-steps pack — card text is pack text verbatim
   // with pack/fact grounding. Any unknown factId renders NO card.
   useCopilotAction({
-    name: "showFilingSteps",
+    name: AGENT_ACTIONS.showFilingSteps,
     description:
       "Show grounded filing steps and fees facts. Call with factIds from the readable filingStepsFacts index when the user asks about filing steps, process order, or fees. Never invent steps or fees; only pack facts become cards.",
     parameters: [
@@ -252,7 +253,7 @@ function Canvas() {
   }
 
   useCopilotAction({
-    name: "prepareLawyerSummary",
+    name: AGENT_ACTIONS.prepareLawyerSummary,
     description:
       "Prepare the lawyer-summary package (jurisdiction choice, equity split, checklist state) and display it on the canvas. Use when the user asks to prepare, show, or send-to-lawyer the summary. This only prepares the package for the user to forward; it never sends email.",
     parameters: [],
