@@ -5,6 +5,16 @@ import {
 } from "@copilotkit/runtime";
 import { BuiltInAgent } from "@copilotkit/runtime/v2";
 import OpenAI from "openai";
+import { checkOrigin, clientKey, createRateLimiter } from "../../../../lib/request-guard";
+
+const copilotLimiter = createRateLimiter({ limit: 60, windowMs: 60_000 });
+
+function guard(req: Request): Response | null {
+  if (!checkOrigin(req.headers.get("origin"), req.headers.get("host"))) return Response.json({ error: "forbidden origin" }, { status: 403 });
+  const rl = copilotLimiter(clientKey(req));
+  if (!rl.ok) return Response.json({ error: "rate limited" }, { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } });
+  return null;
+}
 
 // Server-only route. The key is read from the server environment and never
 // leaves the server. CopilotKit is the frontend SDK; the brain is Muse Spark
@@ -51,6 +61,7 @@ const KEY_MISSING = () =>
   );
 
 export async function POST(req: Request) {
+  const blocked = guard(req); if (blocked) return blocked;
   const handleRequest = buildHandler();
   if (!handleRequest) return KEY_MISSING();
   return handleRequest(req);
@@ -61,6 +72,7 @@ export async function POST(req: Request) {
 // to the same runtime handler; the runtime answers discovery via its
 // single-route POST envelope, which the client falls back to on non-2xx.
 export async function GET(req: Request) {
+  const blocked = guard(req); if (blocked) return blocked;
   const handleRequest = buildHandler();
   if (!handleRequest) return KEY_MISSING();
   return handleRequest(req);

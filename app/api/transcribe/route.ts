@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { handleTranscribe } from "../../../lib/transcribe-handler";
+import { createRateLimiter } from "../../../lib/request-guard";
 import WebSocket from "ws";
 
 // NOTE: no `export const runtime` here — route handlers already run on the
@@ -18,42 +19,6 @@ import WebSocket from "ws";
 // Audio is raw PCM16 (16 kHz mono). ENDPOINTING mode emits speechStart,
 // cumulative transcript partials, speechEnd, and a final speechComplete
 // carrying the transcript; speechEnd itself carries no transcript.
-
-function convertToPcm16k(input: Buffer): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const ffmpeg = spawn("ffmpeg", [
-      "-hide_banner",
-      "-loglevel",
-      "error",
-      "-i",
-      "pipe:0",
-      "-ac",
-      "1",
-      "-ar",
-      "16000",
-      "-f",
-      "s16le",
-      "-acodec",
-      "pcm_s16le",
-      "pipe:1",
-    ]);
-    const chunks: Buffer[] = [];
-    let stderr = "";
-    ffmpeg.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
-    ffmpeg.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    ffmpeg.on("error", reject);
-    ffmpeg.on("close", (code) => {
-      if (code === 0) {
-        resolve(Buffer.concat(chunks));
-      } else {
-        reject(new Error(`ffmpeg failed (code ${code}): ${stderr}`));
-      }
-    });
-    ffmpeg.stdin.end(input);
-  });
-}
 
 function transcribePcm(pcm: Buffer, apiKey: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -173,6 +138,8 @@ function transcribePcm(pcm: Buffer, apiKey: string): Promise<string> {
   });
 }
 
+const limiter = createRateLimiter({ limit: 20, windowMs: 60_000 });
+
 export async function POST(req: Request) {
   const apiKey = process.env.META_API_KEY;
   if (!apiKey) {
@@ -181,30 +148,8 @@ export async function POST(req: Request) {
       { status: 500 },
     );
   }
-  let form: FormData;
-  try {
-    form = await req.formData();
-  } catch {
-    return Response.json({ error: "expected multipart form data" }, { status: 400 });
-  }
-  const audio = form.get("audio");
-  if (!(audio instanceof Blob)) {
-    return Response.json({ error: "missing 'audio' file field" }, { status: 400 });
-  }
-  try {
-    const input = Buffer.from(await audio.arrayBuffer());
-    const pcm = await convertToPcm16k(input);
-    const transcript = await transcribePcm(pcm, apiKey);
-    // Evidence for the Day 1 voice check: a real api.meta.ai call happened
-    // for this turn. The key is never logged.
-    console.log("api.meta.ai asr call", {
-      audioBytes: pcm.length,
-      transcript,
-      transcriptLength: transcript.length,
-    });
-    return Response.json({ transcript });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "transcription failed";
-    return Response.json({ error: message }, { status: 502 });
-  }
+  return handleTranscribe(req, {
+    limiter,
+    transcribe: (pcm) => transcribePcm(pcm, apiKey),
+  });
 }
