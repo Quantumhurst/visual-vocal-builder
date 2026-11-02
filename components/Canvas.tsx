@@ -160,6 +160,34 @@ function Canvas() {
   const kokoroFailedRef = useRef(false);
   const kokoroSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const speakIdRef = useRef(0);
+  // Speech lifecycle: Kokoro generates asynchronously, so "not playing
+  // yet" is not "finished". The conversation loop must wait for real
+  // speech (generation + playback), never cancel it mid-flight.
+  const speechPendingRef = useRef(false);
+  const speechStartedAtRef = useRef(0);
+  const lastChunkAtRef = useRef(0);
+  const kokoroDoneRef = useRef(true);
+  const kokoroFallbackIdsRef = useRef<Set<number>>(new Set());
+  const [voiceDiag, setVoiceDiag] = useState("");
+
+  function isSpeechActive(): boolean {
+    if (typeof window !== "undefined" && Boolean(window.speechSynthesis?.speaking)) return true;
+    if (kokoroSourcesRef.current.size > 0) return true;
+    if (!speechPendingRef.current) return false;
+    const now = performance.now();
+    const sinceStart = now - speechStartedAtRef.current;
+    const sinceChunk = lastChunkAtRef.current ? now - lastChunkAtRef.current : Number.POSITIVE_INFINITY;
+    if (kokoroDoneRef.current) {
+      if (sinceChunk > 1200) {
+        speechPendingRef.current = false;
+        return false;
+      }
+      return true;
+    }
+    // Still generating/streaming: allow a generous window, then let
+    // the late chunks be discarded by the recording barge-in cancel.
+    return sinceStart < 12000 || sinceChunk < 2500;
+  }
   const [celebrated, setCelebrated] = useState("");
   const sfxCtxRef = useRef<AudioContext | null>(null);
   const unlockedRef = useRef(false);
@@ -221,9 +249,16 @@ function Canvas() {
           kokoroFailedRef.current = true;
           setKokoroStatus("unavailable — using system voice");
         } else if (msg.type === "audio" && msg.buffer && msg.id === speakIdRef.current) {
+          if (kokoroFallbackIdsRef.current.has(msg.id)) return;
+          lastChunkAtRef.current = performance.now();
           void playKokoroChunk(msg.buffer);
+        } else if (msg.type === "done" && msg.id === speakIdRef.current) {
+          kokoroDoneRef.current = true;
         } else if (msg.type === "speak-error" && msg.id === speakIdRef.current) {
           // Neural synthesis failed mid-line: say it natively instead.
+          kokoroDoneRef.current = true;
+          speechPendingRef.current = false;
+          setVoiceDiag("Neural voice failed — used system voice");
           if (lastSpokenRef.current) speakNative(lastSpokenRef.current);
         }
       };
@@ -245,7 +280,25 @@ function Canvas() {
       return;
     }
     speakIdRef.current += 1;
-    worker.postMessage({ type: "speak", id: speakIdRef.current, text, voice: "af_heart" });
+    const id = speakIdRef.current;
+    speechPendingRef.current = true;
+    kokoroDoneRef.current = false;
+    speechStartedAtRef.current = performance.now();
+    lastChunkAtRef.current = 0;
+    setVoiceDiag("Neural voice: synthesising…");
+    worker.postMessage({ type: "speak", id, text, voice: "af_heart" });
+    // Stall guard: if no audio arrives in 10s, say it with the system
+    // voice instead of leaving the user in silence. Kokoro chunks for
+    // this line are then ignored, so the two voices never overlap.
+    setTimeout(() => {
+      if (speakIdRef.current === id && lastChunkAtRef.current === 0 && speechPendingRef.current) {
+        kokoroDoneRef.current = true;
+        speechPendingRef.current = false;
+        kokoroFallbackIdsRef.current.add(id);
+        setVoiceDiag("Neural voice stalled — used system voice");
+        speakNative(text);
+      }
+    }, 10000);
   }
 
   async function playKokoroChunk(buffer: ArrayBuffer) {
@@ -259,13 +312,16 @@ function Canvas() {
       source.connect(ctx.destination);
       kokoroSourcesRef.current.add(source);
       source.onended = () => kokoroSourcesRef.current.delete(source);
+      setVoiceDiag(`Neural voice: playing (${decoded.duration.toFixed(1)}s of speech)`);
       source.start();
     } catch {
-      // A bad chunk must not silence the rest of the line.
+      setVoiceDiag("Neural voice: audio decode failed");
     }
   }
 
   function stopKokoroAudio() {
+    speechPendingRef.current = false;
+    kokoroDoneRef.current = true;
     speakIdRef.current += 1;
     for (const source of kokoroSourcesRef.current) {
       try {
@@ -286,6 +342,7 @@ function Canvas() {
     const spoken = spokenHostText(text);
     if (!spoken) return false;
     try {
+      setVoiceDiag("System voice: speaking");
       const voice = pickVoice(window.speechSynthesis.getVoices());
       const { rate, pitch } = prosodyFor(spoken);
       const utter = new SpeechSynthesisUtterance(spoken);
@@ -1047,17 +1104,16 @@ function Canvas() {
     let waitedMs = 0;
     const timer = setInterval(() => {
       waitedMs += 400;
-      const speaking =
-        (typeof window !== "undefined" && Boolean(window.speechSynthesis?.speaking)) ||
-        kokoroSourcesRef.current.size > 0;
-      quietPolls = speaking ? 0 : quietPolls + 1;
+      // Wait for the whole speech lifecycle (Kokoro generation counts,
+      // not just playback) so re-arming never cancels the host's line.
+      quietPolls = isSpeechActive() ? 0 : quietPolls + 1;
       // Two quiet polls (~0.8s of silence after speech) and we listen
       // again. If nothing was spoken at all, the same rule re-arms.
       if (quietPolls >= 2) {
         clearInterval(timer);
         if (convoRef.current) void startRecording();
       }
-      if (waitedMs > 25000) clearInterval(timer);
+      if (waitedMs > 45000) clearInterval(timer);
     }, 400);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1312,7 +1368,7 @@ function Canvas() {
             <option value="native">System (curated)</option>
           </select>
         </label>{" "}
-        <span data-testid="kokoro-status" role="status">Neural voice: {kokoroStatus}</span></span>
+        <span data-testid="kokoro-status" role="status">Neural voice: {kokoroStatus}</span>{voiceDiag ? <span data-testid="voice-diag" role="status"> {voiceDiag}</span> : null}</span>
         <p data-testid="recording-hint">Say one short command — it paints live as you speak, and sends itself when you pause. Stop recording still works if you prefer it.</p>
         <p data-testid="flow-status" role="status">{flowStatus}</p>
         {recording || liveTranscript || livePreview ? (

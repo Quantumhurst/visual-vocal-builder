@@ -39,13 +39,22 @@ function buildHandler() {
     }),
     model: BRAIN_MODEL,
   });
+  // Reasoning-effort A/B (trial only): Muse always reasons; "minimal"
+  // is the lowest accepted setting. Unset = provider default. Set
+  // META_REASONING_EFFORT=minimal to trial it; the harness decides.
+  const effort = process.env.META_REASONING_EFFORT;
+  const agentConfig = {
+    model: serviceAdapter.getLanguageModel(),
+    prompt: VVB_SYSTEM_PROMPT,
+    ...(effort ? { providerOptions: { openai: { reasoningEffort: effort } } } : {}),
+  };
   // Register the agent the UI binds to (useCoAgent name "vvb") alongside
   // "default" (useCopilotChat's implicit agent). Both use the same model
   // construction the runtime itself uses for its auto-created default.
   const runtime = new CopilotRuntime({
     agents: {
-      default: new BuiltInAgent({ model: serviceAdapter.getLanguageModel(), prompt: VVB_SYSTEM_PROMPT }),
-      vvb: new BuiltInAgent({ model: serviceAdapter.getLanguageModel(), prompt: VVB_SYSTEM_PROMPT }),
+      default: new BuiltInAgent(agentConfig),
+      vvb: new BuiltInAgent(agentConfig),
     },
   });
   const { handleRequest } = copilotRuntimeNextJSAppRouterEndpoint({
