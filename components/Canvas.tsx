@@ -27,34 +27,13 @@ import {
   DEMO_FOUNDERS,
   DEMO_JURISDICTIONS,
 } from "../lib/demo-data";
-import { setFounderShare } from "../lib/equity";
-import {
-  FILING_STEPS_PACK,
-  S85_PACK,
-  findFact,
-  findFactById,
-} from "../lib/knowledge";
-import { buildLawyerSummary } from "../lib/lawyer-summary";
+import { FILING_STEPS_PACK, S85_PACK } from "../lib/knowledge";
 import type { SharedState } from "../lib/state";
 import TrustStrip from "./TrustStrip";
 import { verifyPaintedCards } from "../lib/verifier";
-import { resolveHostPrompt } from "../lib/host-questions";
+import { resolveHostPrompt, shortFounderNames } from "../lib/host-questions";
+import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary } from "../lib/state-updates";
 
-const INITIAL_STATE: SharedState = {
-  currentBeat: "jurisdiction",
-  transcript: "",
-  jurisdictions: DEMO_JURISDICTIONS,
-  selectedJurisdiction: null,
-  founders: DEMO_FOUNDERS,
-  equityNote: "",
-  checklist: DEMO_CHECKLIST,
-  rolloverCard: null,
-  rolloverNote: "",
-  filingStepsCard: null,
-  filingStepsNote: "",
-  lawyerPackage: "",
-  lawyerNote: "",
-};
 
 const BEATS = [
   { id: "jurisdiction", label: "Jurisdiction" },
@@ -84,7 +63,7 @@ function Canvas() {
   // Before the provider syncs agent state, `state` is undefined — and it can
   // also arrive as an empty or partial object. Merge over the initial state
   // so every render read has a value; never dereference `state` directly.
-  const view = { ...INITIAL_STATE, ...state };
+  const view = withDefaults(state);
   // Day 5: separate verifier over the painted cards (pure, on state
   // change, outside the voice turn path — it never blocks a turn).
   const verification = verifyPaintedCards(view);
@@ -113,34 +92,13 @@ function Canvas() {
   // the same function. Both normalize through setFounderShare(), so
   // neither surface can leave the split inconsistent — it totals 100%.
   function updateEquity(index: number, percent: number, via: string) {
-    setState((prev) => {
-      const base = { ...INITIAL_STATE, ...prev };
-      const founders = setFounderShare(base.founders, index, percent);
-      const changed = founders[index];
-      return {
-        ...base,
-        currentBeat: "equity" as const,
-        founders,
-        equityNote: changed
-          ? `${changed.name} set to ${changed.percent}% (${via}); other founder(s) adjusted so the split totals 100%.`
-          : base.equityNote,
-      };
-    });
+    setState((prev) => applyEquity(withDefaults(prev), index, percent, via));
   }
 
   // THE one shared-state update path for the checklist (beat 3):
   // clicks and voice-agent actions both go through here.
   function updateChecklistItem(itemId: string, done: boolean) {
-    setState((prev) => {
-      const base = { ...INITIAL_STATE, ...prev };
-      return {
-        ...base,
-        currentBeat: "checklist" as const,
-        checklist: base.checklist.map((item) =>
-          item.id === itemId ? { ...item, done } : item,
-        ),
-      };
-    });
+    setState((prev) => applyChecklistItem(withDefaults(prev), itemId, done));
   }
 
   // Grounding for the agent: fictional company/places, current equity
@@ -168,7 +126,7 @@ function Canvas() {
         factId: fact.factId,
         topic: fact.topic,
       })),
-      note: "All demo data. Nothing here is a real jurisdiction or filing. For a rollover question, call showRolloverFact with a factId from s85Facts — never invent rollover content. For filing steps or fees, call showFilingSteps with factIds from filingStepsFacts — never invent steps or fees. To prepare the lawyer package, call prepareLawyerSummary.",
+      note: "Demo only. Facts come only from tools.",
     },
   });
 
@@ -188,20 +146,7 @@ function Canvas() {
       },
     ],
     handler: async ({ jurisdiction }) => {
-      const match = DEMO_JURISDICTIONS.find(
-        (row) =>
-          jurisdiction &&
-          row.jurisdiction.toLowerCase() === jurisdiction.toLowerCase(),
-      );
-      setState((prev) => ({
-        ...INITIAL_STATE,
-        ...prev,
-        currentBeat: "jurisdiction",
-        jurisdictions: DEMO_JURISDICTIONS,
-        selectedJurisdiction: match
-          ? match.jurisdiction
-          : (prev?.selectedJurisdiction ?? null),
-      }));
+      setState((prev) => applyJurisdiction(withDefaults(prev), jurisdiction ?? null));
     },
     render: () => <></>,
   });
@@ -227,16 +172,13 @@ function Canvas() {
       },
     ],
     handler: async ({ founder, percent }) => {
-      const base = { ...INITIAL_STATE, ...state };
-      const wanted = (founder ?? "").toLowerCase();
-      let index = base.founders.findIndex((entry) =>
-        entry.name.toLowerCase().includes(wanted),
-      );
-      if (index < 0 && (wanted === "me" || wanted === "i" || wanted === "")) {
-        index = 0;
+      const base = withDefaults(state);
+      const index = resolveFounderIndex(base.founders, founder ?? "");
+      if (index < 0) {
+        return `Nothing changed: no founder matched "${founder}". Founders are ${base.founders.map((f) => f.name).join(", ")}. Nothing was edited; please ask again with one of those names.`;
       }
-      if (index < 0) index = 0;
       updateEquity(index, Number(percent), "voice");
+      return `Updated ${base.founders[index].name} to ${Number(percent)}%.`;
     },
   });
 
@@ -260,9 +202,7 @@ function Canvas() {
       "Mark the first not-yet-done filing-checklist item done and move the walk forward. Use as the user answers each checklist step.",
     parameters: [],
     handler: async () => {
-      const base = { ...INITIAL_STATE, ...state };
-      const next = base.checklist.find((item) => !item.done);
-      if (next) updateChecklistItem(next.id, true);
+      setState((prev) => applyAdvanceChecklist(withDefaults(prev)));
     },
   });
 
@@ -278,31 +218,7 @@ function Canvas() {
       { name: "question", type: "string", description: "The user's rollover question.", required: false },
     ],
     handler: async ({ factId, question }) => {
-      const found = findFactById(factId ?? "");
-      setState((prev) => {
-        const base = { ...INITIAL_STATE, ...prev };
-        if (!found) {
-          return {
-            ...base,
-            currentBeat: "rollover" as const,
-            rolloverCard: null,
-            rolloverNote:
-              "No grounded fact matched that request in the knowledge pack, so no fact card is shown. An ungrounded answer would fail this beat.",
-          };
-        }
-        return {
-          ...base,
-          currentBeat: "rollover" as const,
-          rolloverCard: {
-            question: question ?? "Rollover question",
-            answer: found.fact.text,
-            packId: found.pack.packId,
-            factId: found.fact.factId,
-            packTitle: found.pack.title,
-          },
-          rolloverNote: "",
-        };
-      });
+      setState((prev) => applyRolloverFact(withDefaults(prev), factId ?? "", question));
     },
   });
 
@@ -323,37 +239,8 @@ function Canvas() {
       { name: "question", type: "string", description: "The user's question.", required: false },
     ],
     handler: async ({ factIds, question }) => {
-      const ids = Array.isArray(factIds) ? factIds : [];
-      const found = ids
-        .map((factId) => findFact(FILING_STEPS_PACK.packId, String(factId)))
-        .filter((entry) => entry !== null);
-      setState((prev) => {
-        const base = { ...INITIAL_STATE, ...prev };
-        if (found.length === 0) {
-          return {
-            ...base,
-            currentBeat: "filingsteps" as const,
-            filingStepsCard: null,
-            filingStepsNote:
-              "No grounded fact matched that request in the filing-steps pack, so no card is shown. An ungrounded answer would fail this component.",
-          };
-        }
-        return {
-          ...base,
-          currentBeat: "filingsteps" as const,
-          filingStepsCard: {
-            question: question ?? "Filing steps and fees",
-            packId: FILING_STEPS_PACK.packId,
-            packTitle: FILING_STEPS_PACK.title,
-            facts: found.map((entry) => ({
-              factId: entry.fact.factId,
-              topic: entry.fact.topic,
-              text: entry.fact.text,
-            })),
-          },
-          filingStepsNote: "",
-        };
-      });
+      const ids = Array.isArray(factIds) ? factIds.map(String) : [];
+      setState((prev) => applyFilingSteps(withDefaults(prev), ids, question));
     },
   });
 
@@ -361,16 +248,7 @@ function Canvas() {
   // agent action share buildLawyerSummary() over shared state — one
   // package, rendered on the canvas. Prep only; nothing is sent.
   function prepareLawyerPackage() {
-    setState((prev) => {
-      const base = { ...INITIAL_STATE, ...prev };
-      return {
-        ...base,
-        currentBeat: "summary" as const,
-        lawyerPackage: buildLawyerSummary(base, DEMO_COMPANY_NAME),
-        lawyerNote:
-          "Summary prepared. Copy or download it and forward it yourself — this app does not send email.",
-      };
-    });
+    setState((prev) => applyLawyerSummary(withDefaults(prev)));
   }
 
   useCopilotAction({
@@ -386,7 +264,7 @@ function Canvas() {
   async function sendToAgent(text: string) {
     const trimmed = text.trim();
     if (!trimmed) return;
-    setState((prev) => ({ ...INITIAL_STATE, ...prev, transcript: trimmed }));
+    setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
     messageIdRef.current += 1;
     await appendMessage(
       new TextMessage({
@@ -452,7 +330,7 @@ function Canvas() {
     prevBeatRef.current = view.currentBeat;
     document.querySelector(`[data-beat="${view.currentBeat}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [view.currentBeat]);
-  const hostPrompt = resolveHostPrompt(messages as never, view.currentBeat, view.founders.map((f) => f.name.includes("Orbit") ? "Orbit" : f.name.includes("Nova") ? "Nova" : f.name));
+  const hostPrompt = resolveHostPrompt(messages as never, view.currentBeat, shortFounderNames(view.founders), view.selectedJurisdiction);
 
   return (
     <main style={{ maxWidth: "900px", margin: "0 auto", padding: "2rem" }}>
@@ -542,11 +420,7 @@ function Canvas() {
         rows={view.jurisdictions}
         selected={view.selectedJurisdiction}
         onSelect={(jurisdiction) =>
-          setState((prev) => ({
-            ...INITIAL_STATE,
-            ...prev,
-            selectedJurisdiction: jurisdiction,
-          }))
+          setState((prev) => ({ ...withDefaults(prev), selectedJurisdiction: jurisdiction }))
         }
       />
 
@@ -554,11 +428,7 @@ function Canvas() {
         rows={view.jurisdictions}
         selected={view.selectedJurisdiction}
         onSelect={(jurisdiction) =>
-          setState((prev) => ({
-            ...INITIAL_STATE,
-            ...prev,
-            selectedJurisdiction: jurisdiction,
-          }))
+          setState((prev) => ({ ...withDefaults(prev), selectedJurisdiction: jurisdiction }))
         }
       />
       </div>

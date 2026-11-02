@@ -6,7 +6,7 @@
 
 import type { ChecklistItem, JurisdictionRow } from "./state";
 import type { FounderShare } from "./equity";
-import { CHECKLIST_PACK } from "./knowledge";
+import { CHECKLIST_PACK } from "./knowledge.ts";
 
 export const DEMO_JURISDICTIONS: JurisdictionRow[] = [
   {

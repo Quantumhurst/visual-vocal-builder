@@ -3,11 +3,20 @@ import type { SharedState } from "./state";
 
 export type Beat = SharedState["currentBeat"];
 
-export function getHostQuestion(beat: Beat, founderNames: string[] = ["Nova", "Orbit"]): string {
+export function shortFounderNames(founders: readonly ({ name: string } | string)[] = []): string[] {
+  return founders.map((f) => {
+    const name = typeof f === "string" ? f : f.name;
+    if (name.includes("Orbit")) return "Orbit";
+    if (name.includes("Nova")) return "Nova";
+    return name;
+  });
+}
+
+export function getHostQuestion(beat: Beat, founderNames: string[] = ["Nova", "Orbit"], selected?: string | null): string {
   const [a = "Nova", b = "Orbit"] = founderNames;
   switch (beat) {
     case "jurisdiction": return "Pick your home base — Mars, Europa, or Andromeda Galaxy?";
-    case "equity": return `Mars locked in! Next up: how should ${a} and ${b} split the 100% equity?`;
+    case "equity": return selected ? `${selected} locked in! Next up: how should ${a} and ${b} split the 100% equity?` : `Home base pending. Next up: how should ${a} and ${b} split the 100% equity?`;
     case "checklist": return "Equity set. Which filing step should we tackle first?";
     case "rollover": return "Checklist moving. Want the s.85 rollover fact card for this setup?";
     case "filingsteps": return "Rollover noted. Ready to walk the filing steps and fees in order?";
@@ -39,8 +48,8 @@ export function getLatestAssistantText(messages: readonly Msg[] | undefined | nu
   return null;
 }
 
-export function resolveHostPrompt(messages: readonly Msg[] | undefined | null, beat: Beat, founderNames?: string[]): { text: string; source: "agent" | "fallback" } {
+export function resolveHostPrompt(messages: readonly Msg[] | undefined | null, beat: Beat, founderNames?: string[], selected?: string | null): { text: string; source: "agent" | "fallback" } {
   const latest = getLatestAssistantText(messages);
   if (latest) return { text: latest, source: "agent" };
-  return { text: getHostQuestion(beat, founderNames), source: "fallback" };
+  return { text: getHostQuestion(beat, founderNames, selected), source: "fallback" };
 }
