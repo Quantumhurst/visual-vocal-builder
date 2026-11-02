@@ -16,7 +16,21 @@ cp .env.example .env   # fill in META_API_KEY (never commit .env)
 npm run dev
 ```
 
-Open http://localhost:3000, allow mic access, and speak. (On a machine without a mic, the same `/api/transcribe` route accepts a test-audio upload — see Day 1 notes.)
+Open http://localhost:3000, allow mic access, and speak.
+
+`/api/transcribe` accepts only raw PCM16, 16 kHz mono. Arbitrary webm/wav uploads no longer work. To test-upload from a wav file:
+
+```bash
+ffmpeg -i in.wav -ac 1 -ar 16000 -f s16le out.pcm
+curl -F "audio=@out.pcm;type=audio/L16" http://localhost:3000/api/transcribe
+```
+
+Check the code with:
+
+```bash
+npm test
+npm run typecheck
+```
 
 ## How it works
 
@@ -35,6 +49,12 @@ Open http://localhost:3000, allow mic access, and speak. (On a machine without a
 Day 2 catalog: fresh entries in `lib/catalog.ts` for the jurisdiction table, equity slider, filing checklist, and rollover fact card, all written in-window and driven by CopilotKit shared state (A2UI contained mode).
 
 Day 3 catalog + knowledge extension (two components, both fresh in-window): a grounded filing-steps/fees knowledge pack (`corp-plan-filing-steps-fees-v1` in `lib/knowledge.ts`) rendered by the `FilingSteps` card (catalog `vvb-filing-steps-v1`) — pack text verbatim with pack/fact grounding, unknown ids show no card, every fee figure DEMO-labeled and fictional; and the lawyer-summary package display (catalog `vvb-lawyer-summary-v1`) — beat 5's package built by `lib/lawyer-summary.ts` from shared state and rendered on the canvas whether prepared by button or by the agent action `prepareLawyerSummary`. Prep only; no send path. Tests in `tests/day3.test.mjs` (12/12 with the Day 2 suite).
+
+## Follow-ups
+
+- CopilotKit v2 migration.
+- Shared rate-limit store (e.g. Upstash/Redis) instead of per-instance in-memory counts.
+- Kokoro TTS.
 
 ## Fresh-build note
 
