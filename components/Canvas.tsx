@@ -35,6 +35,7 @@ import { resolveHostPrompt, shortFounderNames } from "../lib/host-questions";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
 import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary } from "../lib/state-updates";
 import { concatFloat32, toPcm16k } from "../lib/pcm";
+import { clearedVoiceErrors, hasRetryAudio, makeTranscribeFailure, type TranscribeFailure } from "../lib/voice-reliability";
 import { computeSectionScrollTop, firstChangedBeat, shouldAutoScroll, turnResultSignature } from "../lib/scroll";
 import { MAX_PCM_BYTES } from "../lib/request-guard";
 
@@ -92,6 +93,9 @@ function Canvas() {
   const [lastTranscript, setLastTranscript] = useState("");
   const [ack, setAck] = useState("");
   const [turnError, setTurnError] = useState("");
+  const [transcribeFailure, setTranscribeFailure] = useState<TranscribeFailure | null>(null);
+  const [hasLastAudio, setHasLastAudio] = useState(false);
+  const lastAudioRef = useRef<ArrayBuffer | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -274,6 +278,15 @@ function Canvas() {
     },
   });
 
+  // Every new turn starts with no displayed error. Last transcript and
+  // host reply are separate state and are deliberately not cleared here.
+  function clearTurnErrors() {
+    const cleared = clearedVoiceErrors();
+    setTurnError(cleared.turnError);
+    setTranscribeFailure(cleared.transcribeFailure);
+    setNotice(cleared.notice);
+  }
+
   // One selection path for planet clicks, table rows, and button picks.
   // Re-picking the current home base is never silent: it confirms aloud.
   function handleSelectJurisdiction(jurisdiction: string) {
@@ -282,13 +295,14 @@ function Canvas() {
     } else {
       setAck("");
     }
-    setTurnError("");
+    clearTurnErrors();
     setState((prev) => ({ ...withDefaults(prev), selectedJurisdiction: jurisdiction }));
   }
 
   async function sendToAgent(text: string) {
     const trimmed = text.trim();
     if (!trimmed || sending || isLoading) return;
+    clearTurnErrors();
     setLastTranscript(trimmed);
     setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
     const sel = view.selectedJurisdiction;
@@ -298,7 +312,6 @@ function Canvas() {
     } else {
       setAck("");
     }
-    setTurnError("");
     pendingTurnRef.current = { signature: turnResultSignature(view, hostPrompt.text), text: trimmed };
     setSending(true);
     messageIdRef.current += 1;
@@ -350,6 +363,44 @@ function Canvas() {
     };
   }, []);
 
+  // Same existing transcribe path for a fresh recording and for Retry.
+  async function transcribeAndSend(buf: ArrayBuffer) {
+    clearTurnErrors();
+    const blob = new Blob([buf], { type: "audio/L16" });
+    const form = new FormData();
+    form.append("audio", blob, "recording.pcm");
+    setTranscribing(true);
+    setNotice("Transcribing…");
+    try {
+      const res = await fetch("/api/transcribe", {
+        method: "POST",
+        body: form,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNotice("");
+        setTranscribeFailure(makeTranscribeFailure(String(data.error ?? res.statusText)));
+        return;
+      }
+      setNotice("");
+      await sendToAgent(data.transcript ?? "");
+    } catch (error) {
+      setNotice("");
+      setTranscribeFailure(
+        makeTranscribeFailure(error instanceof Error ? error.message : "unknown error"),
+      );
+    } finally {
+      setTranscribing(false);
+    }
+  }
+
+  async function retryTranscribe() {
+    const buf = lastAudioRef.current;
+    if (!hasRetryAudio(buf) || !buf || recording || transcribing || sending || isLoading) return;
+    clearTurnErrors();
+    await transcribeAndSend(buf);
+  }
+
   async function finishRecording() {
     if (finishingRef.current) return;
     finishingRef.current = true;
@@ -361,50 +412,29 @@ function Canvas() {
     cleanupAudio();
     try {
       if (!inputRate || inputRate <= 0) {
-        setNotice("Transcribe failed: microphone capture failed (no audio context).");
+        setTranscribeFailure(makeTranscribeFailure("microphone capture failed (no audio context)"));
         return;
       }
       const samples = concatFloat32(chunks);
       if (samples.length === 0) {
-        setNotice("Transcribe failed: no audio captured.");
+        setTranscribeFailure(makeTranscribeFailure("no audio captured"));
         return;
       }
       const pcm = toPcm16k(samples, inputRate);
       const byteLength = pcm.byteLength;
       if (byteLength === 0 || byteLength % 2 !== 0) {
-        setNotice("Transcribe failed: invalid PCM audio.");
+        setTranscribeFailure(makeTranscribeFailure("invalid PCM audio"));
         return;
       }
       if (byteLength > MAX_PCM_BYTES) {
-        setNotice("Transcribe failed: recording too long (60s max).");
+        setTranscribeFailure(makeTranscribeFailure("recording too long (60s max)"));
         return;
       }
       const buf = new ArrayBuffer(pcm.byteLength);
       new Int16Array(buf).set(pcm);
-      const blob = new Blob([buf], { type: "audio/L16" });
-      const form = new FormData();
-      form.append("audio", blob, "recording.pcm");
-      setTranscribing(true);
-      setNotice("Transcribing…");
-      try {
-        const res = await fetch("/api/transcribe", {
-          method: "POST",
-          body: form,
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          setNotice(`Transcribe failed: ${data.error ?? res.statusText}`);
-          return;
-        }
-        setNotice("");
-        await sendToAgent(data.transcript ?? "");
-      } catch (error) {
-        setNotice(
-          `Transcribe failed: ${error instanceof Error ? error.message : "unknown error"}`,
-        );
-      } finally {
-        setTranscribing(false);
-      }
+      lastAudioRef.current = buf;
+      setHasLastAudio(true);
+      await transcribeAndSend(buf);
     } finally {
       finishingRef.current = false;
     }
@@ -415,6 +445,9 @@ function Canvas() {
       await finishRecording();
       return;
     }
+    clearTurnErrors();
+    lastAudioRef.current = null;
+    setHasLastAudio(false);
     let stream: MediaStream | null = null;
     let ctx: AudioContext | null = null;
     try {
@@ -560,7 +593,15 @@ function Canvas() {
         >
           {busy ? "Agent working…" : "Send to agent"}
         </button>
-        <span data-testid="turn-phase" role="status">{turnPhase === "recording" ? "Recording…" : turnPhase === "transcribing" ? "Transcribing…" : turnPhase === "sending" ? "Sending…" : turnPhase === "agent-busy" ? "Agent working…" : "Ready"}</span>
+        <span data-testid="turn-phase" role="status">{turnPhase === "recording" ? "Recording…" : turnPhase === "transcribing" ? "Transcribing…" : turnPhase === "sending" ? "Sending…" : turnPhase === "agent-busy" ? "Agent working…" : "Ready"}</span>{" "}
+        <button
+          type="button"
+          data-testid="restart-conversation"
+          onClick={() => window.location.reload()}
+        >
+          Restart conversation
+        </button>
+        <p data-testid="recording-hint">Say one short command, then Stop recording to send it.</p>
         <div aria-label="Example commands" style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
           <span>Try:</span>
           {EXAMPLE_COMMANDS.map((chip) => (
@@ -575,6 +616,26 @@ function Canvas() {
         </div>
         {busy ? <p data-testid="agent-busy" role="status">Agent working…</p> : null}
         {turnError ? <p data-testid="turn-error" role="alert">{turnError}</p> : null}
+        {transcribeFailure ? (
+          <div data-testid="transcribe-failure">
+            <p role="alert">
+              {transcribeFailure.plain}{" "}
+              <span data-testid="transcribe-failure-detail">Transcribe failed: {transcribeFailure.detail}</span>
+            </p>
+            {hasLastAudio ? (
+              <button
+                type="button"
+                data-testid="retry-transcribe"
+                disabled={recording || transcribing || sending || isLoading}
+                onClick={retryTranscribe}
+              >
+                Retry
+              </button>
+            ) : (
+              <p data-testid="typed-fallback-hint">Type the command below to send it without voice.</p>
+            )}
+          </div>
+        ) : null}
         {notice ? <p>{notice}</p> : null}
         {shownTranscript ? (
           <p data-testid="last-transcript">

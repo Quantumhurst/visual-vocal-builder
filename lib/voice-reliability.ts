@@ -1,0 +1,39 @@
+// Pure voice-reliability helpers (no DOM, unit-testable).
+
+export interface TranscribeFailure {
+  plain: string;
+  detail: string;
+}
+
+export interface VoiceErrorState {
+  turnError: string;
+  transcribeFailure: TranscribeFailure | null;
+  notice: string;
+}
+
+export const EMPTY_VOICE_ERRORS: VoiceErrorState = {
+  turnError: "",
+  transcribeFailure: null,
+  notice: "",
+};
+
+// A new turn (recording start, typed send, or retry) starts from a clean
+// error slate. Transcript and host reply live outside this state, so
+// clearing errors never clears them. Returns a fresh object each call.
+export function clearedVoiceErrors(): VoiceErrorState {
+  return { turnError: "", transcribeFailure: null, notice: "" };
+}
+
+// Plain language leads; the exact upstream detail is kept verbatim.
+export function makeTranscribeFailure(detail: string): TranscribeFailure {
+  const trimmed = detail.trim();
+  return {
+    plain: "Speech service busy — your command was not heard. Try again in a moment.",
+    detail: trimmed ? trimmed : "unknown error",
+  };
+}
+
+// Retry is only possible when a recorded audio buffer is held in memory.
+export function hasRetryAudio(lastAudio: ArrayBuffer | null | undefined): boolean {
+  return Boolean(lastAudio) && (lastAudio as ArrayBuffer).byteLength > 0;
+}
