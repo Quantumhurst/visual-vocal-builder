@@ -48,6 +48,23 @@ const FIELD_BEATS: [string, string][] = [
   ["lawyer", "summary"],
 ];
 
+// True when a beat-owned field changed (not just host text). Live
+// previews use this to start the camera glide while a turn is still
+// running; host-only streaming updates never move the viewport.
+export function beatFieldChanged(
+  previousSignature: string | null,
+  currentSignature: string,
+): boolean {
+  if (!previousSignature) return false;
+  try {
+    const prev = JSON.parse(previousSignature) as Record<string, unknown>;
+    const curr = JSON.parse(currentSignature) as Record<string, unknown>;
+    return FIELD_BEATS.some(([field]) => JSON.stringify(prev[field]) !== JSON.stringify(curr[field]));
+  } catch {
+    return false;
+  }
+}
+
 export function firstChangedBeat(
   previousSignature: string | null,
   currentSignature: string,

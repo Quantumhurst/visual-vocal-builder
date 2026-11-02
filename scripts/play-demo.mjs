@@ -148,6 +148,11 @@ async function oneRun(browser, idx) {
   };
   await page.goto(URL, { waitUntil: "networkidle2", timeout: 60000 });
   await waitReady(page, 60000);
+  // Deterministic speech capture: the neural engine plays Web Audio,
+  // which the stubs cannot record — pin the curated native engine so
+  // G5 asserts the exact spoken string. Kokoro readiness is verified
+  // separately in a manual browser pass.
+  await page.select('[data-testid="voice-engine"]', "native").catch(() => {});
 
   const s1 = await step("pick-mars", "Let's go with Mars");
   const s2 = await step("orbit-70", "Make Orbit 70%");

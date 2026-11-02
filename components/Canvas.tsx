@@ -10,6 +10,7 @@ import {
 } from "@copilotkit/react-core";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import dynamic from "next/dynamic";
+import "lenis/dist/lenis.css";
 import JurisdictionTable from "./JurisdictionTable";
 
 // Pixi canvas must never render on the server (Day 4 hero island).
@@ -39,12 +40,16 @@ import { describeChange, currentStateSummary } from "../lib/describe-change";
 import { beatProgress } from "../lib/beat-progress";
 import { concatFloat32, toPcm16k } from "../lib/pcm";
 import { clearedVoiceErrors, hasRetryAudio, makeTranscribeFailure, type TranscribeFailure } from "../lib/voice-reliability";
-import { computeSectionScrollTop, firstChangedBeat, shouldAutoScroll, turnResultSignature } from "../lib/scroll";
+import { beatFieldChanged, firstChangedBeat, turnResultSignature } from "../lib/scroll";
+import { ReactLenis, useLenis } from "lenis/react";
+import type Lenis from "lenis";
+import confetti from "canvas-confetti";
 import { MAX_PCM_BYTES } from "../lib/request-guard";
 import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, IDLE_ACTIVITY, type VoiceActivity } from "../lib/live-intent";
 import { cueForChange, CUES, type CueName } from "../lib/sound-cues";
 import { missionFor } from "../lib/mission";
 import { spokenHostText } from "../lib/spoken-text";
+import { pickVoice, prosodyFor } from "../lib/voice-select";
 
 
 const BEATS = [
@@ -141,6 +146,13 @@ function Canvas() {
   // Game layer: sound cues + spoken host + mission celebration.
   const [soundOn, setSoundOn] = useState(true);
   const [voiceOn, setVoiceOn] = useState(true);
+  const [voiceEngine, setVoiceEngine] = useState<"kokoro" | "native">("kokoro");
+  const [kokoroStatus, setKokoroStatus] = useState("not loaded yet");
+  const kokoroWorkerRef = useRef<Worker | null>(null);
+  const kokoroReadyRef = useRef(false);
+  const kokoroFailedRef = useRef(false);
+  const kokoroSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const speakIdRef = useRef(0);
   const [celebrated, setCelebrated] = useState("");
   const sfxCtxRef = useRef<AudioContext | null>(null);
   const unlockedRef = useRef(false);
@@ -181,6 +193,103 @@ function Canvas() {
     } catch {
       // ignore
     }
+    stopKokoroAudio();
+  }
+
+  // Kokoro neural voice: Web Worker synthesis, Web Audio playback.
+  // Best-effort by design — any failure marks it down and the curated
+  // native voice below takes over permanently for the session.
+  function ensureKokoro() {
+    if (typeof window === "undefined" || kokoroWorkerRef.current || kokoroFailedRef.current) return;
+    try {
+      const worker = new Worker("/kokoro-worker.js", { type: "module" });
+      kokoroWorkerRef.current = worker;
+      setKokoroStatus("loading");
+      worker.onmessage = (event: MessageEvent) => {
+        const msg = event.data as { type?: string; id?: number; buffer?: ArrayBuffer };
+        if (msg.type === "ready") {
+          kokoroReadyRef.current = true;
+          setKokoroStatus("ready");
+        } else if (msg.type === "error") {
+          kokoroFailedRef.current = true;
+          setKokoroStatus("unavailable — using system voice");
+        } else if (msg.type === "audio" && msg.buffer && msg.id === speakIdRef.current) {
+          void playKokoroChunk(msg.buffer);
+        } else if (msg.type === "speak-error" && msg.id === speakIdRef.current) {
+          // Neural synthesis failed mid-line: say it natively instead.
+          if (lastSpokenRef.current) speakNative(lastSpokenRef.current);
+        }
+      };
+      worker.onerror = () => {
+        kokoroFailedRef.current = true;
+        setKokoroStatus("unavailable — using system voice");
+      };
+      worker.postMessage({ type: "init" });
+    } catch {
+      kokoroFailedRef.current = true;
+      setKokoroStatus("unavailable — using system voice");
+    }
+  }
+
+  function kokoroSpeak(text: string) {
+    const worker = kokoroWorkerRef.current;
+    if (!worker || !kokoroReadyRef.current) {
+      speakNative(text);
+      return;
+    }
+    speakIdRef.current += 1;
+    worker.postMessage({ type: "speak", id: speakIdRef.current, text, voice: "af_heart" });
+  }
+
+  async function playKokoroChunk(buffer: ArrayBuffer) {
+    try {
+      const ctx = sfxCtxRef.current ?? new AudioContext();
+      sfxCtxRef.current = ctx;
+      if (ctx.state === "suspended") await ctx.resume();
+      const decoded = await ctx.decodeAudioData(buffer.slice(0));
+      const source = ctx.createBufferSource();
+      source.buffer = decoded;
+      source.connect(ctx.destination);
+      kokoroSourcesRef.current.add(source);
+      source.onended = () => kokoroSourcesRef.current.delete(source);
+      source.start();
+    } catch {
+      // A bad chunk must not silence the rest of the line.
+    }
+  }
+
+  function stopKokoroAudio() {
+    speakIdRef.current += 1;
+    for (const source of kokoroSourcesRef.current) {
+      try {
+        source.stop();
+      } catch {
+        // ignore
+      }
+    }
+    kokoroSourcesRef.current.clear();
+  }
+
+  // Native voice, curated: pick the best English voice actually on
+  // this machine (enhanced/natural beats the robotic default) and
+  // speak clause by clause. Used instantly, and as the permanent
+  // fallback whenever the neural voice is unavailable.
+  function speakNative(text: string) {
+    if (typeof window === "undefined" || !window.speechSynthesis) return false;
+    const spoken = spokenHostText(text);
+    if (!spoken) return false;
+    try {
+      const voice = pickVoice(window.speechSynthesis.getVoices());
+      const { rate, pitch } = prosodyFor(spoken);
+      const utter = new SpeechSynthesisUtterance(spoken);
+      if (voice) utter.voice = voice;
+      utter.rate = rate;
+      utter.pitch = pitch;
+      window.speechSynthesis.speak(utter);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function speakHost(text: string) {
@@ -190,12 +299,15 @@ function Canvas() {
     lastSpokenRef.current = spoken;
     try {
       window.speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(spoken);
-      utter.rate = 1.05;
-      window.speechSynthesis.speak(utter);
     } catch {
-      // Voice is garnish; text guidance always remains on screen.
+      // ignore
     }
+    stopKokoroAudio();
+    if (voiceEngine === "kokoro" && kokoroReadyRef.current) {
+      kokoroSpeak(spoken);
+      return;
+    }
+    speakNative(text);
   }
   function commit(label: string, fn: (s: SharedState) => SharedState): string {
     const before = withDefaults(stateRef.current);
@@ -854,10 +966,12 @@ function Canvas() {
   const mission = missionFor(view);
   const doneCount = Object.values(progress.done).filter(Boolean).length;
 
-  // First gesture unlocks audio/speech (browser autoplay policy).
+  // First gesture unlocks audio/speech (browser autoplay policy)
+  // and starts the neural voice downloading in the background.
   useEffect(() => {
     const unlock = () => {
       unlockedRef.current = true;
+      ensureKokoro();
     };
     window.addEventListener("pointerdown", unlock);
     window.addEventListener("keydown", unlock);
@@ -865,6 +979,7 @@ function Canvas() {
       window.removeEventListener("pointerdown", unlock);
       window.removeEventListener("keydown", unlock);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // The agent talks back: speak its latest line once a turn completes.
@@ -879,10 +994,26 @@ function Canvas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnError, transcribeFailure]);
 
-  // Beat completion celebrates on the mission banner.
+  // Beat completion celebrates on the mission banner, with a
+  // zero-gravity stardust burst over the page (skipped entirely for
+  // reduced-motion users).
   useEffect(() => {
     if (prevDoneCountRef.current >= 0 && doneCount > prevDoneCountRef.current) {
       setCelebrated(mission.title);
+      if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        const launched = Boolean(view.lawyerPackage);
+        void confetti({
+          particleCount: launched ? 120 : 40,
+          spread: launched ? 100 : 65,
+          startVelocity: 32,
+          gravity: 0,
+          scalar: 1.05,
+          ticks: 220,
+          shapes: ["star", "circle"],
+          colors: ["#ffd166", "#7aa2ff", "#e6eaff"],
+          origin: { y: 0.35 },
+        });
+      }
       const t = setTimeout(() => setCelebrated(""), 2200);
       prevDoneCountRef.current = doneCount;
       return () => clearTimeout(t);
@@ -954,29 +1085,42 @@ function Canvas() {
     wasLoadingRef.current = isLoading;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoading, resultSignature]);
+  // Smooth guided flow: the moment a beat-owned field changes — a live
+  // preview mid-speech counts — glide the viewport to that section with
+  // Lenis. Host-only streaming text never moves the camera, and
+  // reduced-motion users get an immediate jump instead of a glide.
+  const lenisRef = useRef<Lenis | null>(null);
+  useLenis((lenis) => {
+    lenisRef.current = lenis;
+  });
   useEffect(() => {
     if (scrolledSignatureRef.current === null) {
       scrolledSignatureRef.current = resultSignature;
       return;
     }
-    if (!shouldAutoScroll(isLoading, scrolledSignatureRef.current, resultSignature)) return;
     const previousSignature = scrolledSignatureRef.current;
+    if (previousSignature === resultSignature) return;
     scrolledSignatureRef.current = resultSignature;
+    if (!beatFieldChanged(previousSignature, resultSignature)) return;
     const beat = firstChangedBeat(previousSignature, resultSignature, view.currentBeat);
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const scrollToTarget = () => {
       const el = document.querySelector(`[data-beat="${beat}"]`) as HTMLElement | null;
       if (!el) return;
-      const elTop = el.getBoundingClientRect().top + window.scrollY;
-      window.scrollTo({ top: computeSectionScrollTop(elTop, el.offsetHeight, window.innerHeight), behavior: "instant" as ScrollBehavior });
+      if (lenisRef.current) {
+        lenisRef.current.scrollTo(el, { offset: -90, duration: reduced ? 0 : 1.35, immediate: reduced });
+      } else {
+        el.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
+      }
     };
     scrollToTarget();
-    // One bounded settle pass: Pixi canvases can shift layout just after a
-    // turn lands, which would otherwise strand the scroll short of target.
+    // One bounded settle pass: Pixi canvases can shift layout just after
+    // a turn lands, which would otherwise strand the scroll short.
     const settle = setTimeout(() => {
       if (scrolledSignatureRef.current === resultSignature) scrollToTarget();
     }, 900);
     return () => clearTimeout(settle);
-  }, [resultSignature, isLoading, view.currentBeat]);
+  }, [resultSignature, view.currentBeat]);
 
   return (
     <main style={{ maxWidth: "900px", margin: "0 auto", padding: "1rem 2rem 2rem" }}>
@@ -1053,7 +1197,22 @@ function Canvas() {
           }}
         >
           {voiceOn ? "Agent voice: on" : "Agent voice: off"}
-        </button>
+        </button>{" "}
+        <label>
+          Voice{" "}
+          <select
+            data-testid="voice-engine"
+            value={voiceEngine}
+            onChange={(e) => {
+              setVoiceEngine(e.target.value as "kokoro" | "native");
+              if (e.target.value === "kokoro") ensureKokoro();
+            }}
+          >
+            <option value="kokoro">Neural (Kokoro)</option>
+            <option value="native">System (curated)</option>
+          </select>
+        </label>{" "}
+        <span data-testid="kokoro-status" role="status">Neural voice: {kokoroStatus}</span>
         <p data-testid="recording-hint">Say one short command — it paints live as you speak, and sends itself when you pause. Stop recording still works if you prefer it.</p>
         <p data-testid="flow-status" role="status">{flowStatus}</p>
         {recording || liveTranscript || livePreview ? (
@@ -1225,7 +1384,9 @@ function Canvas() {
 export default function CanvasHost() {
   return (
     <CopilotKit runtimeUrl="/api/copilotkit">
-      <Canvas />
+      <ReactLenis root options={{ lerp: 0.09, duration: 1.2, smoothWheel: true }}>
+        <Canvas />
+      </ReactLenis>
     </CopilotKit>
   );
 }

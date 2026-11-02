@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { turnResultSignature, shouldAutoScroll, computeScrollTop, firstChangedBeat, computeSectionScrollTop } from "../lib/scroll.ts";
+import { turnResultSignature, shouldAutoScroll, computeScrollTop, firstChangedBeat, computeSectionScrollTop, beatFieldChanged } from "../lib/scroll.ts";
 import { withDefaults, applyJurisdiction, applyEquity, applyRolloverFact } from "../lib/state-updates.ts";
 
 const base = () => withDefaults(null);
@@ -66,4 +66,12 @@ test("firstChangedBeat picks the earliest changed section on the page", () => {
 test("computeSectionScrollTop shows the section end at the viewport bottom", () => {
   assert.equal(computeSectionScrollTop(1000, 800, 700), 1100);
   assert.equal(computeSectionScrollTop(100, 200, 700), 0);
+});
+
+test("beatFieldChanged ignores host-only streaming updates", () => {
+  const s0 = base();
+  const prev = turnResultSignature(s0, "host a");
+  assert.equal(beatFieldChanged(prev, turnResultSignature(s0, "host b, still streaming")), false);
+  assert.equal(beatFieldChanged(prev, turnResultSignature(applyEquity(s0, 0, 70, "voice"), "host b")), true);
+  assert.equal(beatFieldChanged(null, prev), false);
 });
