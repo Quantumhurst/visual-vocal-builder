@@ -30,6 +30,7 @@ import type { SharedState } from "../lib/state";
 import TrustStrip from "./TrustStrip";
 import { verifyPaintedCards } from "../lib/verifier";
 import { getHostQuestion, resolveHostPrompt, shortFounderNames, shouldSpeakFallbackQuestion, type Beat } from "../lib/host-questions";
+import { FIRST_SPEAK_GREETING, hasFirstSpeakGreeting, markFirstSpeakGreeting } from "../lib/first-speak";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
 import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount } from "../lib/state-updates";
 import { pushHistory, popHistory, statesEqual, type HistoryEntry } from "../lib/history";
@@ -173,6 +174,9 @@ function Canvas() {
   // still comes from the same shared state and appliers.
   const [activeModule, setActiveModule] = useState<SharedState["currentBeat"]>("jurisdiction");
   const [stageTab, setStageTab] = useState<"galaxy" | "colony">("galaxy");
+  // Optional archive (s.85 / fees) is collapsed by default; opening an
+  // optional system or clicking one of its tabs reveals it.
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const [missionClock, setMissionClock] = useState(0);
   // A short cinematic for a new home base: the state change is immediate,
   // but a rocket/warp layer covers the viewport switch for ~2.6s.
@@ -201,6 +205,10 @@ function Canvas() {
   const [celebrated, setCelebrated] = useState("");
   const sfxCtxRef = useRef<AudioContext | null>(null);
   const unlockedRef = useRef(false);
+  // The first TALK press is a greeting, not a recording: it announces the
+  // home-base question once per session, then opens the mic. The ref is
+  // the synchronous guard; sessionStorage is the cross-reload marker.
+  const firstSpeakHandledRef = useRef(false);
   const lastSpokenRef = useRef("");
   const prevDoneCountRef = useRef(-1);
   // Voice pre-warm: cache the picked system voice, re-pick once when
@@ -300,7 +308,7 @@ function Canvas() {
   // Voice-out is the curated system voice only: pick the best English
   // voice actually on this machine (enhanced/natural beats the robotic
   // default) with question/statement prosody. No downloads, no model.
-  function speakNative(text: string) {
+  function speakNative(text: string, onDone?: () => void) {
     if (typeof window === "undefined" || !window.speechSynthesis) return false;
     const spoken = spokenHostText(text);
     if (!spoken) return false;
@@ -322,7 +330,12 @@ function Canvas() {
         clearSpeechWatchdog();
         utteranceRef.current = null;
         setHostSpeaking(false);
-        if (!utterCancelledRef.current) requestRearm();
+        if (utterCancelledRef.current) return;
+        // First-Speak owns its post-speech action (open the mic after the
+        // greeting). Run it before requestRearm so startRecording can
+        // cancel/close cleanly without a second auto-rearm racing it.
+        onDone?.();
+        requestRearm();
       };
       utter.onend = () => {
         stampTiming("speechEnd");
@@ -1132,6 +1145,25 @@ function Canvas() {
     }
   }
 
+  // First TALK press only: consume the one-per-session marker. The
+  // in-memory ref is checked first so a rapid double press cannot speak
+  // twice even when sessionStorage is unavailable. The marker is written
+  // before speech so an unsupported voice or a blocked storage API still
+  // opens the mic on the same press instead of looping the greeting.
+  function consumeFirstSpeakGreeting(): boolean {
+    if (firstSpeakHandledRef.current) return false;
+    firstSpeakHandledRef.current = true;
+    let store: Storage | null = null;
+    try {
+      store = window.sessionStorage;
+    } catch {
+      store = null;
+    }
+    if (hasFirstSpeakGreeting(store)) return false;
+    markFirstSpeakGreeting(store);
+    return true;
+  }
+
   async function toggleRecording() {
     if (recording) {
       // A manual stop ends the conversation, not just the turn.
@@ -1149,11 +1181,24 @@ function Canvas() {
       dropQueuedTurn();
       return;
     }
+    unlockedRef.current = true;
     if (convoOn) {
       convoRef.current = true;
       setConvoActive(true);
     }
     setDockOpen(false);
+
+    // First Speak: greet with the existing home-base question, then open
+    // the mic. This is presentation only — no shared state and no fact.
+    if (consumeFirstSpeakGreeting()) {
+      if (voiceOn && typeof window !== "undefined" && window.speechSynthesis) {
+        refreshCachedVoice();
+        if (speakNative(FIRST_SPEAK_GREETING, () => { void startRecording(); })) {
+          return;
+        }
+      }
+    }
+
     await startRecording();
   }
 
@@ -1306,7 +1351,7 @@ function Canvas() {
   // the mic automatically so the talk never "just ends". Any error
   // pauses the loop instead of retrying into a wall.
   useEffect(() => {
-    if (!convoActive || recording || transcribing || sending || isLoading) return;
+    if (!convoActive || recording || transcribing || sending || isLoading || hostSpeaking) return;
     if (turnError || transcribeFailure) {
       const t = setTimeout(() => {
         convoRef.current = false;
@@ -1333,7 +1378,7 @@ function Canvas() {
     }, 400);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [convoActive, recording, transcribing, sending, isLoading, turnError, transcribeFailure]);
+  }, [convoActive, recording, transcribing, sending, isLoading, turnError, transcribeFailure, hostSpeaking]);
 
   // Errors get a dull buzz, never silence.
   useEffect(() => {
@@ -1522,6 +1567,7 @@ function Canvas() {
         const shortcut = MODULES[Number(event.key) - 1];
         if (shortcut) {
           setActiveModule(shortcut.id);
+          if (shortcut.optional) setArchiveOpen(true);
           playCue("highlight");
         }
         return;
@@ -1535,6 +1581,12 @@ function Canvas() {
 
   const structures = colonyProgress(view.checklist);
   const flight = flightPlan(view, activeModule);
+  // Judge view: four required missions stay in the open; the two
+  // optional archive systems and the detailed plan stay tucked away.
+  const requiredFlight = flight.filter((step) => !step.optional);
+  const archiveFlight = flight.filter((step) => step.optional);
+  const requiredModules = MODULES.filter((module) => !module.optional);
+  const archiveModules = MODULES.filter((module) => module.optional);
   const activeMeta = moduleFor(activeModule);
   const activeStep = flight.find((step) => step.id === activeModule) ?? flight[0];
   const clockLabel = formatClock(missionClock);
@@ -1553,6 +1605,7 @@ function Canvas() {
 
   function selectModule(id: SharedState["currentBeat"]) {
     setActiveModule(id);
+    if (moduleFor(id).optional) setArchiveOpen(true);
     playCue("highlight");
   }
 
@@ -1571,69 +1624,31 @@ function Canvas() {
         </div>
 
         <div className="hud-mission" aria-label={`${doneCount} of ${progress.requiredTotal} missions complete`}>
-          <span className="hud-kicker">MISSIONS</span>
-          <div className="hud-pips" aria-hidden="true">
+          <span className="hud-kicker">4 MISSIONS</span>
+          <div className="hud-pips" role="group" aria-label="Required missions">
             {REQUIRED_BEATS.map((beat) => {
               const step = flight.find((entry) => entry.id === beat);
-              return <span key={beat} className={`pip is-${step?.status ?? "pending"}`} />;
+              const meta = moduleFor(beat);
+              return (
+                <button
+                  key={beat}
+                  type="button"
+                  className={`hud-pip is-${step?.status ?? "pending"}`}
+                  data-testid={`hud-pip-${beat}`}
+                  aria-pressed={activeModule === beat}
+                  onClick={() => selectModule(beat)}
+                  title={`${meta.label} — ${step ? flightStatusLabel(step.status) : "PENDING"}`}
+                >
+                  <span className={`pip is-${step?.status ?? "pending"}`} aria-hidden="true" />
+                  <span className="hud-pip-label">{meta.short}</span>
+                </button>
+              );
             })}
           </div>
           <strong className="hud-count">
             {doneCount}
             <span>/{progress.requiredTotal}</span>
           </strong>
-        </div>
-
-        <div className="hud-stats">
-          <div className="stat">
-            <span>HOME BASE</span>
-            <strong>{homeBase}</strong>
-          </div>
-          <div className="stat">
-            <span>COLONY</span>
-            <strong>
-              {structures.built}/{structures.total}
-            </strong>
-          </div>
-          <div className="stat">
-            <span>CREW</span>
-            <strong>{equityLabel}</strong>
-          </div>
-          <div className="stat">
-            <span>CLEARANCE</span>
-            <strong className={verification.counts.flagged > 0 ? "is-warn" : "is-ok"}>
-              {verification.counts.flagged > 0
-                ? `${verification.counts.flagged} FLAGGED`
-                : "VERIFIED"}
-            </strong>
-          </div>
-        </div>
-
-        <div className="hud-actions">
-          <span className="clock" aria-label={`Mission clock ${clockLabel}`}>
-            T+{clockLabel}
-          </span>
-          <button
-            type="button"
-            className="hud-btn"
-            data-testid="sound-toggle"
-            aria-pressed={soundOn}
-            onClick={() => setSoundOn((value) => !value)}
-          >
-            <span aria-hidden="true">{soundOn ? "◉" : "○"}</span> SFX
-          </button>
-          <button
-            type="button"
-            className="hud-btn"
-            data-testid="voice-toggle"
-            aria-pressed={voiceOn}
-            onClick={() => {
-              if (voiceOn) cancelSpeech();
-              setVoiceOn((value) => !value);
-            }}
-          >
-            <span aria-hidden="true">{voiceOn ? "◉" : "○"}</span> VOX
-          </button>
         </div>
       </header>
 
@@ -1658,81 +1673,86 @@ function Canvas() {
             <div className="objective-meter" aria-hidden="true">
               <span style={{ width: `${Math.round((doneCount / progress.requiredTotal) * 100)}%` }} />
             </div>
-            <div className="chip-row">
-              {mission.chips.map((chip) => (
-                <button
-                  key={chip.label}
-                  type="button"
-                  className="chip-btn"
-                  data-testid={`mission-chip-${chip.label}`}
-                  disabled={!canSend}
-                  onClick={async () => {
-                    await sendToAgent(chip.command);
-                  }}
-                >
-                  {chip.label}
-                </button>
-              ))}
-            </div>
             {celebrated ? (
               <p data-testid="mission-celebrated" className="celebrate" role="status">
                 {celebrated}
               </p>
             ) : null}
-          </section>
 
-          <section className="panel flight" aria-label="Flight plan">
-            <div className="panel-head">
-              <span className="eyebrow">FLIGHT PLAN</span>
-              <span className="panel-note">{doneCount}/{progress.requiredTotal} CLEARED</span>
-            </div>
-            <ol className="flight-list">
-              {flight.map((step) => (
-                <li key={step.id} className={`flight-item is-${step.status}`}>
-                  <button
-                    type="button"
-                    onClick={() => selectModule(step.id)}
-                    aria-pressed={activeModule === step.id}
-                    data-testid={`flight-step-${step.id}`}
-                  >
-                    <span className="flight-code">{step.code}</span>
-                    <span className="flight-main">
-                      <strong>{step.label}</strong>
-                      <span>{step.detail}</span>
-                    </span>
-                    <span className="flight-status">{flightStatusLabel(step.status)}</span>
-                  </button>
-                </li>
-              ))}
-            </ol>
+            {/* The four required missions are the only steps in the open.
+                The detailed flight plan, its optional archive rows, and the
+                mission chips live behind one disclosure. */}
+            <details className="objective-more">
+              <summary>
+                <span className="eyebrow">PLAN &amp; QUICK ACTIONS</span>
+                <span className="panel-note">
+                  {doneCount}/{progress.requiredTotal} CLEARED
+                </span>
+              </summary>
+              <div className="objective-more-body">
+                <div className="chip-row">
+                  {mission.chips.map((chip) => (
+                    <button
+                      key={chip.label}
+                      type="button"
+                      className="chip-btn"
+                      data-testid={`mission-chip-${chip.label}`}
+                      disabled={!canSend}
+                      onClick={async () => {
+                        await sendToAgent(chip.command);
+                      }}
+                    >
+                      {chip.label}
+                    </button>
+                  ))}
+                </div>
+                <ol className="flight-list flight-list-compact" aria-label="Four-mission flight plan">
+                  {requiredFlight.map((step) => (
+                    <li key={step.id} className={`flight-item is-${step.status}`}>
+                      <button
+                        type="button"
+                        onClick={() => selectModule(step.id)}
+                        aria-pressed={activeModule === step.id}
+                        data-testid={`flight-step-${step.id}`}
+                      >
+                        <span className="flight-code">{step.code}</span>
+                        <span className="flight-main">
+                          <strong>{step.label}</strong>
+                          <span>{step.detail}</span>
+                        </span>
+                        <span className="flight-status">{flightStatusLabel(step.status)}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+                <details className="plan-archive">
+                  <summary>
+                    <span className="eyebrow">ARCHIVE · S.85 / FEES</span>
+                    <span className="panel-note">OPTIONAL</span>
+                  </summary>
+                  <ol className="flight-list flight-list-compact" aria-label="Optional archive">
+                    {archiveFlight.map((step) => (
+                      <li key={step.id} className={`flight-item is-${step.status}`}>
+                        <button
+                          type="button"
+                          onClick={() => selectModule(step.id)}
+                          aria-pressed={activeModule === step.id}
+                          data-testid={`flight-step-${step.id}`}
+                        >
+                          <span className="flight-code">{step.code}</span>
+                          <span className="flight-main">
+                            <strong>{step.label}</strong>
+                            <span>{step.detail}</span>
+                          </span>
+                          <span className="flight-status">{flightStatusLabel(step.status)}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                </details>
+              </div>
+            </details>
           </section>
-
-          <section className="panel comms" data-testid="host-prompt" aria-label="Host prompt">
-            <div className="comms-head">
-              <span className="signal" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-                <span />
-              </span>
-              <span className="eyebrow">MISSION CONTROL · LIVE</span>
-            </div>
-            <p data-testid="host-prompt-text" className="comms-text">
-              {hostPrompt.text}
-            </p>
-            {ack ? (
-              <p data-testid="host-ack" className="comms-ack" role="status">
-                {ack}
-              </p>
-            ) : null}
-            <p className="micro">
-              Host speech is unverified conversation, not a grounded fact card.
-            </p>
-          </section>
-
-          <p className="rail-demo">
-            DEMO ONLY — not legal advice, not a filing, nothing here is submitted to any registry.
-          </p>
         </aside>
 
         <section className="stage" aria-label="Ship viewport">
@@ -1789,6 +1809,15 @@ function Canvas() {
               HOME BASE <strong>{homeBase}</strong>
             </span>
             <span>
+              COLONY{" "}
+              <strong>
+                {structures.built}/{structures.total}
+              </strong>
+            </span>
+            <span>
+              CREW <strong>{equityLabel}</strong>
+            </span>
+            <span>
               SHIP <strong data-testid="ship-name">{ship}</strong>
             </span>
             <span>
@@ -1834,27 +1863,66 @@ function Canvas() {
         </section>
 
         <aside className="rail rail-systems" aria-label="Ship systems">
-          <div className="module-tabs" role="tablist" aria-label="Systems">
-            {MODULES.map((entry) => {
-              const step = flight.find((item) => item.id === entry.id);
-              return (
-                <button
-                  key={entry.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={activeModule === entry.id}
-                  className={`module-tab is-${step?.status ?? "pending"}`}
-                  onClick={() => selectModule(entry.id)}
-                  title={entry.blurb}
-                >
-                  <span className="module-glyph" aria-hidden="true">
-                    {entry.glyph}
-                  </span>
-                  <span className="module-label">{entry.short}</span>
-                  <span className="module-dot" aria-hidden="true" />
-                </button>
-              );
-            })}
+          <div className="systems-nav">
+            <div className="module-tabs is-core" role="tablist" aria-label="Four required missions">
+              {requiredModules.map((entry) => {
+                const step = flight.find((item) => item.id === entry.id);
+                return (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeModule === entry.id}
+                    className={`module-tab is-${step?.status ?? "pending"}`}
+                    onClick={() => selectModule(entry.id)}
+                    title={entry.blurb}
+                  >
+                    <span className="module-glyph" aria-hidden="true">
+                      {entry.glyph}
+                    </span>
+                    <span className="module-label">{entry.short}</span>
+                    <span className="module-dot" aria-hidden="true" />
+                  </button>
+                );
+              })}
+            </div>
+
+            <details
+              className="archive-tabs"
+              data-testid="archive-tabs"
+              open={archiveOpen}
+              onToggle={(event) => setArchiveOpen(event.currentTarget.open)}
+            >
+              <summary>
+                <span className="archive-title">ARCHIVE</span>
+                <span className="archive-note">S.85 · FEES · OPTIONAL</span>
+                <span className="integrity-chevron" aria-hidden="true">
+                  ⌄
+                </span>
+              </summary>
+              <div className="module-tabs is-archive" role="tablist" aria-label="Optional archive systems">
+                {archiveModules.map((entry) => {
+                  const step = flight.find((item) => item.id === entry.id);
+                  return (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={activeModule === entry.id}
+                      className={`module-tab is-${step?.status ?? "pending"}`}
+                      onClick={() => selectModule(entry.id)}
+                      title={entry.blurb}
+                    >
+                      <span className="module-glyph" aria-hidden="true">
+                        {entry.glyph}
+                      </span>
+                      <span className="module-label">{entry.short}</span>
+                      <span className="module-dot" aria-hidden="true" />
+                    </button>
+                  );
+                })}
+              </div>
+            </details>
           </div>
 
           <div className="panel module-panel" data-active-module={activeModule}>
@@ -1961,6 +2029,57 @@ function Canvas() {
                 Restart conversation
               </button>
             </div>
+
+            <div className="popout-section">
+              <span className="eyebrow">QUICK COMMANDS</span>
+              <div className="popout-chips">
+                {EXAMPLE_COMMANDS.map((chip) => (
+                  <button
+                    key={chip.label}
+                    type="button"
+                    className="chip-btn"
+                    data-testid={`example-chip-${chip.label}`}
+                    disabled={!canSend}
+                    onClick={async () => {
+                      await sendToAgent(chip.command);
+                    }}
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="popout-section">
+              <span className="eyebrow">VOICE &amp; SOUND</span>
+              <div className="popout-grid">
+                <button
+                  type="button"
+                  className="hud-btn"
+                  data-testid="sound-toggle"
+                  aria-pressed={soundOn}
+                  onClick={() => setSoundOn((value) => !value)}
+                >
+                  <span aria-hidden="true">{soundOn ? "◉" : "○"}</span> SFX
+                </button>
+                <button
+                  type="button"
+                  className="hud-btn"
+                  data-testid="voice-toggle"
+                  aria-pressed={voiceOn}
+                  onClick={() => {
+                    if (voiceOn) cancelSpeech();
+                    setVoiceOn((value) => !value);
+                  }}
+                >
+                  <span aria-hidden="true">{voiceOn ? "◉" : "○"}</span> VOX
+                </button>
+              </div>
+              <p className="popout-clock" aria-label={`Mission clock ${clockLabel}`}>
+                MISSION CLOCK T+{clockLabel}
+              </p>
+            </div>
+
             <p data-testid="recording-hint" className="micro">
               Say one short command — it paints live as you speak and sends itself when you pause.
               Space starts the mic; 1–6 opens a system panel.
@@ -1999,11 +2118,24 @@ function Canvas() {
           <span data-testid="flow-status" className="deck-flow" role="status">
             {flowStatus}
           </span>
-          {busy && !recording ? (
-            <span data-testid="agent-busy" className="deck-busy" role="status">
-              AGENT WORKING
-            </span>
+        </div>
+
+        <div className="deck-host" data-testid="host-prompt" aria-label="Host prompt">
+          <span className="deck-host-label">HOST · LIVE</span>
+          <p data-testid="host-prompt-text" className="deck-host-text" title={hostPrompt.text}>
+            {hostPrompt.text}
+          </p>
+          {ack ? (
+            <p data-testid="host-ack" className="deck-host-ack" role="status">
+              {ack}
+            </p>
           ) : null}
+          <span
+            className="deck-host-note"
+            title="Host speech is unverified conversation, not a grounded fact card."
+          >
+            unverified speech
+          </span>
         </div>
 
         {turnError ? (
@@ -2168,24 +2300,9 @@ function Canvas() {
           </div>
         </div>
 
-        <div className="deck-chips" aria-label="Example commands">
-          <span className="eyebrow">QUICK</span>
-          {EXAMPLE_COMMANDS.map((chip) => (
-            <button
-              key={chip.label}
-              type="button"
-              className="chip-btn"
-              data-testid={`example-chip-${chip.label}`}
-              disabled={!canSend}
-              onClick={async () => {
-                await sendToAgent(chip.command);
-              }}
-            >
-              {chip.label}
-            </button>
-          ))}
-          <span className="deck-legal">DEMO ONLY · NO FILING · NO EMAIL</span>
-        </div>
+        <p className="deck-legal">
+          DEMO ONLY · NOT LEGAL ADVICE · NOT A FILING · NOTHING SUBMITTED · NO EMAIL
+        </p>
       </footer>
     </main>
   );

@@ -173,7 +173,7 @@ pre {
   position: relative;
   z-index: 20;
   display: grid;
-  grid-template-columns: minmax(230px, 310px) auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(230px, 310px) minmax(0, 1fr);
   align-items: center;
   gap: 18px;
   padding: 9px 16px;
@@ -279,7 +279,56 @@ pre {
 
 .hud-pips {
   display: flex;
-  gap: 3px;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.hud-pip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim);
+}
+
+.hud-pip:hover {
+  border-color: var(--line);
+  background: rgba(127, 156, 255, 0.07);
+}
+
+.hud-pip[aria-pressed="true"] {
+  border-color: rgba(127, 231, 255, 0.32);
+  background: rgba(127, 231, 255, 0.08);
+}
+
+.hud-pip .pip {
+  width: 12px;
+}
+
+.hud-pip-label {
+  font-family: var(--font-mono);
+  font-size: 7px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+
+.hud-pip[aria-pressed="true"] .hud-pip-label {
+  color: var(--text);
+}
+
+.hud-pip.is-done .hud-pip-label {
+  color: var(--green);
+}
+
+.hud-pip.is-active .hud-pip-label {
+  color: var(--cyan);
+}
+
+.hud-pip.is-partial .hud-pip-label {
+  color: var(--gold);
 }
 
 .pip {
@@ -2303,15 +2352,219 @@ pre {
   margin-top: 3px;
 }
 
+/* ---------- simplified judge view --------------------------------------- */
+
+/* The four required missions are the only steps in the open. The
+   detailed plan, its archive rows, and the example chips are one click
+   away inside disclosures so the first screen stays quiet. */
+
+.objective-more {
+  margin-top: 9px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.objective-more > summary,
+.plan-archive > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.objective-more > summary::-webkit-details-marker,
+.plan-archive > summary::-webkit-details-marker {
+  display: none;
+}
+
+.objective-more > summary .eyebrow,
+.plan-archive > summary .eyebrow {
+  color: var(--muted);
+  font-size: 7px;
+}
+
+.objective-more > summary:hover .eyebrow,
+.plan-archive > summary:hover .eyebrow {
+  color: var(--gold);
+}
+
+.objective-more-body {
+  display: grid;
+  gap: 8px;
+  padding-top: 7px;
+}
+
+.flight-list-compact {
+  gap: 2px;
+}
+
+.flight-list-compact .flight-item button {
+  padding: 4px 5px;
+}
+
+.flight-list-compact .flight-main strong {
+  font-size: 10px;
+}
+
+.plan-archive {
+  padding-top: 6px;
+  border-top: 1px dashed var(--line-soft);
+}
+
+.plan-archive .flight-list {
+  padding-top: 4px;
+}
+
+.systems-nav {
+  display: grid;
+  gap: 6px;
+  flex: none;
+}
+
+.module-tabs.is-core {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.module-tabs.is-archive {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0 4px 4px;
+}
+
+.archive-tabs {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(16, 25, 57, 0.9), rgba(5, 9, 22, 0.95));
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.archive-tabs > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.archive-tabs > summary::-webkit-details-marker {
+  display: none;
+}
+
+.archive-title {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  color: var(--text);
+  text-transform: uppercase;
+}
+
+.archive-note {
+  margin-right: auto;
+  font-family: var(--font-mono);
+  font-size: 7px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+
+.archive-tabs[open] .integrity-chevron {
+  transform: rotate(180deg);
+}
+
+.deck-host {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 0 1px;
+}
+
+.deck-host-label {
+  font-family: var(--font-mono);
+  font-size: 7px;
+  letter-spacing: 0.14em;
+  color: var(--orange);
+  white-space: nowrap;
+}
+
+.deck-host-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #fff4d6;
+}
+
+.deck-host-ack {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--cyan);
+  white-space: nowrap;
+}
+
+.deck-host-note {
+  font-family: var(--font-mono);
+  font-size: 7px;
+  letter-spacing: 0.05em;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.deck-legal {
+  margin: 0;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 7px;
+  line-height: 1.4;
+  letter-spacing: 0.1em;
+  color: var(--dim);
+}
+
+.deck-popout {
+  max-height: min(72vh, 430px);
+  overflow: auto;
+}
+
+.popout-section {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.popout-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.popout-chips .chip-btn {
+  padding: 3px 7px;
+  font-size: 8px;
+}
+
+.popout-clock {
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  letter-spacing: 0.08em;
+  color: var(--gold);
+}
+
 /* ---------- responsive -------------------------------------------------- */
 
 @media (max-width: 1320px) {
-  .hud-stats .stat:nth-child(3) {
-    display: none;
-  }
-
   .hud {
-    grid-template-columns: minmax(220px, 290px) auto minmax(0, 1fr) auto;
+    grid-template-columns: minmax(210px, 270px) minmax(0, 1fr);
     gap: 12px;
   }
 
@@ -2435,7 +2688,16 @@ pre {
     order: 4;
   }
 
-  .deck-chips .deck-legal {
+  .deck-host {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .deck-host-ack {
+    grid-column: 2;
+    white-space: normal;
+  }
+
+  .deck-host-note {
     display: none;
   }
 
@@ -2451,6 +2713,18 @@ pre {
 
   .brand-text .eyebrow {
     font-size: 7px;
+  }
+
+  .hud-pip-label {
+    display: none;
+  }
+
+  .hud-pip {
+    padding: 4px 3px;
+  }
+
+  .hud-pip .pip {
+    width: 15px;
   }
 
   .clock {
