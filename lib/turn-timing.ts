@@ -11,7 +11,6 @@ export type TurnTimings = {
   firstPaint?: number;
   done?: number;
   hostChars?: number;
-  kokoroGenMs?: number;
 };
 
 function lag(from: number | undefined, to: number | undefined): string {
@@ -29,6 +28,5 @@ export function summarizeTimings(t: TurnTimings): string {
     `done ${lag(t.micStart, t.done)}`,
   ];
   if (t.hostChars !== undefined) parts.push(`host ${t.hostChars}ch`);
-  if (t.kokoroGenMs !== undefined) parts.push(`kokoro-gen ${(t.kokoroGenMs / 1000).toFixed(1)}s`);
   return parts.join(", ");
 }

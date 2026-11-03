@@ -162,11 +162,8 @@ async function oneRun(browser, idx) {
   // Turn-phase lives in the Controls pop-out; open it before waiting.
   await page.click('[data-testid="dock-expand"]').catch(() => {});
   await waitReady(page, 60000);
-  // Deterministic speech capture: the neural engine plays Web Audio,
-  // which the stubs cannot record — pin the curated native engine so
-  // G5 asserts the exact spoken string. Kokoro readiness is verified
-  // separately in a manual browser pass.
-  await page.select('[data-testid="voice-engine"]', "native").catch(() => {});
+  // Voice-out is the curated system voice only, so the speechSynthesis
+  // stub captures every spoken line and G5 asserts the exact string.
 
   const s1 = await step("pick-mars", "Let's go with Mars");
   const s2 = await step("orbit-70", "Make Orbit 70%");
