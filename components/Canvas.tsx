@@ -1852,8 +1852,11 @@ function Canvas({ autoStart = false }: { autoStart?: boolean }) {
     <main className="game" data-stage={stageTab}>
       <header className="hud" aria-label="Mission header">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            <span />
+          <span className="brand-orb-wrap" aria-hidden="true">
+            <span className="brand-spin" />
+            <span className="brand-mark">
+              <span />
+            </span>
           </span>
           <div className="brand-text">
             <p className="eyebrow">VVB-01 · ORBITAL FOUNDRY</p>

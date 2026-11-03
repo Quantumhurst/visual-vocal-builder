@@ -203,6 +203,27 @@ pre {
   min-width: 0;
 }
 
+.brand-orb-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 50px;
+  height: 50px;
+  flex: none;
+}
+
+.brand-spin {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid transparent;
+  border-top-color: var(--cyan);
+  border-right-color: rgba(127, 231, 255, 0.38);
+  border-radius: 50%;
+  box-shadow: 0 0 16px -8px var(--cyan);
+  pointer-events: none;
+  animation: orbit 3.2s linear infinite;
+}
+
 .brand-mark {
   position: relative;
   width: 38px;
