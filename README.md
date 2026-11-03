@@ -32,6 +32,8 @@ npm test
 npm run typecheck
 ```
 
+Tests import TypeScript sources directly and need Node 22.18+ for type stripping; the app itself runs on Node 20.9+.
+
 ## How it works
 
 - Voice loop: Muse Voice Transcribe (STT only) → Muse Spark brain via the Meta Model API → CopilotKit `useCoAgent` shared state → canvas re-renders. Board interactions (e.g. clicking a table row) write shared state back without a new prompt.
