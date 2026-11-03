@@ -38,6 +38,19 @@ test("equity intents in either word order", () => {
   assert.equal(parseLiveIntent("make Orbit 170%"), null);
 });
 
+test("bare two-way splits are local intents; named founders still win", () => {
+  for (const text of ["70/30", "70 30", "split it 70 to 30", "70% / 30%"]) {
+    const i = parseLiveIntent(text);
+    assert.equal(i.kind, "equity-split", text);
+    assert.equal(i.first, 70, text);
+    assert.equal(i.second, 30, text);
+  }
+  assert.equal(parseLiveIntent("make Orbit 70%").kind, "equity");
+  assert.equal(parseLiveIntent("70%"), null);
+  assert.equal(parseLiveIntent("70/40"), null);
+  assert.equal(parseLiveIntent("2 owners").kind, "owner-count");
+});
+
 test("checklist, lawyer and grounded-question intents", () => {
   assert.equal(parseLiveIntent("next step please").kind, "checklist-advance");
   assert.equal(parseLiveIntent("mark that done").kind, "checklist-advance");

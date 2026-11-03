@@ -105,6 +105,7 @@ const renderNothing = () => <></>;
 const FAST_INTENT_KINDS: ReadonlySet<LiveIntent["kind"]> = new Set([
   "jurisdiction",
   "equity",
+  "equity-split",
   "checklist-advance",
   "owner-count",
   "cheapest",
@@ -753,14 +754,6 @@ function Canvas() {
             setState((prev) => ({ ...withDefaults(prev), transcript: rawText }));
             setAck("");
             confirmEquitySelection();
-          } else if (cmd.kind === "CHANGE_EQUITY") {
-            announceHeard(rawText);
-            clearConfirmationTimer();
-            answerLocally(
-              "No problem — change the owner count or drag a slider, then confirm.",
-              rawText,
-              { module: "equity", stageTab: "colony", cue: "adjust" },
-            );
           } else if (cmd.kind === "APPROVE_NAME") {
             void sendToAgent(rawText, true);
           }
@@ -834,6 +827,12 @@ function Canvas() {
         const base = withDefaults(stateRef.current);
         const index = resolveFounderIndex(base.founders, intent.founder);
         if (index >= 0) commit("live-preview", (s) => applyEquity(s, index, intent.percent, "voice-live"));
+      } else if (intent.kind === "equity-split") {
+        // A bare "70/30" only has an unambiguous owner order for two
+        // founders. With 3–5 owners, leave it to the agent.
+        const base = withDefaults(stateRef.current);
+        if (base.founders.length !== 2) return null;
+        commit("live-preview", (s) => applyEquity(s, 0, intent.first, "voice-live-split"));
       } else if (intent.kind === "checklist-advance") {
         commit("live-preview", (s) => applyChecklistCount(s, intent.count));
       } else if (intent.kind === "owner-count") {
@@ -1186,6 +1185,7 @@ function Canvas() {
       case "jurisdiction":
         return question || `${intent.jurisdiction} locked in.`;
       case "equity":
+      case "equity-split":
       case "owner-count":
         // Equity changes pause on the confirmation card; do not append
         // the next task's question and make the user feel rushed.
@@ -1318,7 +1318,9 @@ function Canvas() {
         return;
       }
       const canAdjust =
-        pendingIntent?.kind === "owner-count" || pendingIntent?.kind === "equity";
+        pendingIntent?.kind === "owner-count" ||
+        pendingIntent?.kind === "equity" ||
+        pendingIntent?.kind === "equity-split";
       const canEscape =
         pendingIntent?.kind === "undo" || pendingIntent?.kind === "start-over";
       if (!canAdjust && !canEscape) {

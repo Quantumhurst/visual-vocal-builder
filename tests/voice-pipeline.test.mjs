@@ -47,6 +47,37 @@ test("HybridEndpointer: fast-commits confirm split on stable partial + silence",
   assert.equal(committedTurn, 42, "Must remain turn 42, not re-committed");
 });
 
+test("HybridEndpointer: a negative change is not fast-committed mid-sentence", () => {
+  let fast = null;
+  let model = null;
+  const endpointer = new HybridEndpointer(
+    () => ({ equityConfirm: true, namePromptActive: false }),
+    {
+      stabilityMs: 200,
+      silenceMs: 250,
+      onFastCommit: (_turnId, cmd) => {
+        fast = cmd;
+      },
+      onModelCommit: (_turnId, transcript) => {
+        model = transcript;
+      },
+    },
+  );
+
+  endpointer.handleMetaEvent({ type: "speechStart", turnId: 44 });
+  endpointer.handleMetaEvent({ type: "transcript", transcript: "No" });
+  // A natural pause after "No" must not answer before "70/30" arrives.
+  endpointer.onAudioRms(0.005, performance.now() + 500);
+  assert.equal(fast, null, "a bare negative must not fast-commit");
+
+  endpointer.handleMetaEvent({
+    type: "speechComplete",
+    turnId: 44,
+    transcript: "No, 70/30",
+  });
+  assert.equal(model, "No, 70/30");
+});
+
 test("HybridEndpointer: non-fast command passes through to onModelCommit on speechComplete", () => {
   let modelTurn = null;
   let modelTranscript = null;

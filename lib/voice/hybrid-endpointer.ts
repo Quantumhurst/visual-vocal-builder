@@ -12,7 +12,6 @@
 
 export type FastCommandType =
   | { kind: "CONFIRM_EQUITY"; text: string }
-  | { kind: "CHANGE_EQUITY"; text: string }
   | { kind: "APPROVE_NAME"; text: string };
 
 export function normalizeTranscript(raw: string): string {
@@ -156,9 +155,13 @@ export class HybridEndpointer {
       ) {
         return { kind: "CONFIRM_EQUITY", text: this.latestPartialRaw || normText };
       }
-      if (/^(?:no|nope|change|edit|adjust|go\s+back)$/.test(normText)) {
-        return { kind: "CHANGE_EQUITY", text: this.latestPartialRaw || normText };
-      }
+      // Do NOT fast-commit "no"/"change" on a partial. A user correcting
+      // the split says "No, 70/30"; a 350 ms pause after "No" used to
+      // commit the change branch, answer "No problem…", and discard the
+      // rest of the sentence while the mic was still listening. Negative
+      // commands are not latency-critical: let the final transcript reach
+      // sendToAgent, which still handles a pure "no". The confirm path
+      // remains fast because it is short and explicit.
     }
 
     if (ctx.namePromptActive) {

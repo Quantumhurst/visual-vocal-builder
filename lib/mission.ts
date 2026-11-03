@@ -58,7 +58,7 @@ export function missionFor(state: SharedState): Mission {
         { label: "Cheapest place?", command: "What's the cheapest place to incorporate?" },
       ] };
     case "equity":
-      return { beat: nextBeat, step, total, title: `Split the equity on ${place}`, prompt: "Say “Make Orbit 70%”, choose 1–5 owners, or drag the sliders — the split always totals 100%.", chips: [
+      return { beat: nextBeat, step, total, title: `Split the equity on ${place}`, prompt: "Say “70/30”, “Make Orbit 70%”, choose 1–5 owners, or drag the sliders — the split always totals 100%.", chips: [
         { label: "Make Orbit 70%", command: "Make Orbit 70%" },
         { label: "Make Nova 70%", command: "Make Nova 70%" },
         { label: "Even 50/50", command: "Make Nova 50%" },

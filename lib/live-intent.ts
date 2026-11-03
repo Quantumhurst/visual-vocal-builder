@@ -18,6 +18,7 @@ export type ChecklistAdvanceCount = number | "all";
 export type LiveIntent =
   | { kind: "jurisdiction"; jurisdiction: string; key: string; label: string }
   | { kind: "equity"; founder: string; percent: number; key: string; label: string }
+  | { kind: "equity-split"; first: number; second: number; key: string; label: string }
   | { kind: "checklist-advance"; count: ChecklistAdvanceCount; key: string; label: string }
   | { kind: "owner-count"; count: number; key: string; label: string }
   | { kind: "cheapest"; key: string; label: string }
@@ -95,6 +96,27 @@ export function parseLiveIntent(text: string): LiveIntent | null {
         percent,
         key: `equity:${founder}:${percent}`,
         label: `Setting ${founder === "me" || founder === "i" ? "you" : founder} to ${percent}%…`,
+      };
+    }
+  }
+
+  // Bare two-way split: "70/30", "70 30", "split it 70 to 30".
+  // This is the most natural answer to the equity question; requiring a
+  // founder name ("make Orbit 70%") made a plain "70/30" go to the model,
+  // which then had to ask who gets 70. Named-founder phrases above still win.
+  const ratioMatch =
+    lower.match(/\b(\d{1,3})\s*%?\s*(?:\/|-|to|and|,)\s*(\d{1,3})\s*%?\b/) ??
+    lower.match(/\b(\d{1,3})\s*%?\s+(\d{1,3})\s*%?\b/);
+  if (ratioMatch) {
+    const first = Number(ratioMatch[1]);
+    const second = Number(ratioMatch[2]);
+    if (first + second === 100 && first >= 0 && second >= 0 && first <= 100 && second <= 100) {
+      return {
+        kind: "equity-split",
+        first,
+        second,
+        key: `split:${first}:${second}`,
+        label: `Splitting ${first}% / ${second}%…`,
       };
     }
   }
