@@ -404,6 +404,12 @@ function Canvas() {
     if (typeof window === "undefined" || !window.speechSynthesis) return false;
     const spoken = spokenHostText(text);
     if (!spoken) return false;
+    if (typeof window !== "undefined") {
+      const win = window as unknown as { __vvbLastSpoken?: string; __vvbAllSpoken?: string[] };
+      win.__vvbLastSpoken = spoken;
+      win.__vvbAllSpoken = win.__vvbAllSpoken ?? [];
+      win.__vvbAllSpoken.push(spoken);
+    }
     try {
       refreshCachedVoice();
       const voice = cachedVoiceRef.current ?? pickVoice(window.speechSynthesis.getVoices());
@@ -1637,6 +1643,38 @@ function Canvas() {
     if (turnError || transcribeFailure) playCue("error");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnError, transcribeFailure]);
+
+  // Hands-free testing & mock-voice simulation hook:
+  // Enables automated test playthroughs and mock audio runs to feed voice
+  // commands, simulate speech recognition events, and test host speech hands-free.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const win = window as unknown as Record<string, unknown>;
+    win.__vvbVoice = {
+      isRecording: () => recordingRef.current,
+      getPhase: () =>
+        recording ? "recording" : transcribing ? "transcribing" : sending ? "sending" : isLoading ? "agent-busy" : "idle",
+      isHostSpeaking: () => Boolean(hostSpeaking || isSpeechActive()),
+      feedVoice: async (text: string) => {
+        handleLiveTranscript(text);
+        setMicLevel(0.85);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        stopWebSpeech();
+        cleanupAudio();
+        recordingRef.current = false;
+        setRecording(false);
+        setMicLevel(0);
+        await sendToAgent(text, true);
+      },
+      startConvo: () => {
+        void toggleRecording();
+      },
+    };
+    return () => {
+      delete win.__vvbVoice;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording, transcribing, sending, isLoading, hostSpeaking]);
 
   // Beat completion celebrates on the mission banner, with a
   // zero-gravity stardust burst over the page (skipped entirely for

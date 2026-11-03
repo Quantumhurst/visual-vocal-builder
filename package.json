@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node --test tests/*.test.mjs",
+    "test:voice": "node scripts/mock-voice-playthrough.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
