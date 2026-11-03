@@ -54,7 +54,6 @@ import {
   noSpeechReply,
   shouldTriggerNoSpeech,
   shouldCapUtterance,
-  shouldForceReArm,
 } from "../lib/voice-reliability";
 import { loadPcmWorklet, micFailureNotice } from "../lib/mic";
 import { checklistNoopReply, isNothingDoneAnswer, isCompanyNameQuestion, companyNameReply, isNameApproval, isNameCancel } from "../lib/checklist-answers";
@@ -166,6 +165,7 @@ function Canvas() {
   const activityRef = useRef<VoiceActivity>(IDLE_ACTIVITY);
   const levelRef = useRef(0);
   const previewKeyRef = useRef<string | null>(null);
+  const committedKeyRef = useRef<string | null>(null);
   const recordingRef = useRef(false);
   const webSpeechFailedRef = useRef(false);
   const recognitionRef = useRef<{ stop: () => void; onresult: unknown; onerror: unknown; onend: unknown } | null>(null);
@@ -173,6 +173,10 @@ function Canvas() {
   const confirmationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const peakLevelRef = useRef(0);
   const noSpeechAttemptsRef = useRef(0);
+  const asrSocketRef = useRef<WebSocket | null>(null);
+  const streamingReadyRef = useRef(false);
+  const activeTurnIdRef = useRef(0);
+  const isTurnListeningRef = useRef(false);
 
   function clearConfirmationTimer() {
     if (confirmationTimerRef.current !== null) {
@@ -229,6 +233,9 @@ function Canvas() {
     if (turnTimingRef.current[field] === undefined) {
       (turnTimingRef.current as Record<string, number>)[field as string] =
         value ?? performance.now();
+      if (typeof window !== "undefined") {
+        (window as unknown as { __vvbLastTiming?: TurnTimings }).__vvbLastTiming = { ...turnTimingRef.current };
+      }
     }
   }
 
@@ -706,11 +713,20 @@ function Canvas() {
   function applyLiveIntent(text: string, status: "live" | "confirming") {
     const intent = parseLiveIntent(text);
     if (!intent) return null;
-    if (intent.key !== previewKeyRef.current) {
-      previewKeyRef.current = intent.key;
-      // Previews go through commit() like every other canvas change, so
-      // they are undoable and the agent's confirming commit (same
-      // result) adds no second history entry.
+
+    if (status === "live") {
+      if (intent.key !== previewKeyRef.current) {
+        previewKeyRef.current = intent.key;
+        stampTiming("firstPaint");
+        setLivePreview({ key: intent.key, label: intent.label, status: "live" });
+      }
+      return intent;
+    }
+
+    // status === "confirming": commit only on speechComplete, keyed by turnId / intent key
+    previewKeyRef.current = intent.key;
+    if (intent.key !== committedKeyRef.current) {
+      committedKeyRef.current = intent.key;
       if (intent.kind === "jurisdiction") {
         commit("live-preview", (s) => applyJurisdiction(s, intent.jurisdiction));
       } else if (intent.kind === "equity") {
@@ -727,10 +743,8 @@ function Canvas() {
       } else if (intent.kind === "lawyer-summary") {
         prepareLawyerPackage();
       }
-      // rollover/filing questions: no local card — the label below is
-      // the feedback; the grounded card comes from the agent + pack.
     }
-    setLivePreview({ key: intent.key, label: intent.label, status });
+    setLivePreview({ key: intent.key, label: intent.label, status: "confirmed" });
     return intent;
   }
 
@@ -1375,6 +1389,8 @@ function Canvas() {
       if (applied.kind === "undo") {
         line = undoLast();
       } else if (applied.kind === "start-over") {
+        previewKeyRef.current = null;
+        committedKeyRef.current = null;
         commit("start-over", (s) => applyStartOver(s));
         const next = beatProgress(stateRef.current).nextBeat;
         const question = next === "complete"
@@ -1425,8 +1441,103 @@ function Canvas() {
     }
   }
 
+  function ensureAsrStreamSocket() {
+    if (asrSocketRef.current && (asrSocketRef.current.readyState === WebSocket.OPEN || asrSocketRef.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    if (typeof window === "undefined") return;
+    try {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${protocol}//${window.location.host}/api/asr-stream`;
+      const ws = new WebSocket(wsUrl);
+      asrSocketRef.current = ws;
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = () => {
+        streamingReadyRef.current = true;
+      };
+
+      ws.onmessage = (event: MessageEvent) => {
+        try {
+          const raw = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data as ArrayBuffer);
+          const msg = JSON.parse(raw) as Record<string, unknown>;
+          const type = msg.type as string | undefined;
+          if (type === "transcript") {
+            const transcript = msg.transcript as string | undefined;
+            if (transcript) {
+              handleLiveTranscript(transcript, false);
+            }
+          } else if (type === "speechComplete") {
+            const transcript = (msg.transcript as string | undefined) ?? "";
+            onStreamingSpeechComplete(transcript, activeTurnIdRef.current);
+          } else if (type === "ready") {
+            streamingReadyRef.current = true;
+          } else if (type === "error") {
+            console.warn("[asr-stream] upstream error:", msg.message);
+          }
+        } catch {
+          // ignore malformed
+        }
+      };
+
+      ws.onclose = () => {
+        streamingReadyRef.current = false;
+        asrSocketRef.current = null;
+      };
+
+      ws.onerror = (err) => {
+        console.warn("[asr-stream] socket error, falling back to buffered path", err);
+        streamingReadyRef.current = false;
+      };
+    } catch (err) {
+      console.warn("[asr-stream] failed to create socket, falling back to buffered path", err);
+      streamingReadyRef.current = false;
+    }
+  }
+
+  function onStreamingSpeechComplete(transcript: string, turnId: number) {
+    if (turnId !== activeTurnIdRef.current) return;
+    if (!recordingRef.current && !finishingRef.current) return;
+    finishingRef.current = true;
+    recordingRef.current = false;
+    isTurnListeningRef.current = false;
+    stopWebSpeech();
+    setMicLevel(0);
+    setRecording(false);
+    stampTiming("finalTranscript");
+
+    const trimmed = (transcript ?? "").trim();
+    if (isEmptyTranscript(trimmed)) {
+      finishingRef.current = false;
+      const line = emptyTranscriptReply();
+      setLocalHost(line);
+      setNotice(line);
+      if (voiceOn && unlockedRef.current) {
+        lastSpokenRef.current = spokenHostText(line);
+        speakNative(line);
+      }
+      return;
+    }
+
+    void (async () => {
+      try {
+        await sendToAgent(trimmed, true);
+      } finally {
+        finishingRef.current = false;
+      }
+    })();
+  }
+
   function cleanupAudio() {
     clearConfirmationTimer();
+    isTurnListeningRef.current = false;
+    try {
+      asrSocketRef.current?.close();
+    } catch {
+      // ignore
+    }
+    asrSocketRef.current = null;
+    streamingReadyRef.current = false;
     try {
       workletNodeRef.current?.disconnect();
     } catch {
@@ -1609,14 +1720,21 @@ function Canvas() {
     if (finishingRef.current) return;
     finishingRef.current = true;
     recordingRef.current = false;
+    isTurnListeningRef.current = false;
     stopWebSpeech();
     setMicLevel(0);
     setRecording(false);
+
+    // If streaming ASR is active, speechComplete from Meta endpointing is the authority
+    if (streamingReadyRef.current) {
+      finishingRef.current = false;
+      return;
+    }
+
     const ctx = audioContextRef.current;
     const inputRate = ctx?.sampleRate ?? 0;
     const chunks = chunksRef.current;
     chunksRef.current = [];
-    cleanupAudio();
     try {
       if (!inputRate || inputRate <= 0) {
         setTranscribeFailure(makeTranscribeFailure("microphone capture failed (no audio context)"));
@@ -1655,10 +1773,10 @@ function Canvas() {
     if (finishingRef.current) return;
     finishingRef.current = true;
     recordingRef.current = false;
+    isTurnListeningRef.current = false;
     stopWebSpeech();
     setMicLevel(0);
     setRecording(false);
-    cleanupAudio();
     finishingRef.current = false;
 
     if (noSpeechAttemptsRef.current === 0) {
@@ -1704,6 +1822,7 @@ function Canvas() {
       setConvoActive(false);
       dropQueuedTurn();
       await finishRecording();
+      cleanupAudio();
       return;
     }
     if (convoRef.current && (transcribing || sending || isLoading)) {
@@ -1712,6 +1831,7 @@ function Canvas() {
       convoRef.current = false;
       setConvoActive(false);
       dropQueuedTurn();
+      cleanupAudio();
       return;
     }
     unlockedRef.current = true;
@@ -1735,13 +1855,112 @@ function Canvas() {
     await startRecording();
   }
 
+  async function ensureAudioPipeline() {
+    if (audioContextRef.current && mediaStreamRef.current && workletNodeRef.current) {
+      if (audioContextRef.current.state === "suspended") {
+        await audioContextRef.current.resume();
+      }
+      return;
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+    });
+    mediaStreamRef.current = stream;
+    let ctx: AudioContext;
+    try {
+      ctx = new AudioContext({ sampleRate: 16000 });
+    } catch {
+      ctx = new AudioContext();
+    }
+    audioContextRef.current = ctx;
+    await loadPcmWorklet((url) => ctx.audioWorklet.addModule(url));
+    const node = new AudioWorkletNode(ctx, "pcm-capture");
+    workletNodeRef.current = node;
+
+    node.port.onmessage = (event: MessageEvent) => {
+      const block = event.data as Float32Array;
+      if (!block || block.length === 0) return;
+      if (!isTurnListeningRef.current) return;
+
+      chunksRef.current.push(block);
+      const rate = audioContextRef.current?.sampleRate ?? 0;
+
+      // Stream binary PCM16 over WebSocket to Meta ASR relay if connected
+      if (asrSocketRef.current && asrSocketRef.current.readyState === WebSocket.OPEN) {
+        let pcm: Int16Array;
+        if (rate === 16000) {
+          pcm = new Int16Array(block.length);
+          for (let i = 0; i < block.length; i++) {
+            const s = Math.max(-1, Math.min(1, block[i]));
+            pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          }
+        } else if (rate > 0) {
+          pcm = toPcm16k(block, rate);
+        } else {
+          pcm = new Int16Array(0);
+        }
+        if (pcm.length > 0) {
+          asrSocketRef.current.send(pcm.buffer);
+        }
+      }
+
+      const level = rmsLevel(block);
+      levelRef.current = level;
+      peakLevelRef.current = Math.max(peakLevelRef.current, level);
+      const now = performance.now();
+      const listened = now - (turnTimingRef.current.micStart ?? now);
+
+      // Guard 1: No speech detected after 8s -> close quietly, say "Didn't hear anything — say it again", re-arm once
+      if (shouldTriggerNoSpeech(activityRef.current.hasSpoken, listened)) {
+        void handleNoSpeechTimeout();
+        return;
+      }
+
+      // Guard 2: Max utterance length (15s cap) -> force finish recording
+      if (shouldCapUtterance(listened)) {
+        void finishRecording();
+        return;
+      }
+
+      activityRef.current = nextVoiceActivity(activityRef.current, level, now, rate > 0 ? (block.length / rate) * 1000 : 0);
+
+      // Demote client RMS/silence gate:
+      // When streaming ASR is active, Meta endpointing is the authority for turn end.
+      // If streaming is not active, fall back to local auto-stop.
+      if (!streamingReadyRef.current) {
+        if (shouldAutoStop(activityRef.current, now, intentMatchedRef.current ? INTENT_SILENCE_TO_STOP_MS : SILENCE_TO_STOP_MS)) {
+          void finishRecording();
+          return;
+        }
+      }
+
+      if (rate > 0) {
+        const total = chunksRef.current.reduce((s, c) => s + c.length, 0);
+        const estBytes = Math.round(total / (rate / 16000)) * 2;
+        if (estBytes > MAX_PCM_BYTES) {
+          void finishRecording();
+        }
+      }
+    };
+
+    const source = ctx.createMediaStreamSource(stream);
+    sourceNodeRef.current = source;
+    source.connect(node);
+    if (ctx.state === "suspended") {
+      await ctx.resume();
+    }
+  }
+
   async function startRecording() {
     if (recordingRef.current) return;
     clearRearmTimer();
     clearConfirmationTimer();
     liveTranscriptRef.current = "";
+    activeTurnIdRef.current += 1;
     recordingRef.current = true;
+    isTurnListeningRef.current = true;
     turnTimingRef.current = { micStart: performance.now() };
+    stampTiming("rearm");
     // Barge-in: the host stops talking the moment the user speaks.
     cancelSpeech();
     unlockedRef.current = true;
@@ -1752,78 +1971,26 @@ function Canvas() {
     levelRef.current = 0;
     peakLevelRef.current = 0;
     previewKeyRef.current = null;
+    committedKeyRef.current = null;
     intentMatchedRef.current = false;
     setLiveTranscript("");
     setLivePreview(null);
     setMicLevel(0);
     setRecordSeconds(0);
-    let stream: MediaStream | null = null;
-    let ctx: AudioContext | null = null;
+    chunksRef.current = [];
+    finishingRef.current = false;
+
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-      });
-      mediaStreamRef.current = stream;
-      const audioContext = new AudioContext();
-      ctx = audioContext;
-      audioContextRef.current = audioContext;
-      // One retry covers a transient asset/HMR failure; a real failure
-      // is surfaced below with copy that names the right cause.
-      await loadPcmWorklet((url) => audioContext.audioWorklet.addModule(url));
-      const node = new AudioWorkletNode(ctx, "pcm-capture");
-      workletNodeRef.current = node;
-      chunksRef.current = [];
-      finishingRef.current = false;
-      node.port.onmessage = (event: MessageEvent) => {
-        const block = event.data as Float32Array;
-        if (!block || block.length === 0) return;
-        chunksRef.current.push(block);
-        const rate = audioContextRef.current?.sampleRate ?? 0;
-        // Live level + client endpointing: a natural pause after real
-        // speech ends the turn hands-free — no Stop click needed.
-        const level = rmsLevel(block);
-        levelRef.current = level;
-        peakLevelRef.current = Math.max(peakLevelRef.current, level);
-        const now = performance.now();
-        const listened = now - (turnTimingRef.current.micStart ?? now);
-
-        // Guard 1: No speech detected after 8s -> close quietly, say "Didn't hear anything — say it again", re-arm once
-        if (shouldTriggerNoSpeech(activityRef.current.hasSpoken, listened)) {
-          void handleNoSpeechTimeout();
-          return;
-        }
-
-        // Guard 2: Max utterance length (15s cap) -> force finish recording
-        if (shouldCapUtterance(listened)) {
-          void finishRecording();
-          return;
-        }
-
-        activityRef.current = nextVoiceActivity(activityRef.current, level, now, rate > 0 ? (block.length / rate) * 1000 : 0);
-        if (shouldAutoStop(activityRef.current, now, intentMatchedRef.current ? INTENT_SILENCE_TO_STOP_MS : SILENCE_TO_STOP_MS)) {
-          void finishRecording();
-          return;
-        }
-        if (rate > 0) {
-          const total = chunksRef.current.reduce((s, c) => s + c.length, 0);
-          const estBytes = Math.round(total / (rate / 16000)) * 2;
-          if (estBytes > MAX_PCM_BYTES) {
-            void finishRecording();
-          }
-        }
-      };
-      const source = ctx.createMediaStreamSource(stream);
-      sourceNodeRef.current = source;
-      source.connect(node);
-      if (ctx.state === "suspended") {
-        await ctx.resume();
-      }
-      recordingRef.current = true;
+      await ensureAudioPipeline();
+      ensureAsrStreamSocket();
       setRecording(true);
-      startWebSpeech();
+      if (!streamingReadyRef.current) {
+        startWebSpeech();
+      }
     } catch (error) {
       cleanupAudio();
       recordingRef.current = false;
+      isTurnListeningRef.current = false;
       setRecording(false);
       // End the loop on a failed capture. Otherwise the UI says
       // "conversation live" while the auto-listen effect retries the
@@ -1913,28 +2080,11 @@ function Canvas() {
       }, 0);
       return () => clearTimeout(t);
     }
-    let quietPolls = 0;
-    let waitedMs = 0;
-    const timer = setInterval(() => {
-      waitedMs += 400;
-      // Wait until the host has finished speaking so re-arming never
-      // cancels the reply mid-flight.
-      quietPolls = isSpeechActive() ? 0 : quietPolls + 1;
-      // Two quiet polls (~0.8s of silence after speech) and we listen
-      // again. If nothing was spoken at all, the same rule re-arms.
-      if (quietPolls >= 2) {
-        clearInterval(timer);
-        if (convoRef.current) void startRecording();
-        return;
-      }
-      if (shouldForceReArm(waitedMs)) {
-        // Speech synth stuck true (known Chrome bug): cancel speech and open the mic anyway
-        clearInterval(timer);
-        cancelSpeech();
-        if (convoRef.current) void startRecording();
-      }
-    }, 400);
-    return () => clearInterval(timer);
+    // Re-arm on utterance onend/onerror and turn completion, not by polling speechSynthesis.speaking.
+    // If not recording and lane is completely idle and no speech is active, request a re-arm.
+    if (convoRef.current && !recordingRef.current && !hostSpeaking) {
+      requestRearm();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convoActive, recording, transcribing, sending, isLoading, turnError, transcribeFailure, hostSpeaking]);
 
@@ -1976,7 +2126,8 @@ function Canvas() {
         setMicLevel(0.85);
         await new Promise((resolve) => setTimeout(resolve, 250));
         stopWebSpeech();
-        cleanupAudio();
+        stampTiming("finalTranscript");
+        isTurnListeningRef.current = false;
         recordingRef.current = false;
         setRecording(false);
         setMicLevel(0);
