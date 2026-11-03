@@ -62,6 +62,7 @@ import confetti from "canvas-confetti";
 import { MAX_PCM_BYTES } from "../lib/request-guard";
 import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, IDLE_ACTIVITY, SILENCE_TO_STOP_MS, INTENT_SILENCE_TO_STOP_MS, MIN_SPEECH_MS, type LiveIntent, type VoiceActivity } from "../lib/live-intent";
 import { queueTurn, flushQueuedTurn, QUEUED_TURN_NOTICE } from "../lib/turn-queue";
+import { AnnouncementBudget } from "../lib/announcements";
 import { cueForChange, CUES, type CueName } from "../lib/sound-cues";
 import { missionFor } from "../lib/mission";
 import { colonyPalette, colonyProgress } from "../lib/colony";
@@ -146,6 +147,10 @@ function Canvas() {
   const [transcribing, setTranscribing] = useState(false);
   const [lastTranscript, setLastTranscript] = useState("");
   const [ack, setAck] = useState("");
+  // One polite live region for the short turn story ("Heard…" + result).
+  // The per-turn budget keeps a screen reader from hearing every visual
+  // status churn, while errors/notices keep their own alert/status roles.
+  const [announcement, setAnnouncement] = useState<{ id: number; text: string } | null>(null);
   // A locally spoken host line for the deterministic fast lane. It also
   // becomes the visible host prompt, so the text and the voice agree.
   const [localHost, setLocalHost] = useState("");
@@ -182,6 +187,10 @@ function Canvas() {
   const streamingReadyRef = useRef(false);
   const activeTurnIdRef = useRef(0);
   const isTurnListeningRef = useRef(false);
+  const announcementBudgetRef = useRef(new AnnouncementBudget());
+  const announcementIdRef = useRef(0);
+  const announceTurnRef = useRef(0);
+  const lastAnnouncedOutcomeRef = useRef("");
 
   function clearConfirmationTimer() {
     if (confirmationTimerRef.current !== null) {
@@ -297,6 +306,36 @@ function Canvas() {
   // matched in the current recording, shortening the stop pause.
   const intentMatchedRef = useRef(false);
 
+  // One short turn story for screen readers: "Heard: …" plus, when VOX is
+  // off, the host line. Visual statuses stay visible but are not live; the
+  // budget caps the turn at two messages. Errors/notices keep their own
+  // alert/status roles and are announced once by the browser.
+  function pushAnnouncement(turn: number, text: string) {
+    const clean = (text ?? "").trim();
+    if (!clean) return;
+    if (!announcementBudgetRef.current.allow(turn, clean)) return;
+    announcementIdRef.current += 1;
+    setAnnouncement({ id: announcementIdRef.current, text: clean });
+  }
+
+  function announceHeard(text: string, fromVoice = true) {
+    const clean = (text ?? "").trim();
+    if (!clean) return;
+    announceTurnRef.current += 1;
+    pushAnnouncement(
+      announceTurnRef.current,
+      `${fromVoice ? "Heard" : "Command"}: ${clean}`,
+    );
+  }
+
+  function announceOutcome(text: string) {
+    const clean = (text ?? "").trim();
+    if (!clean) return;
+    if (voiceOn || notice) return; // TTS or the live notice already carries it.
+    const turn = announceTurnRef.current || (announceTurnRef.current = 1);
+    pushAnnouncement(turn, clean);
+  }
+
   function dropQueuedTurnNotice() {
     setNotice((n) => (n === QUEUED_TURN_NOTICE ? "" : n));
   }
@@ -343,7 +382,14 @@ function Canvas() {
       selected = null;
     }
     const picked = resolveVoiceSelection(voices, selected ?? readStoredVoiceUri());
-    if (picked) cachedVoiceRef.current = picked;
+    if (picked) {
+      // The queue has its own fallback cache. Keep it in step with the
+      // curated pick so a missing explicit voice cannot pin an old one.
+      if (cachedVoiceRef.current?.voiceURI !== picked.voiceURI) {
+        speechQueue.clearCachedVoice();
+      }
+      cachedVoiceRef.current = picked;
+    }
   }
 
   function selectHostVoice(uri: string) {
@@ -353,6 +399,7 @@ function Canvas() {
     const nextUri = uri === "auto" ? "auto" : chosen?.voiceURI ?? "auto";
     chosenVoiceUriRef.current = nextUri === "auto" ? null : nextUri;
     cachedVoiceRef.current = chosen;
+    speechQueue.clearCachedVoice();
     try {
       window.localStorage.setItem(HOST_VOICE_STORAGE_KEY, nextUri);
     } catch {
@@ -482,16 +529,26 @@ function Canvas() {
         requestRearm();
       };
 
-      const utter = speechQueue.enqueue(spoken, "CONTENT", rate, () => {
-        stampTiming("speechEnd");
-        finishSpeech();
+      const utter = speechQueue.enqueue(spoken, {
+        role: "CONTENT",
+        rate,
+        pitch,
+        voice,
+        onDone: () => {
+          stampTiming("speechEnd");
+          finishSpeech();
+        },
+        onError: (failed) => {
+          // speechSynthesis cancel() can also surface as an error. Only a
+          // failure of the current, non-cancelled utterance is a real
+          // host-voice failure. This was lost in 4972d2b; restore it without
+          // touching the echo/mic loop guards.
+          if (utteranceRef.current !== failed || utterCancelledRef.current) return;
+          setNotice("Host voice could not play — open Controls, choose Auto, and press PREVIEW.");
+        },
       });
 
-      if (utter) {
-        if (voice) utter.voice = voice;
-        utter.pitch = pitch;
-        utteranceRef.current = utter;
-      }
+      if (utter) utteranceRef.current = utter;
 
       speechWatchdogRef.current = setTimeout(() => {
         speechWatchdogRef.current = null;
@@ -685,6 +742,7 @@ function Canvas() {
         rmsThreshold: 0.015,
         onFastCommit: (turnId, cmd, rawText) => {
           if (cmd.kind === "CONFIRM_EQUITY") {
+            announceHeard(rawText);
             clearConfirmationTimer();
             previewKeyRef.current = null;
             committedKeyRef.current = null;
@@ -696,6 +754,7 @@ function Canvas() {
             setAck("");
             confirmEquitySelection();
           } else if (cmd.kind === "CHANGE_EQUITY") {
+            announceHeard(rawText);
             clearConfirmationTimer();
             answerLocally(
               "No problem — change the owner count or drag a slider, then confirm.",
@@ -1205,6 +1264,9 @@ function Canvas() {
       setNotice(QUEUED_TURN_NOTICE);
       return;
     }
+    // Announce the final transcript once for this turn. Queued turns are
+    // announced when they are actually flushed, not twice at park + flush.
+    announceHeard(trimmed, fromVoice);
     if (turnTimingRef.current.micStart === undefined) {
       turnTimingRef.current = { micStart: performance.now() };
     }
@@ -1375,7 +1437,7 @@ function Canvas() {
       }
       setNamePromptActive(true);
       answerLocally(
-        "We have the fictional demo name ready: Galactic Bagels Inc. (fictional). Would you like to approve Galactic Bagels, or what name should we pick?",
+        "We have the fictional demo name ready: Galactic Bagels Inc. (fictional). Shall we use Galactic Bagels, or would you like a different name?",
         trimmed,
         { module: "checklist", stageTab: "colony", cue: "highlight" },
       );
@@ -2191,6 +2253,18 @@ function Canvas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnError, transcribeFailure]);
 
+  // The host line is the outcome of a turn. When VOX is on it is already
+  // spoken by TTS; when VOX is off, put it in the one live region. The
+  // budget drops a third message in the same turn. Errors/notices keep
+  // their own roles and suppress this so nothing is announced twice.
+  useEffect(() => {
+    if (!localHost) return;
+    if (lastAnnouncedOutcomeRef.current === localHost) return;
+    lastAnnouncedOutcomeRef.current = localHost;
+    announceOutcome(localHost);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localHost, voiceOn, notice]);
+
   // Agent watchdog (Fix 4): if the agent has been busy for over 25s, abort and reset
   useEffect(() => {
     if (!isLoading && !sending) return;
@@ -2588,7 +2662,7 @@ function Canvas() {
             ) : null}
 
             {celebrated ? (
-              <p data-testid="mission-celebrated" className="celebrate" role="status">
+              <p data-testid="mission-celebrated" className="celebrate">
                 {celebrated}
               </p>
             ) : null}
@@ -2768,7 +2842,7 @@ function Canvas() {
                   <path d="M32 46v13" stroke="#ffd166" strokeWidth="4" strokeLinecap="round" />
                 </svg>
               </div>
-              <div className="warp-copy" role="status">
+              <div className="warp-copy">
                 <span className="eyebrow">COURSE LOCKED</span>
                 <strong>{travel.planet}</strong>
                 <span className="warp-sub">ENTERING ORBIT</span>
@@ -3013,7 +3087,7 @@ function Canvas() {
         ) : null}
 
         <div className="deck-status">
-          <span data-testid="turn-phase" role="status" className={`deck-phase phase-${turnPhase}`}>
+          <span data-testid="turn-phase" className={`deck-phase phase-${turnPhase}`}>
             {turnPhase === "recording"
               ? "Recording…"
               : turnPhase === "transcribing"
@@ -3024,7 +3098,7 @@ function Canvas() {
                     ? `Agent working… ${elapsed}s`
                     : "Ready"}
           </span>
-          <span data-testid="convo-status" className="deck-convo" role="status">
+          <span data-testid="convo-status" className="deck-convo">
             {convoActive
               ? recording
                 ? "CONVERSATION LIVE — LISTENING"
@@ -3035,15 +3109,28 @@ function Canvas() {
                     : "CONVERSATION LIVE — MIC STANDBY"
               : "CONVERSATION OFF — PRESS TALK"}
           </span>
-          <span data-testid="flow-status" className="deck-flow" role="status">
+          <span data-testid="flow-status" className="deck-flow">
             {flowStatus}
           </span>
           {!voiceOn ? (
-            <span className="deck-vox-off" data-testid="vox-off" role="status">
+            <span className="deck-vox-off" data-testid="vox-off">
               VOX OFF
             </span>
           ) : null}
         </div>
+
+        {/* One live region for the turn story. Visual statuses above stay
+            visible but are not live; this prevents a polite-region pile-up
+            while keeping "heard" + result available to a screen reader. */}
+        <p
+          className="visually-hidden"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          data-testid="turn-announcement"
+        >
+          {announcement?.text ?? ""}
+        </p>
 
         <div className="deck-host" data-testid="host-prompt" aria-label="Host prompt">
           <span className="deck-host-label">HOST · LIVE</span>
@@ -3051,7 +3138,7 @@ function Canvas() {
             {hostPrompt.text}
           </p>
           {ack ? (
-            <p data-testid="host-ack" className="deck-host-ack" role="status">
+            <p data-testid="host-ack" className="deck-host-ack">
               {ack}
             </p>
           ) : null}
@@ -3093,7 +3180,11 @@ function Canvas() {
             )}
           </div>
         ) : null}
-        {notice ? <p className="deck-notice">{notice}</p> : null}
+        {notice ? (
+          <p className="deck-notice" role="status" aria-live="polite" data-testid="deck-notice">
+            {notice}
+          </p>
+        ) : null}
 
         <div className="deck-main">
           <button
@@ -3164,7 +3255,7 @@ function Canvas() {
                   </div>
                 ) : null}
                 {livePreview ? (
-                  <p data-testid="live-preview" className="live-preview" role="status">
+                  <p data-testid="live-preview" className="live-preview">
                     {livePreview.status === "confirmed"
                       ? `Confirmed — ${livePreview.label.replace(/…$/, "")}`
                       : `${livePreview.label}${

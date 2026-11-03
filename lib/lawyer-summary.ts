@@ -41,3 +41,34 @@ export function buildLawyerSummary(
     .filter((line) => line !== "")
     .join("\n");
 }
+
+// Fingerprint of the shared-state inputs that buildLawyerSummary actually
+// consumes. A prepared package is a snapshot: if this value changes, the
+// displayed package is stale even though its text is still on screen.
+// Group 3 wires this into shared state and invalidation; Group 1 adds the
+// regression coverage so the rule cannot be forgotten.
+export function lawyerPackageFingerprint(view: SharedState): string {
+  return JSON.stringify({
+    jurisdiction: view.selectedJurisdiction,
+    founders: view.founders.map((founder) => [founder.name, founder.percent]),
+    checklist: view.checklist.map((item) => [item.id, item.label, item.done]),
+    equityNote: view.equityNote,
+    rollover: view.rolloverCard
+      ? [view.rolloverCard.packId, view.rolloverCard.factId]
+      : null,
+    filingSteps: view.filingStepsCard
+      ? [
+          view.filingStepsCard.packId,
+          view.filingStepsCard.facts.map((fact) => fact.factId),
+        ]
+      : null,
+  });
+}
+
+export function isLawyerPackageStale(
+  view: SharedState,
+  preparedFingerprint: string | null | undefined,
+): boolean {
+  if (!preparedFingerprint) return false;
+  return preparedFingerprint !== lawyerPackageFingerprint(view);
+}

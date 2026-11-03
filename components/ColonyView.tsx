@@ -385,7 +385,7 @@ export default function ColonyView({ selected, checklist, founders, lawyerPackag
         {" · "}Launch: {launch === "launched" ? "launched" : launch === "ready" ? "ready on the pad" : "not ready"}
       </p>
       {landing ? (
-        <p data-testid="colony-landing" data-selected={landing} role="status" className="landing-toast">
+        <p data-testid="colony-landing" data-selected={landing} className="landing-toast">
           Landing on {landing} — landing pad building
         </p>
       ) : null}

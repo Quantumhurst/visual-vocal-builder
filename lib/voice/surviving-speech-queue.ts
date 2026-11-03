@@ -9,6 +9,20 @@
 
 export type UtteranceRole = "ACK" | "CONTENT" | "HOST";
 
+export type EnqueueOptions = {
+  role?: UtteranceRole;
+  rate?: number;
+  pitch?: number;
+  // The caller's curated voice. It must be applied BEFORE speak() so browsers
+  // that snapshot the utterance at synthesis time use the selected voice.
+  voice?: SpeechSynthesisVoice | null;
+  onDone?: () => void;
+  // Fires before onDone when the utterance reports an error. Cancellation
+  // (barge-in) also reports an error in some browsers; callers decide whether
+  // that is a real failure by comparing the utterance to their current one.
+  onError?: (utterance: SpeechSynthesisUtterance) => void;
+};
+
 export class SurvivingSpeechQueue {
   private activeUtterances = new Set<SpeechSynthesisUtterance>();
   private ackPlayedForTurn = new Set<number>();
@@ -40,12 +54,11 @@ export class SurvivingSpeechQueue {
 
   public enqueue(
     text: string,
-    _role: UtteranceRole = "CONTENT",
-    rate = 1.05,
-    onDone?: () => void,
+    options: EnqueueOptions = {},
   ): SpeechSynthesisUtterance | null {
-    void _role;
+    void options.role;
     const clean = text.trim();
+    const onDone = options.onDone;
     if (!clean || typeof window === "undefined" || !("speechSynthesis" in window)) {
       onDone?.();
       return null;
@@ -53,19 +66,33 @@ export class SurvivingSpeechQueue {
 
     try {
       const utterance = new SpeechSynthesisUtterance(clean);
-      const voice = this.getVoice();
+      // Apply every property BEFORE speak(): several browsers snapshot the
+      // utterance at speak() time, so assigning a voice/pitch afterwards can
+      // be ignored. This is the single source of truth for host voice-out.
+      const voice = options.voice ?? this.getVoice();
       if (voice) utterance.voice = voice;
-      utterance.rate = rate;
+      utterance.rate = options.rate ?? 1.05;
+      utterance.pitch = options.pitch ?? 1;
 
       this.activeUtterances.add(utterance);
 
+      let settled = false;
       const cleanup = () => {
+        if (settled) return;
+        settled = true;
         this.activeUtterances.delete(utterance);
         onDone?.();
       };
 
       utterance.onend = cleanup;
-      utterance.onerror = cleanup;
+      utterance.onerror = () => {
+        if (settled) return;
+        try {
+          options.onError?.(utterance);
+        } finally {
+          cleanup();
+        }
+      };
 
       // Chrome sometimes suspends synthesis on idle or tab change
       try {
