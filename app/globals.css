@@ -2396,6 +2396,128 @@ pre {
   padding-top: 7px;
 }
 
+/* Left-rail build queue: the five required steps stay visible while the
+   host asks which one to tackle. Same state path as the BUILD panel. */
+.objective-build {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.objective-build-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.objective-build-head .eyebrow {
+  color: var(--green);
+}
+
+.objective-build-head strong {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--green);
+}
+
+.objective-build .build-meter {
+  margin: 0 0 6px;
+}
+
+.objective-build-list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.objective-build-step {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  text-align: left;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: rgba(9, 15, 34, 0.55);
+  font-size: 10px;
+}
+
+.objective-build-step:hover:not(:disabled) {
+  border-color: rgba(127, 240, 178, 0.4);
+  background: rgba(127, 240, 178, 0.05);
+}
+
+.objective-build-step.is-next {
+  border-color: rgba(255, 209, 102, 0.45);
+  background: rgba(255, 209, 102, 0.06);
+}
+
+.objective-build-step.is-done {
+  border-color: rgba(127, 240, 178, 0.28);
+  background: rgba(127, 240, 178, 0.06);
+}
+
+.objective-build-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--dim);
+}
+
+.objective-build-step.is-done .objective-build-check {
+  color: var(--green);
+  border-color: rgba(127, 240, 178, 0.4);
+  background: var(--green-soft);
+}
+
+.objective-build-step.is-next .objective-build-check {
+  color: var(--gold);
+  border-color: rgba(255, 209, 102, 0.4);
+}
+
+.objective-build-label {
+  min-width: 0;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.objective-build-step.is-done .objective-build-label {
+  color: var(--muted);
+}
+
+.objective-build-status {
+  font-family: var(--font-mono);
+  font-size: 7px;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.objective-build-step.is-next .objective-build-status {
+  color: var(--gold);
+}
+
+.objective-build-step.is-done .objective-build-status {
+  color: var(--green);
+}
+
+.objective-build-hint {
+  margin-top: 5px;
+  font-size: 8.5px;
+  color: var(--dim);
+}
+
 .flight-list-compact {
   gap: 2px;
 }
@@ -2551,6 +2673,44 @@ pre {
 .popout-chips .chip-btn {
   padding: 3px 7px;
   font-size: 8px;
+}
+
+.popout-voice {
+  display: grid;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+.popout-voice .eyebrow {
+  color: var(--muted);
+  font-size: 7px;
+}
+
+.voice-picker {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.voice-picker select {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: rgba(3, 7, 18, 0.8);
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+}
+
+.voice-picker .btn {
+  flex: none;
+  white-space: nowrap;
+}
+
+.popout-voice .micro {
+  margin: 0;
 }
 
 .popout-clock {

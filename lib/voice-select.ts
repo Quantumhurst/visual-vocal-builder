@@ -6,6 +6,9 @@
 
 export type VoiceLike = { name: string; lang: string; localService?: boolean; default?: boolean };
 
+// localStorage key shared by the host-voice picker and the speech path.
+export const HOST_VOICE_STORAGE_KEY = "vvb.host-voice";
+
 const NOVELTY = /\b(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Deranged|Fred|Good News|Hysterical|Jester|Pipe|Superstar|Trinoids|Whisper|Zarvox|Organ|Wobble)\b/i;
 
 export function voiceScore(voice: VoiceLike): number {
@@ -34,6 +37,24 @@ export function rankVoices<T extends VoiceLike>(voices: readonly T[]): T[] {
 export function pickVoice<T extends VoiceLike>(voices: readonly T[]): T | null {
   const ranked = rankVoices(voices);
   return ranked.length && voiceScore(ranked[0]) > -100 ? ranked[0] : null;
+}
+
+// The host-voice picker stores a voiceURI. Resolve it against the live
+// voice list; if the saved voice is gone (OS update, other browser), fall
+// back to the curated automatic pick instead of leaving the host silent.
+export function resolveVoiceSelection<T extends VoiceLike & { voiceURI?: string }>(
+  voices: readonly T[],
+  selectedUri?: string | null,
+): T | null {
+  if (selectedUri && selectedUri !== "auto") {
+    const match = voices.find(
+      (voice) =>
+        voice.voiceURI === selectedUri &&
+        (voice.lang ?? "").toLowerCase().startsWith("en"),
+    );
+    if (match) return match;
+  }
+  return pickVoice(voices);
 }
 
 // SSML is stripped or spoken literally by major browsers, so prosody

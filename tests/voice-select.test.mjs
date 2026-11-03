@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { voiceScore, rankVoices, pickVoice, prosodyFor } from "../lib/voice-select.ts";
+import {
+  voiceScore,
+  rankVoices,
+  pickVoice,
+  prosodyFor,
+  resolveVoiceSelection,
+} from "../lib/voice-select.ts";
 
 const V = (name, lang = "en-US", extra = {}) => ({ name, lang, ...extra });
 
@@ -30,4 +36,28 @@ test("novelty-only lists yield no pick", () => {
 test("questions get a small lift, statements stay neutral", () => {
   assert.deepEqual(prosodyFor("Shall we split the equity?"), { rate: 1.04, pitch: 1.08 });
   assert.deepEqual(prosodyFor("Mars is locked in."), { rate: 1.0, pitch: 1.0 });
+});
+
+test("a saved voiceURI selects that exact voice", () => {
+  const voices = [
+    V("Ava (Premium)", "en-US", { voiceURI: "ava" }),
+    V("Fred", "en-US", { voiceURI: "fred" }),
+    V("Amélie", "fr-CA", { voiceURI: "amelie" }),
+  ];
+  assert.equal(resolveVoiceSelection(voices, "fred")?.name, "Fred");
+  assert.equal(resolveVoiceSelection(voices, "ava")?.name, "Ava (Premium)");
+});
+
+test("missing or ineligible saved voices fall back to the automatic pick", () => {
+  const voices = [
+    V("Ava (Premium)", "en-US", { voiceURI: "ava" }),
+    V("Samantha", "en-US", { voiceURI: "samantha" }),
+    V("Amélie", "fr-CA", { voiceURI: "amelie" }),
+  ];
+  // Stale URI after an OS/browser update.
+  assert.equal(resolveVoiceSelection(voices, "gone")?.name, "Ava (Premium)");
+  // A non-English voice is not used for the English host line.
+  assert.equal(resolveVoiceSelection(voices, "amelie")?.name, "Ava (Premium)");
+  assert.equal(resolveVoiceSelection(voices, "auto")?.name, "Ava (Premium)");
+  assert.equal(resolveVoiceSelection(voices, null)?.name, "Ava (Premium)");
 });

@@ -21,6 +21,8 @@ import FilingChecklist from "./FilingChecklist";
 import FilingSteps from "./FilingSteps";
 import RolloverFactCard from "./RolloverFactCard";
 import LawyerSummary from "./LawyerSummary";
+import HostVoicePicker from "./HostVoicePicker";
+import BuildQueuePanel from "./BuildQueuePanel";
 import {
   DEMO_COMPANY_NAME,
   DEMO_JURISDICTIONS,
@@ -30,6 +32,7 @@ import type { SharedState } from "../lib/state";
 import TrustStrip from "./TrustStrip";
 import { verifyPaintedCards } from "../lib/verifier";
 import { getHostQuestion, resolveHostPrompt, shortFounderNames, shouldSpeakFallbackQuestion, type Beat } from "../lib/host-questions";
+import { checklistHostLine, nextObjectiveHostLine } from "../lib/build-host";
 import { FIRST_SPEAK_GREETING, hasFirstSpeakGreeting, markFirstSpeakGreeting } from "../lib/first-speak";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
 import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount } from "../lib/state-updates";
@@ -50,7 +53,7 @@ import { missionFor } from "../lib/mission";
 import { colonyPalette, colonyProgress } from "../lib/colony";
 import { MODULES, flightPlan, flightStatusLabel, formatClock, moduleFor, shipLabel } from "../lib/game-ui";
 import { spokenHostText } from "../lib/spoken-text";
-import { pickVoice, prosodyFor } from "../lib/voice-select";
+import { HOST_VOICE_STORAGE_KEY, pickVoice, prosodyFor, resolveVoiceSelection } from "../lib/voice-select";
 import { summarizeTimings, type TurnTimings } from "../lib/turn-timing";
 
 
@@ -67,6 +70,11 @@ const EXAMPLE_COMMANDS = [
   { label: "Filing steps & fees", command: "What are the filing steps and fees?" },
   { label: "Prepare lawyer summary", command: "Prepare the lawyer summary" },
 ] as const;
+
+// The host voice is the browser/OS system voice. The picker stores a
+// voiceURI (not an index) so it survives OS updates; a stale URI falls
+// back to the curated automatic pick. The storage key lives in
+// lib/voice-select.ts so the picker and the speech path agree.
 
 // The canvas is the interface: tool calls do not need a second chat card.
 // Registering an empty renderer keeps CopilotKit from warning about each
@@ -214,7 +222,7 @@ function Canvas() {
   // Voice pre-warm: cache the picked system voice, re-pick once when
   // the browser finishes loading voices, preload on first gesture.
   const cachedVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
-  const voicesRepickedRef = useRef(false);
+  const chosenVoiceUriRef = useRef<string | null>(null);
   const utterCancelledRef = useRef(false);
   // Keep a reference to the live utterance: Chrome can drop an unreferenced
   // utterance before firing onend, leaving speechSynthesis.speaking stuck
@@ -240,10 +248,48 @@ function Canvas() {
     dropQueuedTurnNotice();
   }
 
+  function readStoredVoiceUri(): string | null {
+    try {
+      const stored = window.localStorage.getItem(HOST_VOICE_STORAGE_KEY);
+      return stored && stored !== "auto" ? stored : null;
+    } catch {
+      return null;
+    }
+  }
+
   function refreshCachedVoice() {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
-    const picked = pickVoice(window.speechSynthesis.getVoices());
+    const picked = resolveVoiceSelection(
+      window.speechSynthesis.getVoices(),
+      chosenVoiceUriRef.current ?? readStoredVoiceUri(),
+    );
     if (picked) cachedVoiceRef.current = picked;
+  }
+
+  function selectHostVoice(uri: string) {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    const list = window.speechSynthesis.getVoices();
+    const chosen = uri === "auto" ? pickVoice(list) : resolveVoiceSelection(list, uri);
+    const nextUri = uri === "auto" ? "auto" : chosen?.voiceURI ?? "auto";
+    chosenVoiceUriRef.current = nextUri === "auto" ? null : nextUri;
+    cachedVoiceRef.current = chosen;
+    try {
+      window.localStorage.setItem(HOST_VOICE_STORAGE_KEY, nextUri);
+    } catch {
+      // Storage is optional; the choice still applies this session.
+    }
+    playCue("highlight");
+  }
+
+  function previewHostVoice() {
+    if (!voiceOn || typeof window === "undefined" || !window.speechSynthesis) return;
+    refreshCachedVoice();
+    speakNative("This is your host voice. Pick your home base — Mars, Europa, or Andromeda Galaxy?");
+  }
+
+  function toggleControls() {
+    if (!dockOpen) refreshCachedVoice();
+    setDockOpen((value) => !value);
   }
 
   // Synthesised cues only (no assets). Browsers refuse audio before a
@@ -399,6 +445,17 @@ function Canvas() {
         setActiveModule("equity");
         setStageTab("colony");
       }
+      // Required-task handoff: when a change completes the current
+      // required beat, open the next one in the same handler. Equity
+      // completion moves to BUILD (the five-step queue), and 5/5 moves
+      // to LAUNCH. This keeps the spoken prompt, the left objective and
+      // the right panel on the same task.
+      const beforeNext = beatProgress(before).nextBeat;
+      const afterNext = beatProgress(after).nextBeat;
+      if (afterNext !== "complete" && afterNext !== beforeNext) {
+        setActiveModule(afterNext);
+        setStageTab(afterNext === "jurisdiction" ? "galaxy" : "colony");
+      }
       if (selectionChanged && after.selectedJurisdiction) {
         const planet = after.selectedJurisdiction;
         const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -449,17 +506,20 @@ function Canvas() {
   // neither surface can leave the split inconsistent — it totals 100%.
   function updateEquity(index: number, percent: number, via: string) {
     commit("slider", (s) => applyEquity(s, index, percent, via));
+    setLocalHost(nextObjectiveHostLine(withDefaults(stateRef.current)));
   }
 
   // The owner-count control and the agent action share this one path.
   function updateOwnerCount(count: number) {
     commit("owners", (s) => applyOwnerCount(s, count));
+    setLocalHost(nextObjectiveHostLine(withDefaults(stateRef.current)));
   }
 
   // THE one shared-state update path for the checklist (beat 3):
   // clicks and voice-agent actions both go through here.
   function updateChecklistItem(itemId: string, done: boolean) {
     commit("click", (s) => applyChecklistItem(s, itemId, done));
+    setLocalHost(checklistHostLine(withDefaults(stateRef.current)));
   }
 
   // Grounding for the agent: fictional company/places, current equity
@@ -755,6 +815,7 @@ function Canvas() {
   // package, rendered on the canvas. Prep only; nothing is sent.
   function prepareLawyerPackage() {
     commit("summary", (s) => applyLawyerSummary(s));
+    setLocalHost("Summary prepared — copy or download it; nothing is sent.");
   }
 
   useCopilotAction({
@@ -788,6 +849,7 @@ function Canvas() {
     }
     clearTurnErrors();
     commit("click", (s) => ({ ...s, selectedJurisdiction: jurisdiction }));
+    setLocalHost(nextObjectiveHostLine(withDefaults(stateRef.current)));
   }
 
   // The fast lane's spoken/visible line. It is derived from the state
@@ -1295,28 +1357,28 @@ function Canvas() {
     : resolvedHostPrompt;
   const doneCount = progress.requiredDone;
 
-  // First gesture unlocks audio/speech (browser autoplay policy)
-  // and pre-loads the curated system voice. Voices often arrive
-  // after first paint, so re-pick once when the list updates.
+  // First gesture unlocks audio/speech (browser autoplay policy) and
+  // warms the curated system voice. Voice lists often arrive after first
+  // paint, so re-pick when the browser publishes them. The picker child
+  // owns the visible voice list; this effect only resolves the voice.
   useEffect(() => {
     const unlock = () => {
       unlockedRef.current = true;
       refreshCachedVoice();
     };
-    const repickOnce = () => {
-      if (voicesRepickedRef.current) return;
-      voicesRepickedRef.current = true;
+    const handleVoicesChanged = () => {
       refreshCachedVoice();
     };
     window.addEventListener("pointerdown", unlock);
     window.addEventListener("keydown", unlock);
     const synth = window.speechSynthesis;
-    if (synth && typeof synth.addEventListener === "function") synth.addEventListener("voiceschanged", repickOnce);
+    if (synth && typeof synth.addEventListener === "function") synth.addEventListener("voiceschanged", handleVoicesChanged);
     return () => {
       window.removeEventListener("pointerdown", unlock);
       window.removeEventListener("keydown", unlock);
-      if (synth && typeof synth.removeEventListener === "function") synth.removeEventListener("voiceschanged", repickOnce);
+      if (synth && typeof synth.removeEventListener === "function") synth.removeEventListener("voiceschanged", handleVoicesChanged);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Mirrors so the utterance onend handler re-arms with fresh state.
@@ -1597,6 +1659,7 @@ function Canvas() {
     ? `#${colonyPalette(travel.planet).accent.toString(16).padStart(6, "0")}`
     : "#7fe7ff";
   const canSend = !recording && !transcribing && !sending && !isLoading;
+  const nextChecklistId = view.checklist.find((item) => !item.done)?.id ?? null;
 
   function selectStage(tab: "galaxy" | "colony") {
     setStageTab(tab);
@@ -1673,6 +1736,23 @@ function Canvas() {
             <div className="objective-meter" aria-hidden="true">
               <span style={{ width: `${Math.round((doneCount / progress.requiredTotal) * 100)}%` }} />
             </div>
+
+            {/* The build mission is the one required task where the user
+                has to choose among five steps. Keep the five options and
+                the running 0/5..5/5 count in the left rail, not only in
+                the systems panel, so the spoken question has visible
+                answers. Clicks use the same updateChecklistItem path. */}
+            {mission.beat === "checklist" ? (
+              <BuildQueuePanel
+                items={view.checklist}
+                built={structures.built}
+                total={structures.total}
+                percent={structures.percent}
+                nextItemId={nextChecklistId}
+                onToggle={updateChecklistItem}
+              />
+            ) : null}
+
             {celebrated ? (
               <p data-testid="mission-celebrated" className="celebrate" role="status">
                 {celebrated}
@@ -2075,6 +2155,11 @@ function Canvas() {
                   <span aria-hidden="true">{voiceOn ? "◉" : "○"}</span> VOX
                 </button>
               </div>
+              <HostVoicePicker
+                voiceOn={voiceOn}
+                onSelect={selectHostVoice}
+                onPreview={previewHostVoice}
+              />
               <p className="popout-clock" aria-label={`Mission clock ${clockLabel}`}>
                 MISSION CLOCK T+{clockLabel}
               </p>
@@ -2293,7 +2378,7 @@ function Canvas() {
               className="btn"
               data-testid="dock-expand"
               aria-expanded={dockOpen}
-              onClick={() => setDockOpen((value) => !value)}
+              onClick={toggleControls}
             >
               {dockOpen ? "CLOSE" : "CONTROLS"}
             </button>

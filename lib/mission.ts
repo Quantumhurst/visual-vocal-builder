@@ -67,8 +67,8 @@ export function missionFor(state: SharedState): Mission {
       const built = state.checklist.filter((item) => item.done).length;
       const structures = state.checklist.length;
       const prompt = built === 0
-        ? `Say “Tick off the first two checklist items” — ${built}/${structures} structures are up. Each tick builds one.`
-        : `Say “Tick next step” or “Finish the build” — ${built}/${structures} structures are up.`;
+        ? `Pick a step in the build queue, or say “Tick off the first two checklist items” — ${built}/${structures} structures are up. Each tick builds one.`
+        : `Pick the next step in the build queue, or say “Tick next step” — ${built}/${structures} structures are up.`;
       return { beat: nextBeat, step, total, title: "Build the colony, step by step", prompt, chips: built === 0 ? [
         { label: "Tick first two", command: "Tick off the first two checklist items" },
         { label: "Next step", command: "Mark the next checklist step done" },

@@ -29,7 +29,7 @@ export function getHostQuestion(beat: Beat, founderNames: string[] = ["Nova", "O
         ? `${selected} locked in! Next up: how should ${who} ${verb} the 100% equity?`
         : `Home base pending. Next up: how should ${who} ${verb} the 100% equity?`;
     }
-    case "checklist": return "Equity set. Which filing step should we tackle first?";
+    case "checklist": return "Equity set. Pick a filing step from the five on the left, or say “tick next step”.";
     case "rollover": return "Checklist moving. Want the s.85 rollover fact card for this setup?";
     case "filingsteps": return "Rollover noted. Ready to walk the filing steps and fees in order?";
     case "summary": return "Everything's lined up — shall I prepare the lawyer summary package?";
