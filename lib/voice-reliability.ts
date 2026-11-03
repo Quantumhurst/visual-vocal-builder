@@ -37,3 +37,35 @@ export function makeTranscribeFailure(detail: string): TranscribeFailure {
 export function hasRetryAudio(lastAudio: ArrayBuffer | null | undefined): boolean {
   return Boolean(lastAudio) && (lastAudio as ArrayBuffer).byteLength > 0;
 }
+
+// Timeouts & Guard Rails (Fixes 1–5):
+// Prevent any turn stage from hanging indefinitely.
+export const ASR_TIMEOUT_MS = 15_000;
+export const AGENT_WATCHDOG_MS = 25_000;
+export const NO_SPEECH_TIMEOUT_MS = 8_000;
+export const MAX_UTTERANCE_MS = 15_000;
+export const SPEECH_POLL_TIMEOUT_MS = 15_000;
+
+export function isEmptyTranscript(transcript: string | null | undefined): boolean {
+  return !(transcript ?? "").trim();
+}
+
+export function emptyTranscriptReply(): string {
+  return "Didn't catch that — say it again.";
+}
+
+export function noSpeechReply(): string {
+  return "Didn't hear anything — say it again.";
+}
+
+export function shouldTriggerNoSpeech(hasSpoken: boolean, listenedMs: number): boolean {
+  return !hasSpoken && listenedMs >= NO_SPEECH_TIMEOUT_MS;
+}
+
+export function shouldCapUtterance(listenedMs: number): boolean {
+  return listenedMs >= MAX_UTTERANCE_MS;
+}
+
+export function shouldForceReArm(waitedMs: number): boolean {
+  return waitedMs >= SPEECH_POLL_TIMEOUT_MS;
+}

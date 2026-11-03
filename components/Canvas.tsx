@@ -42,13 +42,26 @@ import { pushHistory, popHistory, statesEqual, type HistoryEntry } from "../lib/
 import { describeChange, currentStateSummary } from "../lib/describe-change";
 import { REQUIRED_BEATS, beatProgress } from "../lib/beat-progress";
 import { concatFloat32, toPcm16k } from "../lib/pcm";
-import { clearedVoiceErrors, hasRetryAudio, makeTranscribeFailure, type TranscribeFailure } from "../lib/voice-reliability";
+import {
+  clearedVoiceErrors,
+  hasRetryAudio,
+  makeTranscribeFailure,
+  type TranscribeFailure,
+  ASR_TIMEOUT_MS,
+  AGENT_WATCHDOG_MS,
+  isEmptyTranscript,
+  emptyTranscriptReply,
+  noSpeechReply,
+  shouldTriggerNoSpeech,
+  shouldCapUtterance,
+  shouldForceReArm,
+} from "../lib/voice-reliability";
 import { loadPcmWorklet, micFailureNotice } from "../lib/mic";
 import { checklistNoopReply, isNothingDoneAnswer, isCompanyNameQuestion, companyNameReply, isNameApproval, isNameCancel } from "../lib/checklist-answers";
 import { turnResultSignature } from "../lib/scroll";
 import confetti from "canvas-confetti";
 import { MAX_PCM_BYTES } from "../lib/request-guard";
-import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, IDLE_ACTIVITY, SILENCE_TO_STOP_MS, INTENT_SILENCE_TO_STOP_MS, type LiveIntent, type VoiceActivity } from "../lib/live-intent";
+import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, IDLE_ACTIVITY, SILENCE_TO_STOP_MS, INTENT_SILENCE_TO_STOP_MS, MIN_SPEECH_MS, type LiveIntent, type VoiceActivity } from "../lib/live-intent";
 import { queueTurn, flushQueuedTurn, QUEUED_TURN_NOTICE } from "../lib/turn-queue";
 import { cueForChange, CUES, type CueName } from "../lib/sound-cues";
 import { missionFor } from "../lib/mission";
@@ -121,7 +134,7 @@ function Canvas() {
       checklistFlags[v.cardId] = `${v.reason}: ${v.detail}`;
     }
   }
-  const { appendMessage, isLoading, messages } = useCopilotChatInternal();
+  const { appendMessage, isLoading, messages, stopGeneration } = useCopilotChatInternal();
   const [recording, setRecording] = useState(false);
   const [typed, setTyped] = useState("");
   const [notice, setNotice] = useState("");
@@ -158,6 +171,8 @@ function Canvas() {
   const recognitionRef = useRef<{ stop: () => void; onresult: unknown; onerror: unknown; onend: unknown } | null>(null);
   const liveTranscriptRef = useRef("");
   const confirmationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const peakLevelRef = useRef(0);
+  const noSpeechAttemptsRef = useRef(0);
 
   function clearConfirmationTimer() {
     if (confirmationTimerRef.current !== null) {
@@ -727,13 +742,14 @@ function Canvas() {
     setLiveTranscript(trimmed);
 
     // Ground-truth voice activity: browser speech recognition identified real words.
-    // Boost speechMs >= 400ms so min-speech guard passes even for short 200ms words like "yes".
+    // Count recognised words as speech and reset no-speech attempt counter.
     const now = performance.now();
     activityRef.current = {
       hasSpoken: true,
-      speechMs: Math.max(activityRef.current.speechMs, 400),
+      speechMs: Math.max(activityRef.current.speechMs, MIN_SPEECH_MS),
       lastSpeechAt: now,
     };
+    noSpeechAttemptsRef.current = 0;
 
     if (equityConfirm && isConfirmationAnswer(trimmed)) {
       intentMatchedRef.current = true;
@@ -1075,7 +1091,18 @@ function Canvas() {
 
   async function sendToAgent(text: string, fromVoice = false) {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      if (fromVoice) {
+        const line = emptyTranscriptReply();
+        setLocalHost(line);
+        if (voiceOn && unlockedRef.current) {
+          lastSpokenRef.current = spokenHostText(line);
+          speakNative(line);
+        }
+      }
+      return;
+    }
+    noSpeechAttemptsRef.current = 0;
     // Busy lane: park one turn (latest wins) with a visible notice instead
     // of the old silent drop. The flush effect below sends it once idle.
     if (sending || isLoading) {
@@ -1469,7 +1496,11 @@ function Canvas() {
     const blob = new Blob([buf], { type: "audio/L16" });
     const form = new FormData();
     form.append("audio", blob, "recording.pcm");
-    const res = await fetch("/api/transcribe", { method: "POST", body: form });
+    const res = await fetch("/api/transcribe", {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(ASR_TIMEOUT_MS),
+    });
     const data = await res.json();
     if (!res.ok) throw new Error(String(data.error ?? res.statusText));
     return String(data.transcript ?? "");
@@ -1584,6 +1615,16 @@ function Canvas() {
       const transcript = await fetchTranscript(buf);
       stampTiming("finalTranscript");
       setNotice("");
+      if (isEmptyTranscript(transcript)) {
+        const line = emptyTranscriptReply();
+        setLocalHost(line);
+        setNotice(line);
+        if (voiceOn && unlockedRef.current) {
+          lastSpokenRef.current = spokenHostText(line);
+          speakNative(line);
+        }
+        return;
+      }
       await sendToAgent(transcript, true);
     } catch (error) {
       setNotice("");
@@ -1639,9 +1680,40 @@ function Canvas() {
       new Int16Array(buf).set(pcm);
       lastAudioRef.current = buf;
       setHasLastAudio(true);
+      console.info(
+        `[vvb-timing] turn ended, peak RMS: ${peakLevelRef.current.toFixed(4)}, speechMs: ${activityRef.current.speechMs.toFixed(0)}ms`,
+      );
       await transcribeAndSend(buf);
     } finally {
       finishingRef.current = false;
+    }
+  }
+
+  async function handleNoSpeechTimeout() {
+    clearConfirmationTimer();
+    if (finishingRef.current) return;
+    finishingRef.current = true;
+    recordingRef.current = false;
+    stopWebSpeech();
+    setMicLevel(0);
+    setRecording(false);
+    cleanupAudio();
+    finishingRef.current = false;
+
+    if (noSpeechAttemptsRef.current === 0) {
+      noSpeechAttemptsRef.current = 1;
+      const line = noSpeechReply();
+      setLocalHost(line);
+      setNotice(line);
+      if (voiceOn && unlockedRef.current) {
+        lastSpokenRef.current = spokenHostText(line);
+        speakNative(line);
+      }
+    } else {
+      convoRef.current = false;
+      setConvoActive(false);
+      noSpeechAttemptsRef.current = 0;
+      setNotice("Conversation paused (no speech detected) — press TALK to resume.");
     }
   }
 
@@ -1717,6 +1789,7 @@ function Canvas() {
     setHasLastAudio(false);
     activityRef.current = IDLE_ACTIVITY;
     levelRef.current = 0;
+    peakLevelRef.current = 0;
     previewKeyRef.current = null;
     intentMatchedRef.current = false;
     setLiveTranscript("");
@@ -1749,7 +1822,22 @@ function Canvas() {
         // speech ends the turn hands-free — no Stop click needed.
         const level = rmsLevel(block);
         levelRef.current = level;
+        peakLevelRef.current = Math.max(peakLevelRef.current, level);
         const now = performance.now();
+        const listened = now - (turnTimingRef.current.micStart ?? now);
+
+        // Guard 1: No speech detected after 8s -> close quietly, say "Didn't hear anything — say it again", re-arm once
+        if (shouldTriggerNoSpeech(activityRef.current.hasSpoken, listened)) {
+          void handleNoSpeechTimeout();
+          return;
+        }
+
+        // Guard 2: Max utterance length (15s cap) -> force finish recording
+        if (shouldCapUtterance(listened)) {
+          void finishRecording();
+          return;
+        }
+
         activityRef.current = nextVoiceActivity(activityRef.current, level, now, rate > 0 ? (block.length / rate) * 1000 : 0);
         if (shouldAutoStop(activityRef.current, now, intentMatchedRef.current ? INTENT_SILENCE_TO_STOP_MS : SILENCE_TO_STOP_MS)) {
           void finishRecording();
@@ -1876,8 +1964,14 @@ function Canvas() {
       if (quietPolls >= 2) {
         clearInterval(timer);
         if (convoRef.current) void startRecording();
+        return;
       }
-      if (waitedMs > 45000) clearInterval(timer);
+      if (shouldForceReArm(waitedMs)) {
+        // Speech synth stuck true (known Chrome bug): cancel speech and open the mic anyway
+        clearInterval(timer);
+        cancelSpeech();
+        if (convoRef.current) void startRecording();
+      }
     }, 400);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1888,6 +1982,22 @@ function Canvas() {
     if (turnError || transcribeFailure) playCue("error");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnError, transcribeFailure]);
+
+  // Agent watchdog (Fix 4): if the agent has been busy for over 25s, abort and reset
+  useEffect(() => {
+    if (!isLoading && !sending) return;
+    const timer = setTimeout(() => {
+      try {
+        stopGeneration?.();
+      } catch {
+        // ignore
+      }
+      setSending(false);
+      setNotice("");
+      setTurnError("Agent took too long, try again");
+    }, AGENT_WATCHDOG_MS);
+    return () => clearTimeout(timer);
+  }, [isLoading, sending, stopGeneration]);
 
   // Hands-free testing & mock-voice simulation hook:
   // Enables automated test playthroughs and mock audio runs to feed voice

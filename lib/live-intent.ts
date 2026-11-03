@@ -157,9 +157,9 @@ export function parseLiveIntent(text: string): LiveIntent | null {
 // (mirrors the server model's ENDPOINTING idea, on the client where
 // the batch upload used to force a manual Stop click).
 
-export const SPEECH_RMS = 0.018;
+export const SPEECH_RMS = 0.012;
 export const SILENCE_TO_STOP_MS = 1100;
-export const MIN_SPEECH_MS = 350;
+export const MIN_SPEECH_MS = 150;
 // Shorter stop pause once a live intent (a command, never a question) has
 // already matched in the current recording — the turn is recognised, so a
 // shorter pause sends it sooner. Questions keep the full 1100 ms.

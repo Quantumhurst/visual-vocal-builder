@@ -37,9 +37,9 @@ function transcribePcm(pcm: Buffer, apiKey: string): Promise<string> {
         } catch {
           // ignore
         }
-        reject(new Error("ASR timed out after 60s"));
+        reject(new Error("ASR timed out after 15s"));
       }
-    }, 60_000);
+    }, 15_000);
 
     const finish = (transcript: string) => {
       if (settled) return;

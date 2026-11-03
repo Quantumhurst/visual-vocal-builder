@@ -78,9 +78,9 @@ test("adaptive endpointing: intent-matched stops at 600ms, unmatched waits for 1
   assert.equal(shouldAutoStop(a, t0 + 200 + 1100, SILENCE_TO_STOP_MS), true);
 });
 
-test("adaptive endpointing: speech under 350ms never stops, even intent-matched", () => {
+test("adaptive endpointing: speech under MIN_SPEECH_MS never stops, even intent-matched", () => {
   const t0 = 30_000;
-  const a = nextVoiceActivity(IDLE_ACTIVITY, 0.2, t0, 200); // 200ms only
+  const a = nextVoiceActivity(IDLE_ACTIVITY, 0.2, t0, 100); // 100ms only (< MIN_SPEECH_MS)
   assert.equal(shouldAutoStop(a, t0 + 60_000, INTENT_SILENCE_TO_STOP_MS), false);
   assert.equal(shouldAutoStop(a, t0 + 60_000, SILENCE_TO_STOP_MS), false);
 });
