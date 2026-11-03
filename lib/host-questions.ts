@@ -53,3 +53,12 @@ export function resolveHostPrompt(messages: readonly Msg[] | undefined | null, b
   if (latest) return { text: latest, source: "agent" };
   return { text: getHostQuestion(beat, founderNames, selected), source: "fallback" };
 }
+
+// Tool-only turns still speak the next question: when a turn completes
+// with no new assistant text (fallback source, e.g. a bare tool call like
+// setFounderEquity) AND the beat advanced, the host speaks the fallback
+// mission question once. A beat that did not advance stays silent — the
+// same question is never repeated.
+export function shouldSpeakFallbackQuestion(source: "agent" | "fallback", beatAtTurnStart: Beat, beatNow: Beat): boolean {
+  return source === "fallback" && beatAtTurnStart !== beatNow;
+}

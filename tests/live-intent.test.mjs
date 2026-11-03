@@ -6,6 +6,8 @@ import {
   nextVoiceActivity,
   shouldAutoStop,
   IDLE_ACTIVITY,
+  SILENCE_TO_STOP_MS,
+  INTENT_SILENCE_TO_STOP_MS,
 } from "../lib/live-intent.ts";
 import { BRAIN_MODEL, ASR_MODEL, ASR_KEYWORDS, buildAsrHandshake } from "../lib/meta-models.ts";
 
@@ -61,6 +63,26 @@ test("auto-stop only after real speech plus a real pause", () => {
   assert.equal(a.hasSpoken, true);
   assert.equal(shouldAutoStop(a, t0 + 400 + 400), false); // brief pause: keep listening
   assert.equal(shouldAutoStop(a, t0 + 400 + 1200), true); // natural pause: send it
+});
+
+test("adaptive endpointing: intent-matched stops at 600ms, unmatched waits for 1100ms", () => {
+  assert.equal(SILENCE_TO_STOP_MS, 1100);
+  assert.equal(INTENT_SILENCE_TO_STOP_MS, 600);
+  const t0 = 20_000;
+  let a = nextVoiceActivity(IDLE_ACTIVITY, 0.2, t0, 200);
+  a = nextVoiceActivity(a, 0.2, t0 + 200, 200); // 400ms of speech
+  const silence600 = t0 + 200 + 600;
+  assert.equal(shouldAutoStop(a, silence600, INTENT_SILENCE_TO_STOP_MS), true);
+  assert.equal(shouldAutoStop(a, silence600, SILENCE_TO_STOP_MS), false);
+  assert.equal(shouldAutoStop(a, silence600), false); // default is the full pause
+  assert.equal(shouldAutoStop(a, t0 + 200 + 1100, SILENCE_TO_STOP_MS), true);
+});
+
+test("adaptive endpointing: speech under 350ms never stops, even intent-matched", () => {
+  const t0 = 30_000;
+  const a = nextVoiceActivity(IDLE_ACTIVITY, 0.2, t0, 200); // 200ms only
+  assert.equal(shouldAutoStop(a, t0 + 60_000, INTENT_SILENCE_TO_STOP_MS), false);
+  assert.equal(shouldAutoStop(a, t0 + 60_000, SILENCE_TO_STOP_MS), false);
 });
 
 test("meta model config: best-fit models + ASR biasing handshake", () => {

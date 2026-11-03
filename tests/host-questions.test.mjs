@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { getHostQuestion, getLatestAssistantText, resolveHostPrompt } from "../lib/host-questions.ts";
+import { getHostQuestion, getLatestAssistantText, resolveHostPrompt, shouldSpeakFallbackQuestion } from "../lib/host-questions.ts";
 
 test("jurisdiction fallback", () => { assert.match(getHostQuestion("jurisdiction"), /Mars, Europa, or Andromeda/); });
 test("equity fallback uses founder names", () => { const q = getHostQuestion("equity", ["Nova", "Orbit"]); assert.match(q, /Nova/); assert.match(q, /Orbit/); assert.match(q, /100% equity/); });
@@ -17,4 +17,9 @@ test("tool-call-only turn yields fallback, not empty box", () => {
 test("assistant prose wins over fallback", () => {
   const r = resolveHostPrompt([{ role: "user", content: "hi" }, { role: "assistant", content: "Pick Mars?" }], "summary");
   assert.deepEqual(r, { text: "Pick Mars?", source: "agent" });
+});
+test("tool-only turn speaks the fallback question only when the beat advanced", () => {
+  assert.equal(shouldSpeakFallbackQuestion("fallback", "jurisdiction", "equity"), true);
+  assert.equal(shouldSpeakFallbackQuestion("fallback", "equity", "equity"), false);
+  assert.equal(shouldSpeakFallbackQuestion("agent", "jurisdiction", "equity"), false);
 });

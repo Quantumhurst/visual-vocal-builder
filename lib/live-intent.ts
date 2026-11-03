@@ -99,6 +99,10 @@ export function parseLiveIntent(text: string): LiveIntent | null {
 export const SPEECH_RMS = 0.018;
 export const SILENCE_TO_STOP_MS = 1100;
 export const MIN_SPEECH_MS = 350;
+// Shorter stop pause once a live intent (a command, never a question) has
+// already matched in the current recording — the turn is recognised, so a
+// shorter pause sends it sooner. Questions keep the full 1100 ms.
+export const INTENT_SILENCE_TO_STOP_MS = 600;
 
 export function rmsLevel(samples: Float32Array): number {
   if (!samples || samples.length === 0) return 0;
@@ -122,8 +126,8 @@ export function nextVoiceActivity(prev: VoiceActivity, rms: number, nowMs: numbe
   return prev;
 }
 
-export function shouldAutoStop(activity: VoiceActivity, nowMs: number): boolean {
+export function shouldAutoStop(activity: VoiceActivity, nowMs: number, silenceMs: number = SILENCE_TO_STOP_MS): boolean {
   if (!activity.hasSpoken || activity.lastSpeechAt === null) return false;
   if (activity.speechMs < MIN_SPEECH_MS) return false;
-  return nowMs - activity.lastSpeechAt >= SILENCE_TO_STOP_MS;
+  return nowMs - activity.lastSpeechAt >= silenceMs;
 }

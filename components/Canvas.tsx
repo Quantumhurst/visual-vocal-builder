@@ -32,7 +32,7 @@ import { FILING_STEPS_PACK, S85_PACK } from "../lib/knowledge";
 import type { SharedState } from "../lib/state";
 import TrustStrip from "./TrustStrip";
 import { verifyPaintedCards } from "../lib/verifier";
-import { resolveHostPrompt, shortFounderNames } from "../lib/host-questions";
+import { resolveHostPrompt, shortFounderNames, shouldSpeakFallbackQuestion, type Beat } from "../lib/host-questions";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
 import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber } from "../lib/state-updates";
 import { pushHistory, popHistory, statesEqual, type HistoryEntry } from "../lib/history";
@@ -45,7 +45,8 @@ import { ReactLenis, useLenis } from "lenis/react";
 import type Lenis from "lenis";
 import confetti from "canvas-confetti";
 import { MAX_PCM_BYTES } from "../lib/request-guard";
-import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, IDLE_ACTIVITY, type VoiceActivity } from "../lib/live-intent";
+import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, IDLE_ACTIVITY, SILENCE_TO_STOP_MS, INTENT_SILENCE_TO_STOP_MS, type VoiceActivity } from "../lib/live-intent";
+import { queueTurn, flushQueuedTurn, QUEUED_TURN_NOTICE } from "../lib/turn-queue";
 import { cueForChange, CUES, type CueName } from "../lib/sound-cues";
 import { missionFor } from "../lib/mission";
 import { spokenHostText } from "../lib/spoken-text";
@@ -181,6 +182,22 @@ function Canvas() {
   const utterCancelledRef = useRef(false);
   const busyRef = useRef(false);
   const turnErrorRef = useRef(false);
+  // Single-slot pending turn: a command sent while the agent is busy is
+  // parked here (latest wins) and flushed once when idle — never silently
+  // dropped, never double-sent, never sent after the conversation ends.
+  const queuedTurnRef = useRef<{ text: string; convoWasActive: boolean } | null>(null);
+  // Adaptive endpointing: set once a live intent (not a question) has
+  // matched in the current recording, shortening the stop pause.
+  const intentMatchedRef = useRef(false);
+
+  function dropQueuedTurnNotice() {
+    setNotice((n) => (n === QUEUED_TURN_NOTICE ? "" : n));
+  }
+
+  function dropQueuedTurn() {
+    queuedTurnRef.current = null;
+    dropQueuedTurnNotice();
+  }
 
   function refreshCachedVoice() {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
@@ -386,7 +403,12 @@ function Canvas() {
     if (!trimmed) return;
     stampTiming("firstPartial");
     setLiveTranscript(trimmed);
-    applyLiveIntent(trimmed, "live");
+    const intent = applyLiveIntent(trimmed, "live");
+    // Adaptive endpointing: a recognised command shortens the stop pause
+    // to 600 ms. Questions keep 1100 ms — a slow ask needs its full pause.
+    if (intent && intent.kind !== "rollover-question" && intent.kind !== "filing-question") {
+      intentMatchedRef.current = true;
+    }
   }
 
   // Beat 1 action: the agent's authoritative jurisdiction write. It
@@ -609,7 +631,14 @@ function Canvas() {
 
   async function sendToAgent(text: string, fromVoice = false) {
     const trimmed = text.trim();
-    if (!trimmed || sending || isLoading) return;
+    if (!trimmed) return;
+    // Busy lane: park one turn (latest wins) with a visible notice instead
+    // of the old silent drop. The flush effect below sends it once idle.
+    if (sending || isLoading) {
+      queuedTurnRef.current = queueTurn(queuedTurnRef.current, trimmed, convoRef.current);
+      setNotice(QUEUED_TURN_NOTICE);
+      return;
+    }
     if (turnTimingRef.current.micStart === undefined) {
       turnTimingRef.current = { micStart: performance.now() };
     }
@@ -646,7 +675,7 @@ function Canvas() {
     } else {
       setAck("");
     }
-    pendingTurnRef.current = { signature: turnResultSignature(view, hostPrompt.text), text: trimmed };
+    pendingTurnRef.current = { signature: turnResultSignature(view, hostPrompt.text), text: trimmed, beat: view.currentBeat };
     setSending(true);
     messageIdRef.current += 1;
     try {
@@ -852,6 +881,7 @@ function Canvas() {
       // A manual stop ends the conversation, not just the turn.
       convoRef.current = false;
       setConvoActive(false);
+      dropQueuedTurn();
       await finishRecording();
       return;
     }
@@ -860,6 +890,7 @@ function Canvas() {
       // re-arming the mic; the current turn finishes on its own.
       convoRef.current = false;
       setConvoActive(false);
+      dropQueuedTurn();
       return;
     }
     if (convoOn) {
@@ -883,6 +914,7 @@ function Canvas() {
     activityRef.current = IDLE_ACTIVITY;
     levelRef.current = 0;
     previewKeyRef.current = null;
+    intentMatchedRef.current = false;
     setLiveTranscript("");
     setLivePreview(null);
     setMicLevel(0);
@@ -912,7 +944,7 @@ function Canvas() {
         levelRef.current = level;
         const now = performance.now();
         activityRef.current = nextVoiceActivity(activityRef.current, level, now, rate > 0 ? (block.length / rate) * 1000 : 0);
-        if (shouldAutoStop(activityRef.current, now)) {
+        if (shouldAutoStop(activityRef.current, now, intentMatchedRef.current ? INTENT_SILENCE_TO_STOP_MS : SILENCE_TO_STOP_MS)) {
           void finishRecording();
           return;
         }
@@ -992,6 +1024,20 @@ function Canvas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoading, hostPrompt.text, hostPrompt.source, voiceOn]);
 
+  // Queued-turn flush: a turn parked while busy goes out exactly once,
+  // the moment the lane is idle — unless the user ended the conversation
+  // meanwhile, in which case it is dropped. The slot clears synchronously
+  // before the async send, so the turn can never double-send.
+  useEffect(() => {
+    if (sending || isLoading) return;
+    if (!queuedTurnRef.current) return;
+    const { send, slot } = flushQueuedTurn(queuedTurnRef.current, false, convoRef.current);
+    queuedTurnRef.current = slot;
+    dropQueuedTurnNotice();
+    if (send) void sendToAgent(send);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sending, isLoading]);
+
   // Conversation loop: when the agent has finished speaking, re-open
   // the mic automatically so the talk never "just ends". Any error
   // pauses the loop instead of retrying into a wall.
@@ -1001,6 +1047,7 @@ function Canvas() {
       const t = setTimeout(() => {
         convoRef.current = false;
         setConvoActive(false);
+        queuedTurnRef.current = null;
         setNotice("Conversation paused after an error — press Speak (mic) to resume.");
       }, 0);
       return () => clearTimeout(t);
@@ -1093,7 +1140,7 @@ function Canvas() {
   // per result signature — never on every render, never mid-stream.
   const latestTurnRef = useRef<HTMLDivElement | null>(null);
   const scrolledSignatureRef = useRef<string | null>(null);
-  const pendingTurnRef = useRef<{ signature: string; text: string } | null>(null);
+  const pendingTurnRef = useRef<{ signature: string; text: string; beat: Beat } | null>(null);
   const wasLoadingRef = useRef(false);
   const resultSignature = turnResultSignature(view, hostPrompt.text);
   // No silent turn: a completed turn that changed nothing (and is not a
@@ -1116,6 +1163,12 @@ function Canvas() {
         }
       } else {
         setLivePreview((p) => (p ? { ...p, status: "confirmed" } : p));
+      }
+      // Tool-only turn that advanced the beat (no new assistant text):
+      // speak the fallback mission question once. speakHost's lastSpoken
+      // guard keeps it to one utterance; a non-advanced beat stays silent.
+      if (shouldSpeakFallbackQuestion(hostPrompt.source, pending.beat, view.currentBeat)) {
+        speakHost(hostPrompt.text);
       }
       // One timing line per completed turn.
       turnTimingRef.current.done = performance.now();
@@ -1258,6 +1311,7 @@ function Canvas() {
             if (!next) {
               convoRef.current = false;
               setConvoActive(false);
+              dropQueuedTurn();
             }
           }}
         >

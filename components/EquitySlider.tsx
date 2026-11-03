@@ -50,6 +50,9 @@ export default function EquitySlider({ founders, equityNote, onShareChange }: Pr
               style={{ width: "320px" }}
             />
           </label>
+          <div aria-hidden="true" style={{ width: "320px", height: "8px", background: "#2c376e", borderRadius: "999px", overflow: "hidden" }}>
+            <div style={{ width: `${founder.percent}%`, height: "100%", background: "#ffd166", transition: "width 300ms ease" }} />
+          </div>
         </div>
       ))}
       <p>
