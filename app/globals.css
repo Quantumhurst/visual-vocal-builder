@@ -3091,10 +3091,31 @@ pre {
   padding: 32px 24px;
 }
 
+.landing-orb-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 148px;
+  height: 148px;
+  margin-bottom: 2px;
+}
+
+.landing-spin {
+  position: absolute;
+  inset: 10px;
+  border: 2px solid transparent;
+  border-top-color: var(--cyan);
+  border-right-color: rgba(127, 231, 255, 0.38);
+  border-radius: 50%;
+  box-shadow: 0 0 26px -12px var(--cyan);
+  pointer-events: none;
+  animation: orbit 3.2s linear infinite;
+}
+
 .landing-screen .boot-orbit {
   width: 88px;
   height: 88px;
-  margin-bottom: 16px;
+  margin: 0;
 }
 
 .landing-screen .boot-orbit::before {

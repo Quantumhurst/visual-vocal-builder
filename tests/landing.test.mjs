@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
 const gate = readFileSync(new URL("../components/LandingGate.tsx", import.meta.url), "utf8");
 const canvas = readFileSync(new URL("../components/Canvas.tsx", import.meta.url), "utf8");
+const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
 
 test("the same page now renders the persistent landing gate", () => {
   assert.match(page, /LandingGate/);
@@ -31,4 +32,16 @@ test("Enter mounts the cockpit with autoStart", () => {
   assert.match(canvas, /toggleRecordingRef\.current\(true\)/);
   assert.match(canvas, /forceGreeting/);
   assert.match(canvas, /consumeFirstSpeakGreeting\(\)/);
+});
+
+test("the landing orb has a contained spin ring, not a full-page overlay", () => {
+  assert.match(gate, /landing-orb-wrap/);
+  assert.match(gate, /landing-spin/);
+  assert.match(gate, /<div className="landing-orb-wrap" aria-hidden="true">/);
+  const wrapBlock = css.match(/\.landing-orb-wrap\s*\{([^}]*)\}/s)?.[1] ?? "";
+  const spinBlock = css.match(/\.landing-spin\s*\{([^}]*)\}/s)?.[1] ?? "";
+  assert.match(wrapBlock, /position: relative/);
+  assert.match(spinBlock, /position: absolute/);
+  assert.doesNotMatch(spinBlock, /position: fixed/);
+  assert.match(spinBlock, /animation: orbit/);
 });

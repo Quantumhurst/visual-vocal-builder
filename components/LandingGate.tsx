@@ -21,7 +21,10 @@ export default function LandingGate() {
       aria-labelledby="landing-title"
       aria-describedby="landing-disclaimer"
     >
-      <span className="boot-orbit" aria-hidden="true" />
+      <div className="landing-orb-wrap" aria-hidden="true">
+        <span className="landing-spin" />
+        <span className="boot-orbit" />
+      </div>
       <p className="eyebrow">VVB-01 · ORBITAL FOUNDRY</p>
       <h1 id="landing-title">Visual Vocal Builder</h1>
       <p className="landing-tagline">Incorporate a company by voice</p>
