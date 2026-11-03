@@ -3084,6 +3084,52 @@ pre {
   animation: orbit 8s linear infinite;
 }
 
+/* ---------- persistent landing ------------------------------------------ */
+
+.landing-screen {
+  gap: 10px;
+  padding: 32px 24px;
+}
+
+.landing-screen .boot-orbit {
+  width: 88px;
+  height: 88px;
+  margin-bottom: 16px;
+}
+
+.landing-screen .boot-orbit::before {
+  inset: 16px;
+}
+
+.landing-screen h1 {
+  font-size: clamp(28px, 4.4vw, 42px);
+  letter-spacing: 0.1em;
+}
+
+.landing-screen .landing-tagline {
+  max-width: 640px;
+  color: #e6ecff;
+  font-size: clamp(16px, 2.1vw, 21px);
+  letter-spacing: 0.02em;
+}
+
+.landing-screen .landing-disclaimer {
+  max-width: 560px;
+  margin-top: 4px;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.65;
+  letter-spacing: 0.02em;
+}
+
+.landing-screen .landing-enter {
+  margin-top: 18px;
+  padding: 12px 24px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+}
+
 /* ---------- system diagnostics (equity panel) -------------------------- */
 
 .system-diag {

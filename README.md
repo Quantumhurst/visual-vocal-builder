@@ -16,7 +16,7 @@ cp .env.example .env   # fill in META_API_KEY (never commit .env)
 npm run dev
 ```
 
-Open http://localhost:3000, allow mic access, and speak.
+Open http://localhost:3000, click **Enter the Bridge**, allow mic access, and speak.
 
 `/api/transcribe` accepts only raw PCM16, 16 kHz mono. Arbitrary webm/wav uploads no longer work. To test-upload from a wav file:
 
@@ -38,7 +38,8 @@ Tests import TypeScript sources directly and need Node 22.18+ for type stripping
 
 - Voice loop: Muse Voice Transcribe (STT only) → Muse Spark brain via the Meta Model API → CopilotKit `useCoAgent` shared state → canvas re-renders. Board interactions (e.g. clicking a table row) write shared state back without a new prompt.
 - Live flow (no dead air while speaking): partial transcripts paint a *live preview* the instant a command is recognisable — "Pick Mars" lights the planet mid-sentence — through the same state appliers the agent uses (`lib/live-intent.ts`), and a natural pause auto-sends the turn (client endpointing), so Stop recording is optional. The final Meta transcript is still the authority. Clear deterministic commands (jurisdiction, equity/owner count, checklist counts, summary) are confirmed locally from that transcript and speak a local host line, so they do not wait for the model; questions and ambiguous turns still go to Muse Spark. Equity/owner changes now pause on a confirmation card before the walk advances. Grounded fact cards are never painted locally, only by the agent from the knowledge packs. Browsers with a built-in speech recogniser use it for interim words; other browsers get no interim words, just the final Meta transcript.
-- First Speak: the first TALK press speaks the same home-base question the objective already shows ("Pick your home base — Mars, Europa, or Andromeda Galaxy?") once per browser session, then opens the mic. It writes no shared state and adds no fact. The marker lives in `sessionStorage`, so a reload in the same tab does not repeat it.
+- Landing: `/` opens on a persistent Orbital Foundry landing screen — the orb, the "Incorporate a company by voice" tagline, the demo-data disclaimer, and one **Enter the Bridge** button. Clicking it mounts the cockpit on the same route (no new page), speaks the home-base greeting once, and arms the mic.
+- First Speak: **Enter the Bridge** speaks the same home-base question the objective already shows ("Pick your home base — Mars, Europa, or Andromeda Galaxy?") once for the entry, then opens the mic; a later TALK press does not repeat it. The sessionStorage marker still gates the ordinary TALK path, so a refresh + Enter can replay the landing line while TALK stays silent. The greeting writes no shared state and adds no fact.
 - Meta model choices (`lib/meta-models.ts`): brain is `muse-spark-1.3` (latest Spark, recommended for tight agentic tool loops — Muse Wonder targets long-horizon coding/computer use at higher latency, the wrong fit here); STT is `muse-voice-transcribe-1.0` with keyword biasing (Mars, Europa, section 85, owner counts, founder names, and fast-lane commands) and English language bias in the realtime handshake, which previously went unused. The fixed "is this actually going to file my company?" guard answer is answered locally (`lib/filing-guard.ts`), with no model turn and no state change.
 - Stack: Next.js + CopilotKit + AG-UI, with A2UI in contained mode. CopilotKit is the frontend SDK; the brain is Muse Spark. Spoken replies use the curated system voice (Meta has no TTS model): the app ranks the machine's English voices and speaks the host line with question/statement prosody. No voice model download. A **HOST VOICE** picker in Controls can pin any English browser/OS voice (stored by `voiceURI` in `localStorage`); **Auto** keeps the curated pick, and a stale saved voice falls back to Auto.
 - Required-task handoff: when a change completes a required beat, the cockpit opens the next one in the same handler — equity completion opens the five-step BUILD queue **after the split is confirmed**, and 5/5 opens LAUNCH. Clicking a build step updates the visible host line with the real count and the next step name, so the spoken question has visible answers instead of leaving the previous task's line on screen.
@@ -46,6 +47,8 @@ Tests import TypeScript sources directly and need Node 22.18+ for type stripping
 - No OpenRouter, no CLI subscription session, no pre-existing project code or private service called at runtime.
 
 ## Demo beats
+
+The page opens on the Orbital Foundry landing screen; **Enter the Bridge** swaps to the cockpit and starts the voice loop before beat 1.
 
 1. Jurisdiction comparison (headline-level — enough to show the choice and why). Rows are fictional places (Mars, Europa, Andromeda Galaxy) with dummy values, for liability: nothing here resembles a real filing fact. Picking one plays a short rocket-travel cinematic before the colony view.
 2. Equity split for **1–5 owners**: a count control (growing defaults to an equal split, shrinking redistributes), draggable crew bars, and a hard 100% invariant enforced through the one shared-state update path in `lib/equity.ts` (invariant tests in `tests/equity.test.mjs`). Every owner/equity change pauses on a **CONFIRM CREW SPLIT** card showing the normalized split; Confirm (or "yes") opens BUILD, while other required-task commands are held until the split is confirmed. "Change"/"no" keeps the card open for another owner count or slider drag.

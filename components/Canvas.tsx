@@ -97,7 +97,7 @@ const FAST_INTENT_KINDS: ReadonlySet<LiveIntent["kind"]> = new Set([
   "lawyer-summary",
 ]);
 
-function Canvas() {
+function Canvas({ autoStart = false }: { autoStart?: boolean }) {
   const { state, setState } = useCoAgent<SharedState>({
     name: "vvb",
     initialState: INITIAL_STATE,
@@ -1354,7 +1354,7 @@ function Canvas() {
     return true;
   }
 
-  async function toggleRecording() {
+  async function toggleRecording(forceGreeting = false) {
     if (recording) {
       // A manual stop ends the conversation, not just the turn.
       convoRef.current = false;
@@ -1379,8 +1379,11 @@ function Canvas() {
     setDockOpen(false);
 
     // First Speak: greet with the existing home-base question, then open
-    // the mic. This is presentation only — no shared state and no fact.
-    if (consumeFirstSpeakGreeting()) {
+    // the mic. Enter the Bridge also uses this path but forces the line
+    // once for the landing transition; the session marker still keeps a
+    // later TALK press from repeating it.
+    const firstSpeak = consumeFirstSpeakGreeting();
+    if (forceGreeting || firstSpeak) {
       if (voiceOn && typeof window !== "undefined" && window.speechSynthesis) {
         refreshCachedVoice();
         if (speakNative(FIRST_SPEAK_GREETING, () => { void startRecording(); })) {
@@ -1733,12 +1736,28 @@ function Canvas() {
     return () => clearInterval(id);
   }, []);
 
-  const toggleRecordingRef = useRef<() => void>(() => {});
+  const toggleRecordingRef = useRef<(forceGreeting?: boolean) => void>(() => {});
   useEffect(() => {
-    toggleRecordingRef.current = () => {
-      void toggleRecording();
+    toggleRecordingRef.current = (forceGreeting = false) => {
+      void toggleRecording(forceGreeting);
     };
   });
+
+  // Enter the Bridge mounts the cockpit with autoStart. Run the one
+  // landing transition after the click: forced home-base greeting,
+  // then the mic. The short delay clears React Strict Mode's immediate
+  // mount/cleanup/mount pass, which would otherwise cancel the first
+  // utterance before its onend/watchdog could arm the mic.
+  const autoStartedRef = useRef(false);
+  useEffect(() => {
+    if (!autoStart) return;
+    const timer = setTimeout(() => {
+      if (autoStartedRef.current) return;
+      autoStartedRef.current = true;
+      toggleRecordingRef.current(true);
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [autoStart]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -2428,7 +2447,9 @@ function Canvas() {
             type="button"
             className={`mic-orb${recording ? " is-live" : ""}${convoActive ? " is-convo" : ""}`}
             data-testid="mic-button"
-            onClick={toggleRecording}
+            onClick={() => {
+              void toggleRecording();
+            }}
             disabled={!recording && !convoActive && (transcribing || sending || isLoading)}
             aria-label={micLabel}
             title={micLabel}
@@ -2564,10 +2585,10 @@ function Canvas() {
 
 }
 
-export default function CanvasHost() {
+export default function CanvasHost({ autoStart = false }: { autoStart?: boolean }) {
   return (
     <CopilotKit runtimeUrl="/api/copilotkit" showDevConsole={false} enableInspector={false}>
-      <Canvas />
+      <Canvas autoStart={autoStart} />
     </CopilotKit>
   );
 }
