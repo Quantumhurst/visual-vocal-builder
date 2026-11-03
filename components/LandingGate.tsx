@@ -13,7 +13,7 @@ import CanvasHost from "./Canvas";
 export default function LandingGate() {
   const [entered, setEntered] = useState(false);
 
-  if (entered) return <CanvasHost autoStart />;
+  if (entered) return <CanvasHost />;
 
   return (
     <main

@@ -26,11 +26,12 @@ test("the landing keeps the orb, tagline, disclaimer, and exactly one button", (
   assert.equal((gate.match(/<button/g) ?? []).length, 1);
 });
 
-test("Enter mounts the cockpit with autoStart", () => {
-  assert.match(gate, /CanvasHost autoStart/);
-  assert.match(canvas, /function Canvas\(\{ autoStart = false \}/);
-  assert.match(canvas, /toggleRecordingRef\.current\(true\)/);
-  assert.match(canvas, /forceGreeting/);
+test("Enter mounts the cockpit without auto-starting the mic", () => {
+  assert.match(gate, /<CanvasHost \/>/);
+  assert.doesNotMatch(gate, /autoStart/);
+  assert.doesNotMatch(canvas, /function Canvas\(\{ autoStart/);
+  assert.doesNotMatch(canvas, /toggleRecordingRef\.current\(true\)/);
+  assert.doesNotMatch(canvas, /forceGreeting/);
   assert.match(canvas, /consumeFirstSpeakGreeting\(\)/);
 });
 

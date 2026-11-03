@@ -35,8 +35,21 @@ export function rankVoices<T extends VoiceLike>(voices: readonly T[]): T[] {
 }
 
 export function pickVoice<T extends VoiceLike>(voices: readonly T[]): T | null {
+  const usable = selectableVoices(voices);
+  if (usable.length > 0) return usable[0];
+  // If a browser exposes only low-scoring or network voices, keep a
+  // last-resort ranked pick rather than leaving the host silent.
   const ranked = rankVoices(voices);
   return ranked.length && voiceScore(ranked[0]) > -100 ? ranked[0] : null;
+}
+
+// Voices that are reliable enough to offer/save. Low-confidence and
+// network-only voices (Rishi, Google/Microsoft Online) can be silent in
+// Chrome when offline or uninstalled; keep the picker to local, known
+// English voices. Unknown localService is treated as local (some browsers
+// omit the flag).
+export function isSelectableVoice(voice: VoiceLike): boolean {
+  return voiceScore(voice) >= 20 && voice.localService !== false;
 }
 
 // The picker should only offer voices the host can actually use for the
@@ -44,13 +57,14 @@ export function pickVoice<T extends VoiceLike>(voices: readonly T[]): T | null {
 // several of them are silent or unusable in Chrome; keep them out so a
 // judge cannot pin one and lose voice-out.
 export function selectableVoices<T extends VoiceLike>(voices: readonly T[]): T[] {
-  return rankVoices(voices).filter((voice) => voiceScore(voice) > -100);
+  return rankVoices(voices).filter(isSelectableVoice);
 }
 
 // The host-voice picker stores a voiceURI. Resolve it against the live
 // voice list; if the saved voice is gone (OS update, other browser), or
-// it is a novelty voice that cannot speak reliably, fall back to the
-// curated automatic pick instead of leaving the host silent.
+// it is a novelty/low-confidence/network voice that cannot speak
+// reliably, fall back to the curated automatic pick instead of leaving
+// the host silent.
 export function resolveVoiceSelection<T extends VoiceLike & { voiceURI?: string }>(
   voices: readonly T[],
   selectedUri?: string | null,
@@ -59,8 +73,7 @@ export function resolveVoiceSelection<T extends VoiceLike & { voiceURI?: string 
     const match = voices.find(
       (voice) =>
         voice.voiceURI === selectedUri &&
-        (voice.lang ?? "").toLowerCase().startsWith("en") &&
-        voiceScore(voice) > -100,
+        isSelectableVoice(voice),
     );
     if (match) return match;
   }

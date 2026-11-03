@@ -49,12 +49,13 @@ test("a saved voiceURI selects that exact voice", () => {
   assert.equal(resolveVoiceSelection(voices, "ava")?.name, "Ava (Premium)");
 });
 
-test("missing, novelty, or ineligible saved voices fall back to the automatic pick", () => {
+test("missing, novelty, low-confidence, or ineligible saved voices fall back to the automatic pick", () => {
   const voices = [
     V("Ava (Premium)", "en-US", { voiceURI: "ava" }),
     V("Samantha", "en-US", { voiceURI: "samantha" }),
     V("Rocko (English (United States))", "en-US", { voiceURI: "rocko" }),
     V("Fred", "en-US", { voiceURI: "fred" }),
+    V("Rishi", "en-IN", { voiceURI: "rishi", localService: true }),
     V("Amélie", "fr-CA", { voiceURI: "amelie" }),
   ];
   // Stale URI after an OS/browser update.
@@ -64,20 +65,32 @@ test("missing, novelty, or ineligible saved voices fall back to the automatic pi
   // Novelty/character voices are filtered out even when explicitly saved.
   assert.equal(resolveVoiceSelection(voices, "rocko")?.name, "Ava (Premium)");
   assert.equal(resolveVoiceSelection(voices, "fred")?.name, "Ava (Premium)");
+  // Low-confidence voices (Rishi) are not offered as a reliable host.
+  assert.equal(resolveVoiceSelection(voices, "rishi")?.name, "Ava (Premium)");
   assert.equal(resolveVoiceSelection(voices, "auto")?.name, "Ava (Premium)");
   assert.equal(resolveVoiceSelection(voices, null)?.name, "Ava (Premium)");
 });
 
-test("selectableVoices hides novelty/character voices but keeps usable English voices", () => {
+test("selectableVoices hides novelty, low-confidence, and network-only voices", () => {
   const voices = [
     V("Samantha"),
     V("Rocko (English (United States))"),
     V("Fred"),
     V("Ava (Premium)"),
+    V("Rishi", "en-IN", { localService: true }),
+    V("Google US English", "en-US", { localService: false }),
     V("Amélie", "fr-CA"),
   ];
   assert.deepEqual(
     selectableVoices(voices).map((voice) => voice.name),
     ["Ava (Premium)", "Samantha"],
   );
+});
+
+test("auto prefers a reliable local voice over a higher-scoring network voice", () => {
+  const voices = [
+    V("Google US English", "en-US", { localService: false }),
+    V("Samantha"),
+  ];
+  assert.equal(pickVoice(voices)?.name, "Samantha");
 });

@@ -97,7 +97,7 @@ const FAST_INTENT_KINDS: ReadonlySet<LiveIntent["kind"]> = new Set([
   "lawyer-summary",
 ]);
 
-function Canvas({ autoStart = false }: { autoStart?: boolean }) {
+function Canvas() {
   const { state, setState } = useCoAgent<SharedState>({
     name: "vvb",
     initialState: INITIAL_STATE,
@@ -390,16 +390,7 @@ function Canvas({ autoStart = false }: { autoStart?: boolean }) {
       if (voice) utter.voice = voice;
       utter.rate = rate;
       utter.pitch = pitch;
-      // Clear any stale/queued utterance before speaking. Chrome can leave
-      // speechSynthesis.speaking stuck after a failed or interrupted voice;
-      // a fresh cancel prevents the new host line from queueing forever.
       clearSpeechWatchdog();
-      utteranceRef.current = null;
-      try {
-        window.speechSynthesis.cancel();
-      } catch {
-        // ignore
-      }
       utterCancelledRef.current = false;
       utteranceRef.current = utter;
       setHostSpeaking(true);
@@ -427,6 +418,15 @@ function Canvas({ autoStart = false }: { autoStart?: boolean }) {
         }
         finishSpeech();
       };
+      // Chrome can park speechSynthesis in a paused state after a cancel
+      // or a page transition; resume before every utterance. Do not call
+      // cancel() immediately before speak() — Chrome can drop that new
+      // utterance, which looks exactly like "no voice".
+      try {
+        window.speechSynthesis.resume();
+      } catch {
+        // ignore
+      }
       window.speechSynthesis.speak(utter);
       // Chrome can lose onend (especially if the utterance is GC'd). Never
       // leave the conversation saying LIVE with the mic closed: after a
@@ -1385,7 +1385,7 @@ function Canvas({ autoStart = false }: { autoStart?: boolean }) {
     return true;
   }
 
-  async function toggleRecording(forceGreeting = false) {
+  async function toggleRecording() {
     if (recording) {
       // A manual stop ends the conversation, not just the turn.
       convoRef.current = false;
@@ -1410,11 +1410,8 @@ function Canvas({ autoStart = false }: { autoStart?: boolean }) {
     setDockOpen(false);
 
     // First Speak: greet with the existing home-base question, then open
-    // the mic. Enter the Bridge also uses this path but forces the line
-    // once for the landing transition; the session marker still keeps a
-    // later TALK press from repeating it.
-    const firstSpeak = consumeFirstSpeakGreeting();
-    if (forceGreeting || firstSpeak) {
+    // the mic. This is presentation only — no shared state and no fact.
+    if (consumeFirstSpeakGreeting()) {
       if (voiceOn && typeof window !== "undefined" && window.speechSynthesis) {
         refreshCachedVoice();
         if (speakNative(FIRST_SPEAK_GREETING, () => { void startRecording(); })) {
@@ -1767,28 +1764,12 @@ function Canvas({ autoStart = false }: { autoStart?: boolean }) {
     return () => clearInterval(id);
   }, []);
 
-  const toggleRecordingRef = useRef<(forceGreeting?: boolean) => void>(() => {});
+  const toggleRecordingRef = useRef<() => void>(() => {});
   useEffect(() => {
-    toggleRecordingRef.current = (forceGreeting = false) => {
-      void toggleRecording(forceGreeting);
+    toggleRecordingRef.current = () => {
+      void toggleRecording();
     };
   });
-
-  // Enter the Bridge mounts the cockpit with autoStart. Run the one
-  // landing transition after the click: forced home-base greeting,
-  // then the mic. The short delay clears React Strict Mode's immediate
-  // mount/cleanup/mount pass, which would otherwise cancel the first
-  // utterance before its onend/watchdog could arm the mic.
-  const autoStartedRef = useRef(false);
-  useEffect(() => {
-    if (!autoStart) return;
-    const timer = setTimeout(() => {
-      if (autoStartedRef.current) return;
-      autoStartedRef.current = true;
-      toggleRecordingRef.current(true);
-    }, 120);
-    return () => clearTimeout(timer);
-  }, [autoStart]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -2624,10 +2605,10 @@ function Canvas({ autoStart = false }: { autoStart?: boolean }) {
 
 }
 
-export default function CanvasHost({ autoStart = false }: { autoStart?: boolean }) {
+export default function CanvasHost() {
   return (
     <CopilotKit runtimeUrl="/api/copilotkit" showDevConsole={false} enableInspector={false}>
-      <Canvas autoStart={autoStart} />
+      <Canvas />
     </CopilotKit>
   );
 }
