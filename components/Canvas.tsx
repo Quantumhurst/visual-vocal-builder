@@ -155,6 +155,15 @@ function Canvas() {
   const recordingRef = useRef(false);
   const webSpeechFailedRef = useRef(false);
   const recognitionRef = useRef<{ stop: () => void; onresult: unknown; onerror: unknown; onend: unknown } | null>(null);
+  const liveTranscriptRef = useRef("");
+  const confirmationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function clearConfirmationTimer() {
+    if (confirmationTimerRef.current !== null) {
+      clearTimeout(confirmationTimerRef.current);
+      confirmationTimerRef.current = null;
+    }
+  }
 
   // Shared commit path: every canvas change (voice, slider, click)
   // funnels through here so handlers can report what actually changed
@@ -709,26 +718,58 @@ function Canvas() {
     return intent;
   }
 
-  function handleLiveTranscript(text: string) {
+  function handleLiveTranscript(text: string, isFinal = false) {
     const trimmed = text.trim();
     if (!trimmed) return;
+    liveTranscriptRef.current = trimmed;
     stampTiming("firstPartial");
     setLiveTranscript(trimmed);
+
+    // Ground-truth voice activity: browser speech recognition identified real words.
+    // Boost speechMs >= 400ms so min-speech guard passes even for short 200ms words like "yes".
+    const now = performance.now();
+    activityRef.current = {
+      hasSpoken: true,
+      speechMs: Math.max(activityRef.current.speechMs, 400),
+      lastSpeechAt: now,
+    };
+
     if (equityConfirm && isConfirmationAnswer(trimmed)) {
       intentMatchedRef.current = true;
       setLivePreview({ key: "confirm-equity", label: "Confirming equity split…", status: "live" });
+      // Fast endpointing: short affirmative answers ("yes", "confirm", "split")
+      // should finish and advance immediately in ~450ms (or 150ms on final), not wait 16+ seconds.
+      clearConfirmationTimer();
+      confirmationTimerRef.current = setTimeout(() => {
+        if (recordingRef.current && !finishingRef.current) {
+          void finishRecording();
+        }
+      }, isFinal ? 150 : 450);
       return;
     }
+    clearConfirmationTimer();
+
     if (isCompanyNameQuestion(trimmed)) {
       intentMatchedRef.current = true;
       setLivePreview({ key: "company-name-q", label: "Fictional company: Galactic Bagels Inc. (fictional)", status: "live" });
+      if (isFinal) {
+        setTimeout(() => {
+          if (recordingRef.current && !finishingRef.current) void finishRecording();
+        }, 150);
+      }
       return;
     }
+
     const intent = applyLiveIntent(trimmed, "live");
     // Adaptive endpointing: a recognised command shortens the stop pause
     // to 600 ms. Questions keep 1100 ms — a slow ask needs its full pause.
     if (intent && intent.kind !== "rollover-question" && intent.kind !== "filing-question") {
       intentMatchedRef.current = true;
+      if (isFinal) {
+        setTimeout(() => {
+          if (recordingRef.current && !finishingRef.current) void finishRecording();
+        }, 150);
+      }
     }
   }
 
@@ -1281,6 +1322,7 @@ function Canvas() {
   }
 
   function cleanupAudio() {
+    clearConfirmationTimer();
     try {
       workletNodeRef.current?.disconnect();
     } catch {
@@ -1347,10 +1389,14 @@ function Canvas() {
       rec.lang = "en-US";
       rec.interimResults = true;
       rec.continuous = true;
-      rec.onresult = (event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => {
+      rec.onresult = (event: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal?: boolean }> }) => {
         let text = "";
-        for (let i = 0; i < event.results.length; i++) text += event.results[i][0]?.transcript ?? "";
-        handleLiveTranscript(text);
+        let isFinal = false;
+        for (let i = 0; i < event.results.length; i++) {
+          text += event.results[i][0]?.transcript ?? "";
+          if (event.results[i].isFinal) isFinal = true;
+        }
+        handleLiveTranscript(text, isFinal);
       };
       rec.onerror = (event: { error?: string }) => {
         if (event.error !== "no-speech" && event.error !== "aborted") webSpeechFailedRef.current = true;
@@ -1358,6 +1404,14 @@ function Canvas() {
       };
       rec.onend = () => {
         recognitionRef.current = null;
+        if (
+          recordingRef.current &&
+          !finishingRef.current &&
+          (intentMatchedRef.current || (equityConfirm && isConfirmationAnswer(liveTranscriptRef.current)))
+        ) {
+          void finishRecording();
+          return;
+        }
         // Chrome ends recognition after a pause; re-arm while the mic
         // is still hot so a second sentence is heard too.
         if (recordingRef.current && !webSpeechFailedRef.current) {
@@ -1379,6 +1433,7 @@ function Canvas() {
       stopWebSpeech();
       clearSpeechWatchdog();
       clearRearmTimer();
+      clearConfirmationTimer();
       utteranceRef.current = null;
       if (travelFrameRef.current !== null) cancelAnimationFrame(travelFrameRef.current);
       try {
@@ -1387,6 +1442,7 @@ function Canvas() {
         // ignore
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // While recording: meter + clock only. Interim words come solely
@@ -1431,6 +1487,7 @@ function Canvas() {
   }
 
   async function finishRecording() {
+    clearConfirmationTimer();
     if (finishingRef.current) return;
     finishingRef.current = true;
     recordingRef.current = false;
@@ -1532,6 +1589,8 @@ function Canvas() {
   async function startRecording() {
     if (recordingRef.current) return;
     clearRearmTimer();
+    clearConfirmationTimer();
+    liveTranscriptRef.current = "";
     recordingRef.current = true;
     turnTimingRef.current = { micStart: performance.now() };
     // Barge-in: the host stops talking the moment the user speaks.
