@@ -1,6 +1,7 @@
 export const AGENT_ACTIONS = {
   showJurisdictionComparison: "showJurisdictionComparison",
   setFounderEquity: "setFounderEquity",
+  setOwnerCount: "setOwnerCount",
   setChecklistItem: "setChecklistItem",
   setChecklistItems: "setChecklistItems",
   advanceChecklist: "advanceChecklist",

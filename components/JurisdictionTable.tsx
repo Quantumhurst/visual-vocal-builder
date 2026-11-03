@@ -10,75 +10,68 @@ type Props = {
   onSelect: (jurisdiction: string) => void;
 };
 
-// Custom catalog component: the A2UI Basic Catalog has no Table, so beat 1
-// renders as this component, driven by CopilotKit shared state like any
-// catalog component. Row clicks write shared state directly (no new prompt).
-// The DEMO highlight (focus) is separate from the selected-row styling and
+// Catalog entry vvb-jurisdiction-table-v1 (lib/catalog.ts). The A2UI
+// Basic Catalog has no Table, so beat 1 is this custom world-dossier
+// list, driven by CopilotKit shared state like any catalog component.
+// Card clicks write shared state directly (no new prompt).
+// The DEMO highlight (focus) is separate from the selected card and
 // never overrides the user's pick.
 export default function JurisdictionTable({ rows, selected, focus, focusReason, onSelect }: Props) {
   return (
-    <section aria-label="Jurisdiction comparison">
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+    <section aria-label="Jurisdiction comparison" className="sys-section">
+      <div className="section-head">
         <h2>Jurisdiction comparison</h2>
-        <span
-          style={{
-            border: "1px solid currentColor",
-            borderRadius: "999px",
-            padding: "0.1rem 0.6rem",
-            fontSize: "0.8rem",
-          }}
-        >
-          Demo data — fictional places
-        </span>
+        <span className="chip chip-demo">DEMO</span>
       </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Jurisdiction</th>
-            <th>Filing fee</th>
-            <th>Typical timeline</th>
-            <th>Director note</th>
-            <th>Why choose it</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => {
-            const isFocus = focus === row.jurisdiction;
-            return (
-              <tr
-                key={row.jurisdiction}
+      <p className="section-lede">Fictional worlds only — click a dossier or say a name.</p>
+
+      <ul className="world-list">
+        {rows.map((row) => {
+          const isSelected = selected === row.jurisdiction;
+          const isFocus = focus === row.jurisdiction;
+          return (
+            <li key={row.jurisdiction}>
+              <button
+                type="button"
+                className={`world-card${isSelected ? " is-selected" : ""}${isFocus ? " is-focused" : ""}`}
                 onClick={() => onSelect(row.jurisdiction)}
-                aria-selected={selected === row.jurisdiction}
+                aria-pressed={isSelected}
                 data-focused={isFocus || undefined}
-                style={{
-                  cursor: "pointer",
-                  background:
-                    selected === row.jurisdiction ? "rgba(128,128,128,0.25)" : undefined,
-                  outline: isFocus ? "2px dashed #f5b942" : undefined,
-                  outlineOffset: isFocus ? "-2px" : undefined,
-                }}
               >
-                <td>{row.jurisdiction}</td>
-                <td>{row.filingFee}</td>
-                <td>{row.timeline}</td>
-                <td>{row.directorNote}</td>
-                <td>{row.whyChoose}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                <span className="world-top">
+                  <span className="world-name">{row.jurisdiction}</span>
+                  {isSelected ? <span className="world-tag">SELECTED</span> : null}
+                  {!isSelected && isFocus ? <span className="world-tag world-tag-focus">DEMO FOCUS</span> : null}
+                </span>
+                <span className="world-stats">
+                  <span>
+                    <em>FEE</em>
+                    {row.filingFee}
+                  </span>
+                  <span>
+                    <em>TIMELINE</em>
+                    {row.timeline}
+                  </span>
+                </span>
+                <span className="world-note">{row.directorNote}</span>
+                <span className="world-why">{row.whyChoose}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+
       {focus ? (
-        <p data-testid="jurisdiction-focus">
+        <p data-testid="jurisdiction-focus" className="hint-line">
           DEMO highlight: {focus}
           {focusReason ? ` — ${focusReason}` : ""}
         </p>
       ) : null}
-      {selected ? (
-        <p>Selected jurisdiction: {selected}</p>
-      ) : (
-        <p>No jurisdiction selected yet — speak, or click a row.</p>
-      )}
+      <p className="selection-line">
+        {selected
+          ? `Selected jurisdiction: ${selected}`
+          : "No jurisdiction selected yet — speak, or click a world."}
+      </p>
     </section>
   );
 }

@@ -97,3 +97,45 @@ test("meta model config: best-fit models + ASR biasing handshake", () => {
   assert.deepEqual(hs.languageBias, ["English"]);
   assert.ok(ASR_KEYWORDS.length >= 8);
 });
+
+test("owner-count intents cover solo and 1-5 owners", () => {
+  const solo = parseLiveIntent("it's just me");
+  assert.equal(solo.kind, "owner-count");
+  assert.equal(solo.count, 1);
+  assert.equal(parseLiveIntent("there are three of us").count, 3);
+  assert.equal(parseLiveIntent("we're five founders").count, 5);
+  assert.equal(parseLiveIntent("four owners").count, 4);
+});
+
+test("checklist counts: first two, next step, all", () => {
+  const two = parseLiveIntent("tick off the first two checklist items");
+  assert.equal(two.kind, "checklist-advance");
+  assert.equal(two.count, 2);
+  const one = parseLiveIntent("mark the next checklist step done");
+  assert.equal(one.count, 1);
+  const all = parseLiveIntent("finish the build");
+  assert.equal(all.kind, "checklist-advance");
+  assert.equal(all.count, "all");
+  const finish = parseLiveIntent("tick off every remaining checklist item");
+  assert.equal(finish.count, "all");
+  // A named step must go to the agent, not tick the first thing blindly.
+  assert.equal(parseLiveIntent("tick the name step"), null);
+});
+
+test("new owner names are recognised for equity", () => {
+  const vega = parseLiveIntent("make Vega 20%");
+  assert.equal(vega.kind, "equity");
+  assert.equal(vega.founder, "vega");
+  assert.equal(vega.percent, 20);
+});
+
+test("undo, start over, and cheapest are local deterministic intents", () => {
+  assert.equal(parseLiveIntent("Actually, undo that").kind, "undo");
+  assert.equal(parseLiveIntent("take that back").kind, "undo");
+  assert.equal(parseLiveIntent("start over").kind, "start-over");
+  assert.equal(parseLiveIntent("fresh start").kind, "start-over");
+  assert.equal(parseLiveIntent("what's the cheapest place?").kind, "cheapest");
+  assert.equal(parseLiveIntent("lowest fee").kind, "cheapest");
+  // Navigation language must not be mistaken for an undo.
+  assert.equal(parseLiveIntent("go back to the build queue"), null);
+});

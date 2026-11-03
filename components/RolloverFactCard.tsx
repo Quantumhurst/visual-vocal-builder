@@ -15,51 +15,47 @@ type Props = {
 // ungrounded answer is never rendered as a card.
 export default function RolloverFactCard({ card, rolloverNote, flagReason }: Props) {
   return (
-    <section aria-label="Section 85 rollover fact card">
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-        <h2>s.85 rollover fact card</h2>
-        <span
-          style={{
-            border: "1px solid currentColor",
-            borderRadius: "999px",
-            padding: "0.1rem 0.6rem",
-            fontSize: "0.8rem",
-          }}
-        >
-          DEMO — grounded fact, not legal advice
-        </span>
+    <section aria-label="Section 85 rollover fact card" className="sys-section">
+      <div className="section-head">
+        <h2>s.85 rollover</h2>
+        <span className="chip chip-demo">GROUNDED</span>
       </div>
+      <p className="section-lede">
+        Verbatim pack facts only. If the archive has no matching fact, no card appears.
+      </p>
+
       {card ? (
-        <article
-          style={{
-            border: "1px solid currentColor",
-            borderRadius: "8px",
-            padding: "1rem",
-          }}
-        >
-          <p>
-            <strong>Question:</strong> {card.question}
+        <article className="data-slate">
+          <p className="slate-question">
+            <span>QUERY</span>
+            {card.question}
           </p>
-          <p>{card.answer}</p>
-          <p>
-            Grounding: pack <code>{card.packId}</code> ({card.packTitle}),
-            fact <code>{card.factId}</code>
+          <p className="slate-text slate-answer">{card.answer}</p>
+          <p className="grounding">
+            <span>GROUNDING</span>
+            pack <code>{card.packId}</code> · fact <code>{card.factId}</code>
+            <br />
+            {card.packTitle}
           </p>
           {flagReason ? (
-            <p data-testid="rollover-flag">
+            <p className="flag-box" data-testid="rollover-flag">
               <strong>FLAGGED</strong> — verifier: {flagReason}. Shown as
               painted; never silently dropped or rewritten.
             </p>
           ) : null}
         </article>
       ) : (
-        <p>
-          Ask a rollover question by voice, e.g. “What is a section 85
-          rollover?” The answer appears here only when it is grounded in
-          the knowledge pack.
-        </p>
+        <div className="empty-slate">
+          <span className="empty-glyph" aria-hidden="true">
+            ◇
+          </span>
+          <p>
+            Ask a rollover question by voice, e.g. “What is a section 85 rollover?” The
+            answer appears here only when it is grounded in the knowledge pack.
+          </p>
+        </div>
       )}
-      {rolloverNote ? <p>{rolloverNote}</p> : null}
+      {rolloverNote ? <p className="hint-line">{rolloverNote}</p> : null}
     </section>
   );
 }

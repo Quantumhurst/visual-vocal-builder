@@ -68,7 +68,7 @@ export const CHECKLIST_PACK: KnowledgePack = {
     {
       factId: "check-name",
       topic: "Pick a company name",
-      text: "Guidance: choose a distinctive fictional name and check it does not clash with names already in use. This demo uses Galactic Bagels Inc. (fictional). (DEMO — not legal advice.)",
+      text: "Guidance: choose a distinctive fictional name and check it does not clash with names already in use. This demo has a fictional name ready for approval; the callsign appears once the checklist is complete. (DEMO — not legal advice.)",
     },
     {
       factId: "check-equity",
@@ -107,7 +107,7 @@ export const FILING_STEPS_PACK: KnowledgePack = {
     {
       factId: "steps-name-check",
       topic: "Name check comes before filing",
-      text: "General procedure: a name availability check normally happens before articles are prepared, so a clashed name is caught early. This demo uses Galactic Bagels Inc. (fictional) and checks nothing. (DEMO — not legal advice.)",
+      text: "General procedure: a name availability check normally happens before articles are prepared, so a clashed name is caught early. This demo approves a fictional name in the checklist and checks nothing. (DEMO — not legal advice.)",
     },
     {
       factId: "steps-articles-content",

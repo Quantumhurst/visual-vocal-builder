@@ -3,6 +3,9 @@ import { createRateLimiter } from "../../../lib/request-guard";
 import { buildAsrHandshake } from "../../../lib/meta-models";
 import WebSocket from "ws";
 
+// Keep ws on its pure-JS masking path in every runtime (see next.config.ts).
+process.env.WS_NO_BUFFER_UTIL = "true";
+
 // NOTE: no `export const runtime` here — route handlers already run on the
 // Node.js runtime by default, and Next 16's Cache Components rejects an
 // explicit runtime export on this route.

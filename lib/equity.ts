@@ -9,6 +9,13 @@ export type FounderShare = {
   percent: number; // integer percent; all founders total 100
 };
 
+// A corporation can be solo or a small founding team. The demo allows
+// 1–5 owners; every path still normalizes to exactly 100%.
+export const MIN_OWNERS = 1;
+export const MAX_OWNERS = 5;
+
+const EXTRA_OWNER_NAMES = ["Vega", "Lyra", "Orion", "Altair", "Rigel"];
+
 export function totalPercent(shares: FounderShare[]): number {
   return shares.reduce((sum, founder) => sum + founder.percent, 0);
 }
@@ -82,4 +89,40 @@ export function normalizeShares(shares: FounderShare[]): FounderShare[] {
 
 export function assertTotals100(shares: FounderShare[]): boolean {
   return shares.length === 0 || totalPercent(shares) === 100;
+}
+
+// Resize the owner list without breaking the 100% invariant.
+//
+// Growing adds owners and defaults to an equal split (100 / N); the user
+// can drag any bar afterwards. Shrinking removes owners and redistributes
+// the removed percentages proportionally across the remaining owners. A
+// single owner always holds 100%.
+export function resizeFounders(shares: FounderShare[], count: number): FounderShare[] {
+  const target = Math.min(MAX_OWNERS, Math.max(MIN_OWNERS, Math.round(Number(count) || MIN_OWNERS)));
+  if (target === shares.length) return shares;
+
+  if (target < shares.length) {
+    const kept = shares.slice(0, target);
+    const removedTotal = shares.slice(target).reduce((sum, founder) => sum + Math.max(0, founder.percent), 0);
+    if (kept.length === 1) return [{ ...kept[0], percent: 100 }];
+    const weights = kept.map((founder) => Math.max(0, founder.percent));
+    const parts = distribute(removedTotal, weights);
+    return kept.map((founder, index) => ({ ...founder, percent: clampPercent(founder.percent + parts[index]) }));
+  }
+
+  const used = new Set(shares.map((founder) => founder.name));
+  const next = [...shares];
+  while (next.length < target) {
+    const candidate = EXTRA_OWNER_NAMES.find((name) => !used.has(`DEMO Founder ${name} (fictional)`));
+    const name = candidate
+      ? `DEMO Founder ${candidate} (fictional)`
+      : `DEMO Owner ${next.length + 1} (fictional)`;
+    used.add(name);
+    next.push({ name, percent: 0 });
+  }
+  // Growing the team is a fresh split: default everyone to an equal
+  // share. The user can still drag any crew bar afterwards; shrinking
+  // keeps the surviving owners and redistributes the removed share.
+  const parts = distribute(100, next.map(() => 1));
+  return next.map((founder, index) => ({ ...founder, percent: parts[index] }));
 }

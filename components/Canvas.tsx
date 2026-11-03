@@ -10,7 +10,6 @@ import {
 } from "@copilotkit/react-core";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import dynamic from "next/dynamic";
-import "lenis/dist/lenis.css";
 import JurisdictionTable from "./JurisdictionTable";
 
 // Pixi canvas must never render on the server (Day 4 hero island).
@@ -23,45 +22,38 @@ import FilingSteps from "./FilingSteps";
 import RolloverFactCard from "./RolloverFactCard";
 import LawyerSummary from "./LawyerSummary";
 import {
-  DEMO_CHECKLIST,
   DEMO_COMPANY_NAME,
-  DEMO_FOUNDERS,
   DEMO_JURISDICTIONS,
 } from "../lib/demo-data";
 import { FILING_STEPS_PACK, S85_PACK } from "../lib/knowledge";
 import type { SharedState } from "../lib/state";
 import TrustStrip from "./TrustStrip";
 import { verifyPaintedCards } from "../lib/verifier";
-import { resolveHostPrompt, shortFounderNames, shouldSpeakFallbackQuestion, type Beat } from "../lib/host-questions";
+import { getHostQuestion, resolveHostPrompt, shortFounderNames, shouldSpeakFallbackQuestion, type Beat } from "../lib/host-questions";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
-import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber } from "../lib/state-updates";
+import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount } from "../lib/state-updates";
 import { pushHistory, popHistory, statesEqual, type HistoryEntry } from "../lib/history";
 import { describeChange, currentStateSummary } from "../lib/describe-change";
-import { beatProgress } from "../lib/beat-progress";
+import { REQUIRED_BEATS, beatProgress } from "../lib/beat-progress";
 import { concatFloat32, toPcm16k } from "../lib/pcm";
 import { clearedVoiceErrors, hasRetryAudio, makeTranscribeFailure, type TranscribeFailure } from "../lib/voice-reliability";
-import { beatFieldChanged, firstChangedBeat, turnResultSignature } from "../lib/scroll";
-import { ReactLenis, useLenis } from "lenis/react";
-import type Lenis from "lenis";
+import { loadPcmWorklet, micFailureNotice } from "../lib/mic";
+import { checklistNoopReply, isNothingDoneAnswer } from "../lib/checklist-answers";
+import { turnResultSignature } from "../lib/scroll";
 import confetti from "canvas-confetti";
 import { MAX_PCM_BYTES } from "../lib/request-guard";
-import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, IDLE_ACTIVITY, SILENCE_TO_STOP_MS, INTENT_SILENCE_TO_STOP_MS, type VoiceActivity } from "../lib/live-intent";
+import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, IDLE_ACTIVITY, SILENCE_TO_STOP_MS, INTENT_SILENCE_TO_STOP_MS, type LiveIntent, type VoiceActivity } from "../lib/live-intent";
 import { queueTurn, flushQueuedTurn, QUEUED_TURN_NOTICE } from "../lib/turn-queue";
 import { cueForChange, CUES, type CueName } from "../lib/sound-cues";
 import { missionFor } from "../lib/mission";
+import { colonyPalette, colonyProgress } from "../lib/colony";
+import { MODULES, flightPlan, flightStatusLabel, formatClock, moduleFor, shipLabel } from "../lib/game-ui";
 import { spokenHostText } from "../lib/spoken-text";
 import { pickVoice, prosodyFor } from "../lib/voice-select";
 import { summarizeTimings, type TurnTimings } from "../lib/turn-timing";
 
 
-const BEATS = [
-  { id: "jurisdiction", label: "Jurisdiction" },
-  { id: "equity", label: "Equity" },
-  { id: "checklist", label: "Checklist" },
-  { id: "rollover", label: "Rollover" },
-  { id: "filingsteps", label: "Filing steps" },
-  { id: "summary", label: "Summary" },
-] as const;
+
 
 // Day 8: one-click example commands for judges without a mic. Each chip
 // sends its command through the same sendToAgent path as typed/voice
@@ -74,6 +66,25 @@ const EXAMPLE_COMMANDS = [
   { label: "Filing steps & fees", command: "What are the filing steps and fees?" },
   { label: "Prepare lawyer summary", command: "Prepare the lawyer summary" },
 ] as const;
+
+// The canvas is the interface: tool calls do not need a second chat card.
+// Registering an empty renderer keeps CopilotKit from warning about each
+// tool call while leaving the visible cockpit untouched.
+const renderNothing = () => <></>;
+
+// Clear, deterministic commands are handled locally. They still use the
+// exact same state appliers as the agent; skipping the model only removes
+// the 3–19 s think time, not any grounding or invariant work.
+const FAST_INTENT_KINDS: ReadonlySet<LiveIntent["kind"]> = new Set([
+  "jurisdiction",
+  "equity",
+  "checklist-advance",
+  "owner-count",
+  "cheapest",
+  "undo",
+  "start-over",
+  "lawyer-summary",
+]);
 
 function Canvas() {
   const { state, setState } = useCoAgent<SharedState>({
@@ -107,6 +118,9 @@ function Canvas() {
   const [transcribing, setTranscribing] = useState(false);
   const [lastTranscript, setLastTranscript] = useState("");
   const [ack, setAck] = useState("");
+  // A locally spoken host line for the deterministic fast lane. It also
+  // becomes the visible host prompt, so the text and the voice agree.
+  const [localHost, setLocalHost] = useState("");
   const [turnError, setTurnError] = useState("");
   const [transcribeFailure, setTranscribeFailure] = useState<TranscribeFailure | null>(null);
   const [hasLastAudio, setHasLastAudio] = useState(false);
@@ -144,6 +158,9 @@ function Canvas() {
   // Game layer: sound cues + spoken host + mission celebration.
   const [soundOn, setSoundOn] = useState(true);
   const [voiceOn, setVoiceOn] = useState(true);
+  // True while the host voice is actually speaking. The mic stays closed
+  // during this window, and the deck says so instead of claiming LIVE.
+  const [hostSpeaking, setHostSpeaking] = useState(false);
   // Continuous conversation (OpenClaw pattern): talk, agent answers
   // out loud, mic re-opens by itself. On by default; a manual Stop
   // ends it. The full control set lives in a pop-out, not the bar.
@@ -151,6 +168,17 @@ function Canvas() {
   const [convoActive, setConvoActive] = useState(false);
   const convoRef = useRef(false);
   const [dockOpen, setDockOpen] = useState(false);
+  // Game shell: which system panel is open, which viewport is up, and a
+  // light mission clock. These are presentation state only — every fact
+  // still comes from the same shared state and appliers.
+  const [activeModule, setActiveModule] = useState<SharedState["currentBeat"]>("jurisdiction");
+  const [stageTab, setStageTab] = useState<"galaxy" | "colony">("galaxy");
+  const [missionClock, setMissionClock] = useState(0);
+  // A short cinematic for a new home base: the state change is immediate,
+  // but a rocket/warp layer covers the viewport switch for ~2.6s.
+  const [travel, setTravel] = useState<{ planet: string; id: number } | null>(null);
+  const travelFrameRef = useRef<number | null>(null);
+  const travelTokenRef = useRef(0);
   // Turn timing: stamped as a turn flows, one summary line per turn.
   const turnTimingRef = useRef<TurnTimings>({});
 
@@ -180,6 +208,11 @@ function Canvas() {
   const cachedVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
   const voicesRepickedRef = useRef(false);
   const utterCancelledRef = useRef(false);
+  // Keep a reference to the live utterance: Chrome can drop an unreferenced
+  // utterance before firing onend, leaving speechSynthesis.speaking stuck
+  // true and the mic closed forever. The watchdog is the last resort.
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const speechWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const busyRef = useRef(false);
   const turnErrorRef = useRef(false);
   // Single-slot pending turn: a command sent while the agent is busy is
@@ -233,8 +266,18 @@ function Canvas() {
     }
   }
 
+  function clearSpeechWatchdog() {
+    if (speechWatchdogRef.current !== null) {
+      clearTimeout(speechWatchdogRef.current);
+      speechWatchdogRef.current = null;
+    }
+  }
+
   function cancelSpeech() {
     utterCancelledRef.current = true;
+    clearSpeechWatchdog();
+    utteranceRef.current = null;
+    setHostSpeaking(false);
     try {
       window.speechSynthesis?.cancel();
     } catch {
@@ -269,13 +312,42 @@ function Canvas() {
       utter.rate = rate;
       utter.pitch = pitch;
       utterCancelledRef.current = false;
-      utter.onend = () => {
-        stampTiming("speechEnd");
+      clearSpeechWatchdog();
+      utteranceRef.current = utter;
+      setHostSpeaking(true);
+      const finishSpeech = () => {
+        // A cancelled/replaced utterance can fire onend after a new one
+        // has started; it must never tear down the current speech state.
+        if (utteranceRef.current !== utter) return;
+        clearSpeechWatchdog();
+        utteranceRef.current = null;
+        setHostSpeaking(false);
         if (!utterCancelledRef.current) requestRearm();
       };
+      utter.onend = () => {
+        stampTiming("speechEnd");
+        finishSpeech();
+      };
+      utter.onerror = () => {
+        finishSpeech();
+      };
       window.speechSynthesis.speak(utter);
+      // Chrome can lose onend (especially if the utterance is GC'd). Never
+      // leave the conversation saying LIVE with the mic closed: after a
+      // generous estimate, cut the line and open the mic.
+      speechWatchdogRef.current = setTimeout(() => {
+        speechWatchdogRef.current = null;
+        if (utteranceRef.current !== utter) return;
+        try {
+          window.speechSynthesis?.cancel();
+        } catch {
+          // ignore
+        }
+        finishSpeech();
+      }, Math.min(9000, 2000 + spoken.length * 55));
       return true;
     } catch {
+      setHostSpeaking(false);
       return false;
     }
   }
@@ -285,19 +357,53 @@ function Canvas() {
     const spoken = spokenHostText(text);
     if (!spoken || spoken === lastSpokenRef.current) return;
     lastSpokenRef.current = spoken;
-    try {
-      window.speechSynthesis.cancel();
-    } catch {
-      // ignore
-    }
+    cancelSpeech();
     speakNative(text);
   }
   function commit(label: string, fn: (s: SharedState) => SharedState): string {
     const before = withDefaults(stateRef.current);
     const after = fn(before);
-    if (!statesEqual(before, after)) {
+    const changed = !statesEqual(before, after);
+    if (changed) {
       historyRef.current = pushHistory(historyRef.current, before, label, performance.now());
       setHistorySize(historyRef.current.length);
+      // Move the cockpit with the change, in the same event/handler that
+      // made it (never in an effect): open the beat that changed and put
+      // the star map up only while the walk is still on home base.
+      setActiveModule(after.currentBeat);
+      setStageTab(after.currentBeat === "jurisdiction" ? "galaxy" : "colony");
+      // Picking a world leaves currentBeat on "jurisdiction" while the
+      // next objective is the equity split: land the colony and open the
+      // crew manifest. A re-pick (no selection change) does not move.
+      const selectionChanged = Boolean(
+        after.selectedJurisdiction && before.selectedJurisdiction !== after.selectedJurisdiction,
+      );
+      if (
+        after.currentBeat === "jurisdiction" &&
+        after.selectedJurisdiction &&
+        before.selectedJurisdiction !== after.selectedJurisdiction
+      ) {
+        setActiveModule("equity");
+        setStageTab("colony");
+      }
+      if (selectionChanged && after.selectedJurisdiction) {
+        const planet = after.selectedJurisdiction;
+        const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        if (!reduced) {
+          // Wait for the heavy colony/equity render to paint before
+          // starting the cinematic. Otherwise a slow render eats most of
+          // the animation before the first frame is visible.
+          const token = ++travelTokenRef.current;
+          if (travelFrameRef.current !== null) cancelAnimationFrame(travelFrameRef.current);
+          travelFrameRef.current = requestAnimationFrame(() => {
+            travelFrameRef.current = requestAnimationFrame(() => {
+              travelFrameRef.current = null;
+              if (travelTokenRef.current !== token) return;
+              setTravel({ planet, id: performance.now() });
+            });
+          });
+        }
+      }
     }
     stateRef.current = after;
     setState(after);
@@ -316,8 +422,12 @@ function Canvas() {
     const summary = describeChange(current, restored);
     stateRef.current = restored;
     setState(restored);
+    setActiveModule(restored.selectedJurisdiction && restored.currentBeat === "jurisdiction" ? "equity" : restored.currentBeat);
+    setStageTab(restored.selectedJurisdiction ? "colony" : "galaxy");
     playCue("adjust");
-    return `Undid: ${entry.label}. ${summary}`;
+    // Labels like "live-preview" are internal; the summary already says
+    // exactly what changed. Never speak internal state-machine jargon.
+    return `Undid the last change. ${summary}`;
   }
 
   // THE one shared-state update path for equity (beat 2 invariant).
@@ -326,6 +436,11 @@ function Canvas() {
   // neither surface can leave the split inconsistent — it totals 100%.
   function updateEquity(index: number, percent: number, via: string) {
     commit("slider", (s) => applyEquity(s, index, percent, via));
+  }
+
+  // The owner-count control and the agent action share this one path.
+  function updateOwnerCount(count: number) {
+    commit("owners", (s) => applyOwnerCount(s, count));
   }
 
   // THE one shared-state update path for the checklist (beat 3):
@@ -387,7 +502,12 @@ function Canvas() {
         const index = resolveFounderIndex(base.founders, intent.founder);
         if (index >= 0) commit("live-preview", (s) => applyEquity(s, index, intent.percent, "voice-live"));
       } else if (intent.kind === "checklist-advance") {
-        commit("live-preview", (s) => applyAdvanceChecklist(s));
+        commit("live-preview", (s) => applyChecklistCount(s, intent.count));
+      } else if (intent.kind === "owner-count") {
+        commit("live-preview", (s) => applyOwnerCount(s, intent.count));
+      } else if (intent.kind === "cheapest") {
+        const cheapest = cheapestByNumber(DEMO_JURISDICTIONS);
+        commit("live-preview", (s) => applyFocusJurisdiction(s, cheapest.name, "cheapest by number (DEMO)"));
       } else if (intent.kind === "lawyer-summary") {
         prepareLawyerPackage();
       }
@@ -415,6 +535,7 @@ function Canvas() {
   // lands on the same applyJurisdiction path as the live preview, so
   // confirming a preview changes nothing twice.
   useCopilotAction({
+    render: renderNothing,
     name: AGENT_ACTIONS.showJurisdictionComparison,
     description:
       "Show the fictional jurisdiction comparison table and optionally select one of the fictional places (Mars, Europa, Andromeda Galaxy). Call this when the user asks to compare jurisdictions, choose a place to incorporate, or start incorporating the fictional company.",
@@ -431,15 +552,15 @@ function Canvas() {
       logToolCall();
       return commit("jurisdiction", (s) => applyJurisdiction(s, jurisdiction ?? null));
     },
-    render: () => <></>,
   });
 
   // Beat 2 voice path: "make me 70%" -> same updateEquity() the slider
   // drags use, so 60/40 with a 70% request lands on 70/30, total 100%.
   useCopilotAction({
+    render: renderNothing,
     name: AGENT_ACTIONS.setFounderEquity,
     description:
-      "Set one DEMO founder's equity percent (e.g. the user says 'make me 70%'). The other founder(s) auto-adjust so the split always totals 100%. Founders: DEMO Founder Nova (fictional), DEMO Founder Orbit (fictional).",
+      "Set one DEMO owner's equity percent (e.g. the user says 'make me 70%'). The other owner(s) auto-adjust so the split always totals 100%. Owners are the readable founders list; there may be 1–5.",
     parameters: [
       {
         name: "founder",
@@ -465,8 +586,27 @@ function Canvas() {
     },
   });
 
+  useCopilotAction({
+    name: AGENT_ACTIONS.setOwnerCount,
+    description:
+      "Set the number of fictional company owners (1-5). Shrinking the team redistributes the removed share; growing adds owners at 0%; the equity split always totals 100%. Use when the user says it is just them, or names a number of owners/founders.",
+    parameters: [
+      {
+        name: "count",
+        type: "number",
+        description: "Number of owners, 1 to 5.",
+        required: true,
+      },
+    ],
+    handler: async ({ count }) => {
+      logToolCall();
+      return commit("owners", (s) => applyOwnerCount(s, Number(count)));
+    },
+  });
+
   // Beat 3 voice paths: check/uncheck one item, or advance the walk.
   useCopilotAction({
+    render: renderNothing,
     name: AGENT_ACTIONS.setChecklistItem,
     description:
       "Check or uncheck one filing-checklist item by its id (ids are in the readable checklist state). Use when the user answers a checklist step or asks to mark one done/not done.",
@@ -481,6 +621,7 @@ function Canvas() {
   });
 
   useCopilotAction({
+    render: renderNothing,
     name: AGENT_ACTIONS.setChecklistItems,
     description:
       "Check or uncheck several filing-checklist items at once by their ids (ids are in the readable checklist state). Use when the user asks to tick off multiple items in one command.",
@@ -496,6 +637,7 @@ function Canvas() {
   });
 
   useCopilotAction({
+    render: renderNothing,
     name: AGENT_ACTIONS.undoLastChange,
     description:
       "Reverse the last canvas change (voice, slider, or click). Call when the user says undo that, revert, or go back. Never claim an undo without calling this.",
@@ -507,6 +649,7 @@ function Canvas() {
   });
 
   useCopilotAction({
+    render: renderNothing,
     name: AGENT_ACTIONS.startOver,
     description:
       "Reset the canvas only (selection, equity, checklist, cards, lawyer package) and keep the chat history. Call when the user says start over or fresh start. Never claim a reset without calling this.",
@@ -518,6 +661,7 @@ function Canvas() {
   });
 
   useCopilotAction({
+    render: renderNothing,
     name: AGENT_ACTIONS.compareJurisdictions,
     description:
       "Answer a comparison question about the three fictional places (Mars, Europa, Andromeda Galaxy) from the DEMO rows and set a DEMO highlight. The highlight never changes the user's selected jurisdiction. DEMO values may be quoted verbatim, labeled DEMO, for these three fictional places only.",
@@ -540,6 +684,7 @@ function Canvas() {
   });
 
   useCopilotAction({
+    render: renderNothing,
     name: AGENT_ACTIONS.advanceChecklist,
     description:
       "Mark the first not-yet-done filing-checklist item done and move the walk forward. Use as the user answers each checklist step.",
@@ -554,6 +699,7 @@ function Canvas() {
   // the knowledge pack — the card text is the pack text verbatim and
   // shows pack/fact grounding. An unknown factId renders NO card.
   useCopilotAction({
+    render: renderNothing,
     name: AGENT_ACTIONS.showRolloverFact,
     description:
       "Show a grounded s.85 rollover fact card. Call with a factId from the readable s85Facts index when the user asks a rollover / section 85 question. Never invent rollover content; only pack facts become cards.",
@@ -571,6 +717,7 @@ function Canvas() {
   // fact up in the filing-steps pack — card text is pack text verbatim
   // with pack/fact grounding. Any unknown factId renders NO card.
   useCopilotAction({
+    render: renderNothing,
     name: AGENT_ACTIONS.showFilingSteps,
     description:
       "Show grounded filing steps and fees facts. Call with factIds from the readable filingStepsFacts index when the user asks about filing steps, process order, or fees. Never invent steps or fees; only pack facts become cards.",
@@ -598,6 +745,7 @@ function Canvas() {
   }
 
   useCopilotAction({
+    render: renderNothing,
     name: AGENT_ACTIONS.prepareLawyerSummary,
     description:
       "Prepare the lawyer-summary package (jurisdiction choice, equity split, checklist state) and display it on the canvas. Use when the user asks to prepare, show, or send-to-lawyer the summary. This only prepares the package for the user to forward; it never sends email.",
@@ -629,6 +777,46 @@ function Canvas() {
     commit("click", (s) => ({ ...s, selectedJurisdiction: jurisdiction }));
   }
 
+  // The fast lane's spoken/visible line. It is derived from the state
+  // after the command and always includes the next useful question, so
+  // the conversation keeps moving without the model.
+  function localFastLine(intent: LiveIntent, state: SharedState): string {
+    const next = beatProgress(state).nextBeat;
+    const question = next === "complete"
+      ? ""
+      : getHostQuestion(next, shortFounderNames(state.founders), state.selectedJurisdiction);
+
+    switch (intent.kind) {
+      case "jurisdiction":
+        return question || `${intent.jurisdiction} locked in.`;
+      case "equity":
+        return question || "Split updated.";
+      case "owner-count": {
+        const label = `${state.founders.length} owner${state.founders.length === 1 ? "" : "s"} — the split totals 100%.`;
+        return question ? `${label} ${question}` : label;
+      }
+      case "checklist-advance": {
+        const built = state.checklist.filter((item) => item.done).length;
+        const total = state.checklist.length;
+        if (next === "checklist") {
+          return `${built} of ${total} structures online. Tick the next step or finish the build.`;
+        }
+        return `${built} of ${total} structures online.${question ? ` ${question}` : ""}`;
+      }
+      case "cheapest": {
+        const cheapest = cheapestByNumber(DEMO_JURISDICTIONS);
+        const currency = cheapest.sameCurrency
+          ? "All three demo fees use the same fictional currency."
+          : "Currencies are fictional and don't convert.";
+        return `DEMO cheapest by number: ${cheapest.name} (${cheapest.fee}). ${currency}${question ? ` ${question}` : ""}`;
+      }
+      case "lawyer-summary":
+        return "Summary prepared — copy or download it; nothing is sent.";
+      default:
+        return "";
+    }
+  }
+
   async function sendToAgent(text: string, fromVoice = false) {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -645,11 +833,37 @@ function Canvas() {
     cancelSpeech();
     setDockOpen(false);
     clearTurnErrors();
-    // Immediate acknowledgment (OpenClaw pattern): a one-breath spoken
-    // "on it" while the model thinks, so a slow turn never feels like
-    // dead air. The host answer replaces it.
-    if (fromVoice && voiceOn) {
-      const intent = parseLiveIntent(trimmed);
+
+    // "None" / "zero" / "not yet" is a valid answer to the checklist
+    // question, but it changes no shared state, so the agent has nothing
+    // to call. Acknowledge it from the real board and show the build
+    // queue instead of sending a dead turn and reporting an agent error.
+    if (beatProgress(view).nextBeat === "checklist" && isNothingDoneAnswer(trimmed)) {
+      const reply = checklistNoopReply(view);
+      previewKeyRef.current = null;
+      pendingTurnRef.current = null;
+      setLivePreview(null);
+      setLiveTranscript(trimmed);
+      setLastTranscript(trimmed);
+      setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
+      setLocalHost(reply);
+      setAck("");
+      setActiveModule("checklist");
+      setStageTab("colony");
+      playCue("adjust");
+      if (voiceOn && unlockedRef.current) {
+        lastSpokenRef.current = spokenHostText(reply);
+        speakNative(reply);
+      }
+      return;
+    }
+
+    const intent = parseLiveIntent(trimmed);
+    const fast = Boolean(intent && FAST_INTENT_KINDS.has(intent.kind));
+
+    // Immediate acknowledgment for the model path only. The fast lane
+    // below answers immediately with its full host line instead of "on it".
+    if (!fast && fromVoice && voiceOn) {
       const ack =
         intent?.kind === "jurisdiction"
           ? `Picking ${intent.jurisdiction}.`
@@ -660,14 +874,48 @@ function Canvas() {
               : "On it.";
       speakNative(ack);
     }
-    // Paint instantly, confirm asynchronously: a typed/spoken command
-    // moves the canvas now; the agent turn below is the authority and
-    // corrects the preview if it heard something different.
-    previewKeyRef.current = null;
-    applyLiveIntent(trimmed, "confirming");
+    // Paint instantly, confirm asynchronously. For a typed command there
+    // is no interim preview, so reset the key and apply. For a spoken
+    // command, the interim already applied this key: do NOT apply it
+    // again (especially checklist ticks, which are not idempotent).
+    if (!fromVoice) previewKeyRef.current = null;
+    const applied = applyLiveIntent(trimmed, "confirming");
     setLiveTranscript(trimmed);
     setLastTranscript(trimmed);
     setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
+
+    // Deterministic commands do not need the model. Apply the same
+    // appliers (already done above), speak/display the derived host line,
+    // and return without a network turn or an agent queue slot.
+    if (fast && applied) {
+      let line = "";
+      if (applied.kind === "undo") {
+        line = undoLast();
+      } else if (applied.kind === "start-over") {
+        commit("start-over", (s) => applyStartOver(s));
+        const next = beatProgress(stateRef.current).nextBeat;
+        const question = next === "complete"
+          ? ""
+          : getHostQuestion(next, shortFounderNames(stateRef.current.founders), stateRef.current.selectedJurisdiction);
+        line = `Fresh start.${question ? ` ${question}` : ""}`;
+      } else {
+        line = localFastLine(applied, stateRef.current);
+      }
+      pendingTurnRef.current = null;
+      setLivePreview({ key: applied.key, label: applied.label, status: "confirmed" });
+      setAck("");
+      if (line) {
+        setLocalHost(line);
+        if (voiceOn && unlockedRef.current) {
+          lastSpokenRef.current = spokenHostText(line);
+          speakNative(line);
+        }
+      }
+      return;
+    }
+
+    // Model path: clear the local line so the agent's reply can take over.
+    setLocalHost("");
     const sel = view.selectedJurisdiction;
     const mentioned = DEMO_JURISDICTIONS.map((r) => r.jurisdiction).find((name) => trimmed.toLowerCase().includes(name.toLowerCase()));
     if (sel && mentioned && mentioned.toLowerCase() === sel.toLowerCase()) {
@@ -790,6 +1038,14 @@ function Canvas() {
     return () => {
       cleanupAudio();
       stopWebSpeech();
+      clearSpeechWatchdog();
+      utteranceRef.current = null;
+      if (travelFrameRef.current !== null) cancelAnimationFrame(travelFrameRef.current);
+      try {
+        window.speechSynthesis?.cancel();
+      } catch {
+        // ignore
+      }
     };
   }, []);
 
@@ -926,9 +1182,12 @@ function Canvas() {
         audio: true,
       });
       mediaStreamRef.current = stream;
-      ctx = new AudioContext();
-      audioContextRef.current = ctx;
-      await ctx.audioWorklet.addModule("/pcm-capture-worklet.js");
+      const audioContext = new AudioContext();
+      ctx = audioContext;
+      audioContextRef.current = audioContext;
+      // One retry covers a transient asset/HMR failure; a real failure
+      // is surfaced below with copy that names the right cause.
+      await loadPcmWorklet((url) => audioContext.audioWorklet.addModule(url));
       const node = new AudioWorkletNode(ctx, "pcm-capture");
       workletNodeRef.current = node;
       chunksRef.current = [];
@@ -969,22 +1228,27 @@ function Canvas() {
       cleanupAudio();
       recordingRef.current = false;
       setRecording(false);
-      const detail =
-        error instanceof Error && error.name !== "NotAllowedError"
-          ? `: ${error.message}`
-          : "";
-      setNotice(
-        detail
-          ? `Microphone capture failed${detail}. Type a command instead.`
-          : "Microphone access was not granted.",
-      );
+      // End the loop on a failed capture. Otherwise the UI says
+      // "conversation live" while the auto-listen effect retries the
+      // same broken context forever. TALK or typing can start again.
+      convoRef.current = false;
+      setConvoActive(false);
+      dropQueuedTurn();
+      setNotice(micFailureNotice(error));
     }
   }
 
-  const hostPrompt = resolveHostPrompt(messages as never, view.currentBeat, shortFounderNames(view.founders), view.selectedJurisdiction);
   const progress = beatProgress(view);
   const mission = missionFor(view);
-  const doneCount = Object.values(progress.done).filter(Boolean).length;
+  // The fallback host line follows the next objective, not the last beat
+  // touched: after picking Mars the comms panel should ask about equity,
+  // not repeat the home-base question. Agent text still outranks it.
+  const fallbackBeat: Beat = mission.beat === "complete" ? view.currentBeat : mission.beat;
+  const resolvedHostPrompt = resolveHostPrompt(messages as never, fallbackBeat, shortFounderNames(view.founders), view.selectedJurisdiction);
+  const hostPrompt = localHost
+    ? { text: localHost, source: "fallback" as const }
+    : resolvedHostPrompt;
+  const doneCount = progress.requiredDone;
 
   // First gesture unlocks audio/speech (browser autoplay policy)
   // and pre-loads the curated system voice. Voices often arrive
@@ -1079,11 +1343,25 @@ function Canvas() {
 
   // Beat completion celebrates on the mission banner, with a
   // zero-gravity stardust burst over the page (skipped entirely for
-  // reduced-motion users).
+  // reduced-motion users). Name the beat that actually completed, not the
+  // mission that just became current: picking Mars clears Home base, it
+  // does not clear the equity split the banner now asks for.
+  const prevProgressRef = useRef(progress);
   useEffect(() => {
     if (prevDoneCountRef.current >= 0 && doneCount > prevDoneCountRef.current) {
-      setCelebrated(mission.title);
-      if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      const justDone = MODULES.map((module) => module.id).find(
+        (beat) => progress.done[beat] && !prevProgressRef.current.done[beat],
+      );
+      const label = justDone ? moduleFor(justDone).label : mission.title;
+      const complete = justDone
+        ? justDone === "checklist"
+          ? view.checklist.every((item) => item.done)
+          : progress.done[justDone]
+        : true;
+      setCelebrated(`${complete ? "MISSION CLEARED" : "OBJECTIVE UPDATED"} · ${label}`);
+      // Selecting a home base already gets the rocket/travel cinematic;
+      // confetti on top of it is noise, not celebration.
+      if (justDone !== "jurisdiction" && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
         const launched = Boolean(view.lawyerPackage);
         void confetti({
           particleCount: launched ? 120 : 40,
@@ -1097,18 +1375,37 @@ function Canvas() {
           origin: { y: 0.35 },
         });
       }
-      const t = setTimeout(() => setCelebrated(""), 2200);
       prevDoneCountRef.current = doneCount;
+      prevProgressRef.current = progress;
+      const t = setTimeout(() => setCelebrated(""), 2200);
       return () => clearTimeout(t);
     }
     prevDoneCountRef.current = doneCount;
+    prevProgressRef.current = progress;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doneCount]);
   const [elapsed, setElapsed] = useState(0);
   const busySinceRef = useRef<number | null>(null);
   const turnPhase = recording ? "recording" : transcribing ? "transcribing" : sending ? "sending" : isLoading ? "agent-busy" : "idle";
-  const micLabel = turnPhase === "recording" ? (convoActive ? "End conversation" : "Stop recording") : convoActive ? "End conversation" : turnPhase === "transcribing" ? "Transcribing…" : turnPhase === "sending" ? "Sending…" : turnPhase === "agent-busy" ? "Agent working…" : "Speak (mic)";
   const busy = turnPhase === "sending" || turnPhase === "agent-busy";
+  const micLabel =
+    turnPhase === "recording"
+      ? convoActive
+        ? "End conversation"
+        : "Stop recording"
+      : convoActive
+        ? busy
+          ? "End conversation"
+          : hostSpeaking
+            ? "Listen now — interrupt the host"
+            : "Listen now"
+        : turnPhase === "transcribing"
+          ? "Transcribing…"
+          : turnPhase === "sending"
+            ? "Sending…"
+            : turnPhase === "agent-busy"
+              ? "Agent working…"
+              : "Talk (microphone)";
   useEffect(() => {
     if (!busy) {
       busySinceRef.current = null;
@@ -1130,16 +1427,14 @@ function Canvas() {
       ? "Heard you — transcribing with Muse Voice…"
       : busy
         ? "Agent confirming — your live preview is already on the canvas."
-        : livePreview?.status === "confirmed"
-          ? "Done — painted and confirmed."
-          : "Ready — press Speak and just talk; no need to time a Stop click.";
+        : hostSpeaking
+          ? "Host is speaking — the mic opens when the line finishes."
+          : livePreview?.status === "confirmed"
+            ? "Done — painted and confirmed."
+            : "Talk or type a command — the canvas moves as you speak.";
   const shownTranscript = lastTranscript || view.transcript;
-  // Auto-scroll to the latest turn: once a turn completes with a new result,
-  // bring the section it changed into view below the sticky latest-turn
-  // header (which keeps the transcript + host reply visible). Fires once
-  // per result signature — never on every render, never mid-stream.
-  const latestTurnRef = useRef<HTMLDivElement | null>(null);
-  const scrolledSignatureRef = useRef<string | null>(null);
+  // The pending-turn check: a completed turn that changed nothing (and is
+  // not a re-pick, which already acknowledged) surfaces a visible error.
   const pendingTurnRef = useRef<{ signature: string; text: string; beat: Beat } | null>(null);
   const wasLoadingRef = useRef(false);
   const resultSignature = turnResultSignature(view, hostPrompt.text);
@@ -1178,196 +1473,556 @@ function Canvas() {
     wasLoadingRef.current = isLoading;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoading, resultSignature]);
-  // Smooth guided flow: the moment a beat-owned field changes — a live
-  // preview mid-speech counts — glide the viewport to that section with
-  // Lenis. Host-only streaming text never moves the camera, and
-  // reduced-motion users get an immediate jump instead of a glide.
-  const lenisRef = useRef<Lenis | null>(null);
-  useLenis((lenis) => {
-    lenisRef.current = lenis;
-  });
+
+  // A confirmed preview is a receipt, not a permanent banner: clear it
+  // after a beat so the deck returns to the live transcript / prompt.
   useEffect(() => {
-    if (scrolledSignatureRef.current === null) {
-      scrolledSignatureRef.current = resultSignature;
-      return;
-    }
-    const previousSignature = scrolledSignatureRef.current;
-    if (previousSignature === resultSignature) return;
-    scrolledSignatureRef.current = resultSignature;
-    if (!beatFieldChanged(previousSignature, resultSignature)) return;
-    const beat = firstChangedBeat(previousSignature, resultSignature, view.currentBeat);
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const scrollToTarget = () => {
-      const el = document.querySelector(`[data-beat="${beat}"]`) as HTMLElement | null;
-      if (!el) return;
-      if (lenisRef.current) {
-        // Land the section just below the (variably tall) sticky dock.
-        const dockH = latestTurnRef.current?.offsetHeight ?? 90;
-        lenisRef.current.scrollTo(el, { offset: -(dockH + 16), duration: reduced ? 0 : 1.35, immediate: reduced });
-      } else {
-        el.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
-      }
+    if (!livePreview || livePreview.status !== "confirmed") return;
+    const timer = setTimeout(() => setLivePreview(null), 4000);
+    return () => clearTimeout(timer);
+  }, [livePreview]);
+
+  // A travel cinematic is a moment, not a mode: clear it after the CSS
+  // animation (2.6s) even if the browser throttles the animation itself.
+  useEffect(() => {
+    if (!travel) return;
+    const timer = setTimeout(() => setTravel(null), 2600);
+    return () => clearTimeout(timer);
+  }, [travel]);
+
+  // Shell wiring: the mission clock, following the beat into the systems
+  // rail, switching the viewport when the walk moves from orbit to ground,
+  // and keyboard shortcuts (Space = talk, 1–6 = systems, Esc = close).
+  useEffect(() => {
+    const id = setInterval(() => setMissionClock((seconds) => seconds + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const toggleRecordingRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    toggleRecordingRef.current = () => {
+      void toggleRecording();
     };
-    scrollToTarget();
-    // One bounded settle pass: Pixi canvases can shift layout just after
-    // a turn lands, which would otherwise strand the scroll short.
-    const settle = setTimeout(() => {
-      if (scrolledSignatureRef.current === resultSignature) scrollToTarget();
-    }, 900);
-    return () => clearTimeout(settle);
-  }, [resultSignature, view.currentBeat]);
+  });
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      // Never steal keys from a text field or a contenteditable surface.
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (event.code === "Space") {
+        // Space on a button/link is that control's activation key.
+        if (target?.closest("button, a")) return;
+        event.preventDefault();
+        toggleRecordingRef.current();
+        return;
+      }
+      if (event.key >= "1" && event.key <= "6") {
+        const shortcut = MODULES[Number(event.key) - 1];
+        if (shortcut) {
+          setActiveModule(shortcut.id);
+          playCue("highlight");
+        }
+        return;
+      }
+      if (event.key === "Escape") setDockOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const structures = colonyProgress(view.checklist);
+  const flight = flightPlan(view, activeModule);
+  const activeMeta = moduleFor(activeModule);
+  const activeStep = flight.find((step) => step.id === activeModule) ?? flight[0];
+  const clockLabel = formatClock(missionClock);
+  const equityLabel = view.founders.map((founder) => `${founder.percent}%`).join(" / ");
+  const homeBase = view.selectedJurisdiction ?? "UNSET";
+  const ship = shipLabel(view);
+  const travelColor = travel
+    ? `#${colonyPalette(travel.planet).accent.toString(16).padStart(6, "0")}`
+    : "#7fe7ff";
+  const canSend = !recording && !transcribing && !sending && !isLoading;
+
+  function selectStage(tab: "galaxy" | "colony") {
+    setStageTab(tab);
+    playCue("highlight");
+  }
+
+  function selectModule(id: SharedState["currentBeat"]) {
+    setActiveModule(id);
+    playCue("highlight");
+  }
+
 
   return (
-    <main style={{ maxWidth: "900px", margin: "0 auto", padding: "1rem 2rem 2rem" }}>
-      <h1>Visual Vocal Builder</h1>
-      <p>
-        <strong>
-          Demo data only. This is not legal advice, not a filing, and nothing
-          here is submitted to any registry.
-        </strong>
-      </p>
-      <p>
-        Fictional demo company: <strong>{DEMO_COMPANY_NAME}</strong> — not a
-        real company. All places and figures below are invented.
-      </p>
-
-      <div ref={latestTurnRef} data-testid="latest-turn" style={{ position: "sticky", top: "0.5rem", zIndex: 30, background: "#0b1026", borderRadius: "12px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)" }}>
-      <section aria-label="Voice input" data-testid="voice-input" data-phase={turnPhase} style={{ margin: 0, padding: "0.45rem 0.7rem", position: "relative" }}>
-        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
-        <button onClick={toggleRecording} disabled={!recording && !convoActive && (transcribing || sending || isLoading)} data-testid="mic-button">
-          {micLabel}
-        </button>{" "}
-        <span data-testid="convo-status" role="status">{convoActive ? (recording ? "Conversation live — listening" : busy ? "Conversation live — agent is answering" : "Conversation live") : "Conversation off — press Speak to start"}</span>
-        <span data-testid="turn-phase" role="status">{turnPhase === "recording" ? "Recording…" : turnPhase === "transcribing" ? "Transcribing…" : turnPhase === "sending" ? "Sending…" : turnPhase === "agent-busy" ? `Agent working… ${elapsed}s` : "Ready"}</span>
-        <button type="button" data-testid="dock-expand" aria-expanded={dockOpen} onClick={() => setDockOpen((v) => !v)}>
-          {dockOpen ? "Close controls" : "Controls"}
-        </button>
+    <main className="game" data-stage={stageTab}>
+      <header className="hud" aria-label="Mission header">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            <span />
+          </span>
+          <div className="brand-text">
+            <p className="eyebrow">VVB-01 · ORBITAL FOUNDRY</p>
+            <h1>Visual Vocal Builder</h1>
+          </div>
         </div>
-        {dockOpen ? (
-        <div data-testid="dock-popout" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, background: "#0b1026", border: "1px solid #2c376e", borderRadius: "12px", padding: "0.8rem", boxShadow: "0 18px 40px rgba(0,0,0,0.6)", zIndex: 40 }}>
-        <input
-          value={typed}
-          disabled={recording || transcribing || sending || isLoading}
-          onChange={(event) => setTyped(event.target.value)}
-          onKeyDown={async (event) => {
-            if (event.key === "Enter") {
-              await sendToAgent(typed);
-              setTyped("");
-            }
-          }}
-          placeholder="Or type a command for the agent"
-          style={{ minWidth: "320px" }}
-        />{" "}
-        <button
-          disabled={recording || transcribing || sending || isLoading || !typed.trim()}
-          onClick={async () => {
-            await sendToAgent(typed);
-            setTyped("");
-          }}
-        >
-          {busy ? "Agent working…" : "Send to agent"}
-        </button>
-        <button
-          type="button"
-          data-testid="undo-button"
-          disabled={historySize === 0}
-          onClick={() => { undoLast(); }}
-        >
-          Undo
-        </button>{" "}
-        <span><button
-          type="button"
-          data-testid="restart-conversation"
-          onClick={() => window.location.reload()}
-        >
-          Restart conversation
-        </button>{" "}
-        <button
-          type="button"
-          data-testid="sound-toggle"
-          aria-pressed={soundOn}
-          onClick={() => setSoundOn((v) => !v)}
-        >
-          {soundOn ? "Sound: on" : "Sound: off"}
-        </button>{" "}
-        <button
-          type="button"
-          data-testid="voice-toggle"
-          aria-pressed={voiceOn}
-          onClick={() => {
-            if (voiceOn) cancelSpeech();
-            setVoiceOn((v) => !v);
-          }}
-        >
-          {voiceOn ? "Agent voice: on" : "Agent voice: off"}
-        </button>{" "}
-        <button
-          type="button"
-          data-testid="convo-toggle"
-          aria-pressed={convoOn}
-          onClick={() => {
-            const next = !convoOn;
-            setConvoOn(next);
-            if (!next) {
-              convoRef.current = false;
-              setConvoActive(false);
-              dropQueuedTurn();
-            }
-          }}
-        >
-          {convoOn ? "Conversation: auto-listen on" : "Conversation: auto-listen off"}
-        </button>{" "}
-        <span>Voice: system (curated)</span></span>
-        <p data-testid="recording-hint">Say one short command — it paints live as you speak, and sends itself when you pause. Stop recording still works if you prefer it.</p>
-        <p data-testid="flow-status" role="status">{flowStatus}</p>
-        {recording || liveTranscript || livePreview ? (
-          <div data-testid="live-voice-panel" style={{ marginTop: "0.3rem" }}>
-            {recording ? (
-              <div data-testid="mic-meter" aria-label={`Microphone level, recording ${recordSeconds} seconds`}>
-                <div style={{ display: "flex", gap: "3px", alignItems: "flex-end", height: "22px" }} aria-hidden="true">
-                  {[0.15, 0.35, 0.55, 0.75, 0.95].map((bar) => (
-                    <span key={bar} style={{ width: "10px", height: `${6 + bar * 16}px`, borderRadius: "2px", background: micLevel >= bar ? "#ffd166" : "#2c376e", transition: "background 120ms" }} />
-                  ))}
-                  <span style={{ marginLeft: "0.5rem", fontSize: "0.85rem" }}>● Recording {recordSeconds}s{micLevel > 0.05 ? " — hearing you" : " — listening…"}</span>
-                </div>
+
+        <div className="hud-mission" aria-label={`${doneCount} of ${progress.requiredTotal} missions complete`}>
+          <span className="hud-kicker">MISSIONS</span>
+          <div className="hud-pips" aria-hidden="true">
+            {REQUIRED_BEATS.map((beat) => {
+              const step = flight.find((entry) => entry.id === beat);
+              return <span key={beat} className={`pip is-${step?.status ?? "pending"}`} />;
+            })}
+          </div>
+          <strong className="hud-count">
+            {doneCount}
+            <span>/{progress.requiredTotal}</span>
+          </strong>
+        </div>
+
+        <div className="hud-stats">
+          <div className="stat">
+            <span>HOME BASE</span>
+            <strong>{homeBase}</strong>
+          </div>
+          <div className="stat">
+            <span>COLONY</span>
+            <strong>
+              {structures.built}/{structures.total}
+            </strong>
+          </div>
+          <div className="stat">
+            <span>CREW</span>
+            <strong>{equityLabel}</strong>
+          </div>
+          <div className="stat">
+            <span>CLEARANCE</span>
+            <strong className={verification.counts.flagged > 0 ? "is-warn" : "is-ok"}>
+              {verification.counts.flagged > 0
+                ? `${verification.counts.flagged} FLAGGED`
+                : "VERIFIED"}
+            </strong>
+          </div>
+        </div>
+
+        <div className="hud-actions">
+          <span className="clock" aria-label={`Mission clock ${clockLabel}`}>
+            T+{clockLabel}
+          </span>
+          <button
+            type="button"
+            className="hud-btn"
+            data-testid="sound-toggle"
+            aria-pressed={soundOn}
+            onClick={() => setSoundOn((value) => !value)}
+          >
+            <span aria-hidden="true">{soundOn ? "◉" : "○"}</span> SFX
+          </button>
+          <button
+            type="button"
+            className="hud-btn"
+            data-testid="voice-toggle"
+            aria-pressed={voiceOn}
+            onClick={() => {
+              if (voiceOn) cancelSpeech();
+              setVoiceOn((value) => !value);
+            }}
+          >
+            <span aria-hidden="true">{voiceOn ? "◉" : "○"}</span> VOX
+          </button>
+        </div>
+      </header>
+
+      <div className="bridge">
+        <aside className="rail rail-mission" aria-label="Mission control">
+          <section
+            className="panel objective"
+            data-testid="mission-banner"
+            data-beat={mission.beat}
+            data-celebrated={celebrated ? "true" : "false"}
+          >
+            <div className="objective-head">
+              <span className="eyebrow">CURRENT OBJECTIVE</span>
+              <span className="objective-step">
+                {mission.step}/{mission.total}
+              </span>
+            </div>
+            <h2>{mission.title}</h2>
+            <p data-testid="mission-prompt" className="objective-prompt">
+              {mission.prompt}
+            </p>
+            <div className="objective-meter" aria-hidden="true">
+              <span style={{ width: `${Math.round((doneCount / progress.requiredTotal) * 100)}%` }} />
+            </div>
+            <div className="chip-row">
+              {mission.chips.map((chip) => (
+                <button
+                  key={chip.label}
+                  type="button"
+                  className="chip-btn"
+                  data-testid={`mission-chip-${chip.label}`}
+                  disabled={!canSend}
+                  onClick={async () => {
+                    await sendToAgent(chip.command);
+                  }}
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+            {celebrated ? (
+              <p data-testid="mission-celebrated" className="celebrate" role="status">
+                {celebrated}
+              </p>
+            ) : null}
+          </section>
+
+          <section className="panel flight" aria-label="Flight plan">
+            <div className="panel-head">
+              <span className="eyebrow">FLIGHT PLAN</span>
+              <span className="panel-note">{doneCount}/{progress.requiredTotal} CLEARED</span>
+            </div>
+            <ol className="flight-list">
+              {flight.map((step) => (
+                <li key={step.id} className={`flight-item is-${step.status}`}>
+                  <button
+                    type="button"
+                    onClick={() => selectModule(step.id)}
+                    aria-pressed={activeModule === step.id}
+                    data-testid={`flight-step-${step.id}`}
+                  >
+                    <span className="flight-code">{step.code}</span>
+                    <span className="flight-main">
+                      <strong>{step.label}</strong>
+                      <span>{step.detail}</span>
+                    </span>
+                    <span className="flight-status">{flightStatusLabel(step.status)}</span>
+                  </button>
+                </li>
+              ))}
+            </ol>
+          </section>
+
+          <section className="panel comms" data-testid="host-prompt" aria-label="Host prompt">
+            <div className="comms-head">
+              <span className="signal" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+                <span />
+              </span>
+              <span className="eyebrow">MISSION CONTROL · LIVE</span>
+            </div>
+            <p data-testid="host-prompt-text" className="comms-text">
+              {hostPrompt.text}
+            </p>
+            {ack ? (
+              <p data-testid="host-ack" className="comms-ack" role="status">
+                {ack}
+              </p>
+            ) : null}
+            <p className="micro">
+              Host speech is unverified conversation, not a grounded fact card.
+            </p>
+          </section>
+
+          <p className="rail-demo">
+            DEMO ONLY — not legal advice, not a filing, nothing here is submitted to any registry.
+          </p>
+        </aside>
+
+        <section className="stage" aria-label="Ship viewport">
+          <div className="stage-head">
+            <div className="stage-tabs" role="tablist" aria-label="Viewport">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={stageTab === "galaxy"}
+                className={stageTab === "galaxy" ? "is-active" : ""}
+                onClick={() => selectStage("galaxy")}
+              >
+                STAR MAP
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={stageTab === "colony"}
+                className={stageTab === "colony" ? "is-active" : ""}
+                onClick={() => selectStage("colony")}
+              >
+                COLONY
+              </button>
+            </div>
+            <div className="stage-live">
+              <span className="live-dot" aria-hidden="true" />
+              LIVE FEED
+              <span className="stage-clock">T+{clockLabel}</span>
+            </div>
+          </div>
+
+          <div className="stage-viewport">
+            <div className="stage-scene-wrap" hidden={stageTab !== "galaxy"}>
+              <GalaxyHero
+                rows={view.jurisdictions}
+                selected={view.selectedJurisdiction}
+                onSelect={handleSelectJurisdiction}
+              />
+            </div>
+            <div className="stage-scene-wrap" hidden={stageTab !== "colony"}>
+              <ColonyView
+                selected={view.selectedJurisdiction}
+                checklist={view.checklist}
+                founders={view.founders}
+                lawyerPackage={view.lawyerPackage}
+              />
+            </div>
+            <span className="reticle" aria-hidden="true" />
+            <span className="scanlines" aria-hidden="true" />
+          </div>
+
+          <div className="stage-foot">
+            <span>
+              HOME BASE <strong>{homeBase}</strong>
+            </span>
+            <span>
+              SHIP <strong data-testid="ship-name">{ship}</strong>
+            </span>
+            <span>
+              PHASE <strong>{activeMeta.label.toUpperCase()}</strong>
+            </span>
+          </div>
+
+          {travel ? (
+            <div className="warp" key={travel.id} data-testid="warp-transition">
+              <div className="warp-stars warp-stars-a" aria-hidden="true" />
+              <div className="warp-stars warp-stars-b" aria-hidden="true" />
+              <div className="warp-flash" aria-hidden="true" />
+              <div className="warp-target" aria-hidden="true">
+                <span
+                  className="warp-planet"
+                  style={{
+                    background: `radial-gradient(circle at 34% 30%, #fff 0 5%, ${travelColor} 36%, #0b1026 100%)`,
+                    boxShadow: `0 0 70px ${travelColor}`,
+                  }}
+                />
+                <span className="warp-ring" />
               </div>
-            ) : null}
-            {liveTranscript ? (
-              <p data-testid="live-transcript" style={{ margin: "0.4rem 0 0" }}>Hearing: <q>{liveTranscript}</q></p>
-            ) : recording ? (
-              <p data-testid="live-transcript" style={{ margin: "0.4rem 0 0" }}>Listening… start with “Pick Mars”.</p>
-            ) : null}
-            {livePreview ? (
-              <p data-testid="live-preview" role="status" style={{ margin: "0.4rem 0 0", display: "inline-block", border: "1px solid #ffd166", borderRadius: "999px", padding: "0.2rem 0.7rem" }}>
-                {livePreview.status === "confirmed" ? `Confirmed: ${livePreview.label}` : `heard: “${liveTranscript || livePreview.label}”…${livePreview.status === "confirming" ? " confirming with the agent…" : " (provisional)"}`}
+              <div className="warp-rocket" aria-hidden="true">
+                <svg viewBox="0 0 64 64" width="64" height="64">
+                  <path
+                    d="M32 4c8 7 12 17 12 28l-6 8H26l-6-8C20 21 24 11 32 4Z"
+                    fill="#e9eeff"
+                    stroke="#7fe7ff"
+                    strokeWidth="1.6"
+                  />
+                  <circle cx="32" cy="24" r="5" fill="#08101f" stroke="#ffd166" strokeWidth="2" />
+                  <path d="M26 40 18 52l10-3M38 40l8 12-10-3" fill="#ff6b7a" />
+                  <path d="M32 46v13" stroke="#ffd166" strokeWidth="4" strokeLinecap="round" />
+                </svg>
+              </div>
+              <div className="warp-copy" role="status">
+                <span className="eyebrow">COURSE LOCKED</span>
+                <strong>{travel.planet}</strong>
+                <span className="warp-sub">ENTERING ORBIT</span>
+              </div>
+            </div>
+          ) : null}
+        </section>
+
+        <aside className="rail rail-systems" aria-label="Ship systems">
+          <div className="module-tabs" role="tablist" aria-label="Systems">
+            {MODULES.map((entry) => {
+              const step = flight.find((item) => item.id === entry.id);
+              return (
+                <button
+                  key={entry.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeModule === entry.id}
+                  className={`module-tab is-${step?.status ?? "pending"}`}
+                  onClick={() => selectModule(entry.id)}
+                  title={entry.blurb}
+                >
+                  <span className="module-glyph" aria-hidden="true">
+                    {entry.glyph}
+                  </span>
+                  <span className="module-label">{entry.short}</span>
+                  <span className="module-dot" aria-hidden="true" />
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="panel module-panel" data-active-module={activeModule}>
+            <div className="module-head">
+              <span className="eyebrow">
+                SYSTEM {activeMeta.code} · {activeMeta.label.toUpperCase()}
+              </span>
+              <span className={`chip chip-${activeStep.status}`}>
+                {flightStatusLabel(activeStep.status)}
+              </span>
+            </div>
+
+            <div data-beat="jurisdiction" hidden={activeModule !== "jurisdiction"}>
+              <JurisdictionTable
+                rows={view.jurisdictions}
+                selected={view.selectedJurisdiction}
+                focus={view.focusJurisdiction}
+                focusReason={view.focusReason}
+                onSelect={handleSelectJurisdiction}
+              />
+            </div>
+
+            <div data-beat="equity" hidden={activeModule !== "equity"}>
+              <EquitySlider
+                founders={view.founders}
+                equityNote={view.equityNote}
+                onShareChange={(index, percent) => updateEquity(index, percent, "slider")}
+                onOwnerCountChange={updateOwnerCount}
+              />
+            </div>
+
+            <div data-beat="checklist" hidden={activeModule !== "checklist"}>
+              <FilingChecklist
+                items={view.checklist}
+                onToggle={updateChecklistItem}
+                flags={checklistFlags}
+              />
+            </div>
+
+            <div data-beat="rollover" hidden={activeModule !== "rollover"}>
+              <RolloverFactCard
+                card={view.rolloverCard}
+                rolloverNote={view.rolloverNote}
+                flagReason={rolloverFlag ? `${rolloverFlag.reason}: ${rolloverFlag.detail}` : null}
+              />
+            </div>
+
+            <div data-beat="filingsteps" hidden={activeModule !== "filingsteps"}>
+              <FilingSteps
+                card={view.filingStepsCard}
+                filingStepsNote={view.filingStepsNote}
+                flagReason={filingFlag ? `${filingFlag.reason}: ${filingFlag.detail}` : null}
+              />
+            </div>
+
+            <div data-beat="summary" hidden={activeModule !== "summary"}>
+              <LawyerSummary
+                view={view}
+                companyName={DEMO_COMPANY_NAME}
+                lawyerPackage={view.lawyerPackage}
+                lawyerNote={view.lawyerNote}
+                onPrepare={prepareLawyerPackage}
+              />
+            </div>
+          </div>
+
+          <TrustStrip result={verification} />
+        </aside>
+      </div>
+
+      <footer className="deck" data-testid="command-deck" data-phase={turnPhase}>
+        {dockOpen ? (
+          <div className="deck-popout" data-testid="dock-popout">
+            <div className="popout-head">
+              <span className="eyebrow">FLIGHT CONTROLS</span>
+              <button type="button" className="link-btn" onClick={() => setDockOpen(false)}>
+                CLOSE
+              </button>
+            </div>
+            <div className="popout-grid">
+              <button
+                type="button"
+                className="btn"
+                data-testid="convo-toggle"
+                aria-pressed={convoOn}
+                onClick={() => {
+                  const next = !convoOn;
+                  setConvoOn(next);
+                  if (!next) {
+                    convoRef.current = false;
+                    setConvoActive(false);
+                    dropQueuedTurn();
+                  }
+                }}
+              >
+                Conversation auto-listen: {convoOn ? "on" : "off"}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                data-testid="restart-conversation"
+                onClick={() => window.location.reload()}
+              >
+                Restart conversation
+              </button>
+            </div>
+            <p data-testid="recording-hint" className="micro">
+              Say one short command — it paints live as you speak and sends itself when you pause.
+              Space starts the mic; 1–6 opens a system panel.
+            </p>
+            {shownTranscript ? (
+              <p data-testid="last-transcript" className="micro">
+                Last transcript: <q>{shownTranscript}</q>
               </p>
             ) : null}
           </div>
         ) : null}
-        <div aria-label="Example commands" style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
-          <span>Try:</span>
-          {EXAMPLE_COMMANDS.map((chip) => (
-            <button
-              key={chip.label}
-              data-testid={`example-chip-${chip.label}`}
-              onClick={async () => { await sendToAgent(chip.command); }}
-            >
-              {chip.label}
-            </button>
-          ))}
+
+        <div className="deck-status">
+          <span data-testid="turn-phase" role="status" className={`deck-phase phase-${turnPhase}`}>
+            {turnPhase === "recording"
+              ? "Recording…"
+              : turnPhase === "transcribing"
+                ? "Transcribing…"
+                : turnPhase === "sending"
+                  ? "Sending…"
+                  : turnPhase === "agent-busy"
+                    ? `Agent working… ${elapsed}s`
+                    : "Ready"}
+          </span>
+          <span data-testid="convo-status" className="deck-convo" role="status">
+            {convoActive
+              ? recording
+                ? "CONVERSATION LIVE — LISTENING"
+                : hostSpeaking
+                  ? "HOST SPEAKING — MIC WILL OPEN"
+                  : busy
+                    ? "CONVERSATION LIVE — AGENT ANSWERING"
+                    : "CONVERSATION LIVE — MIC STANDBY"
+              : "CONVERSATION OFF — PRESS TALK"}
+          </span>
+          <span data-testid="flow-status" className="deck-flow" role="status">
+            {flowStatus}
+          </span>
+          {busy && !recording ? (
+            <span data-testid="agent-busy" className="deck-busy" role="status">
+              AGENT WORKING
+            </span>
+          ) : null}
         </div>
-        </div>) : null}
-        {busy && !recording ? <p data-testid="agent-busy" role="status">Agent working…</p> : null}
-        {turnError ? <p data-testid="turn-error" role="alert">{turnError}</p> : null}
+
+        {turnError ? (
+          <p data-testid="turn-error" className="alert" role="alert">
+            {turnError}
+          </p>
+        ) : null}
         {transcribeFailure ? (
-          <div data-testid="transcribe-failure">
+          <div data-testid="transcribe-failure" className="alert">
             <p role="alert">
               {transcribeFailure.plain}{" "}
-              <span data-testid="transcribe-failure-detail">Transcribe failed: {transcribeFailure.detail}</span>
+              <span data-testid="transcribe-failure-detail">
+                Transcribe failed: {transcribeFailure.detail}
+              </span>
             </p>
             {hasLastAudio ? (
               <button
                 type="button"
+                className="btn"
                 data-testid="retry-transcribe"
                 disabled={recording || transcribing || sending || isLoading}
                 onClick={retryTranscribe}
@@ -1375,124 +2030,172 @@ function Canvas() {
                 Retry
               </button>
             ) : (
-              <p data-testid="typed-fallback-hint">Type the command below to send it without voice.</p>
+              <p data-testid="typed-fallback-hint" className="micro">
+                Type the command below to send it without voice.
+              </p>
             )}
           </div>
         ) : null}
-        {notice ? <p>{notice}</p> : null}
-        {shownTranscript && dockOpen ? (
-          <p data-testid="last-transcript">
-            Last transcript: <q>{shownTranscript}</q>
-          </p>
-        ) : null}
-      </section>
-      </div>
+        {notice ? <p className="deck-notice">{notice}</p> : null}
 
-      <section data-testid="host-prompt" aria-label="Host prompt">
-        <h2>Host (unverified conversation)</h2>
-        <p data-testid="host-prompt-text">{hostPrompt.text}</p>
-        {ack ? <p data-testid="host-ack" role="status">{ack}</p> : null}
-        <p>Host speech only — not a grounded fact card. Verify facts on the grounded cards below.</p>
-      </section>
+        <div className="deck-main">
+          <button
+            type="button"
+            className={`mic-orb${recording ? " is-live" : ""}${convoActive ? " is-convo" : ""}`}
+            data-testid="mic-button"
+            onClick={toggleRecording}
+            disabled={!recording && !convoActive && (transcribing || sending || isLoading)}
+            aria-label={micLabel}
+            title={micLabel}
+          >
+            <span className="mic-ring" aria-hidden="true" />
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+              <path
+                d="M12 15a4 4 0 0 0 4-4V6a4 4 0 0 0-8 0v5a4 4 0 0 0 4 4Z"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+              />
+              <path
+                d="M5 11a7 7 0 0 0 14 0M12 18v3"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+              />
+            </svg>
+            <span className="mic-caption">
+              {recording ? "STOP" : convoActive && busy ? "WAIT" : "TALK"}
+            </span>
+          </button>
 
-      <section data-testid="mission-banner" data-beat={mission.beat} data-celebrated={celebrated ? "true" : "false"} aria-label="Current mission" style={celebrated ? { border: "2px solid #ffd166", boxShadow: "0 0 0 3px #ffd16655" } : undefined}>
-        <div style={{ display: "flex", gap: "0.6rem", alignItems: "center", flexWrap: "wrap" }}>
-          <h2 style={{ margin: 0 }}>Mission {mission.step} of {mission.total}: {mission.title}</h2>
-          <span style={{ border: "1px solid currentColor", borderRadius: "999px", padding: "0.1rem 0.6rem", fontSize: "0.8rem" }}>{doneCount} of 6 missions done</span>
+          <div className="deck-readout">
+            <div className="deck-kicker">
+              <span className="deck-mode">{convoActive ? "CONVERSATION" : "PUSH TO TALK"}</span>
+              <span className="deck-hint">SPACE to talk · 1–6 systems</span>
+            </div>
+            <p className="transcript-line" data-testid="live-transcript">
+              {recording && liveTranscript ? (
+                <>
+                  <span className="live-label">HEARD</span> <q>{liveTranscript}</q>
+                </>
+              ) : shownTranscript ? (
+                <>
+                  <span className="live-label">LAST</span> <q>{shownTranscript}</q>
+                </>
+              ) : (
+                <span className="is-dim">Say “Pick Mars” — the canvas moves as you speak.</span>
+              )}
+            </p>
+
+            {recording || livePreview ? (
+              <div data-testid="live-voice-panel" className="live-panel">
+                {recording ? (
+                  <div
+                    data-testid="mic-meter"
+                    className="meter"
+                    aria-label={`Microphone level, recording ${recordSeconds} seconds`}
+                  >
+                    {[0.15, 0.35, 0.55, 0.75, 0.95].map((bar) => (
+                      <span key={bar} className={micLevel >= bar ? "is-on" : ""} />
+                    ))}
+                    <span className="meter-time">
+                      ● {recordSeconds}s {micLevel > 0.05 ? "— HEARING YOU" : "— LISTENING"}
+                    </span>
+                  </div>
+                ) : null}
+                {livePreview ? (
+                  <p data-testid="live-preview" className="live-preview" role="status">
+                    {livePreview.status === "confirmed"
+                      ? `Confirmed — ${livePreview.label.replace(/…$/, "")}`
+                      : `${livePreview.label}${
+                          livePreview.status === "confirming" ? " · confirming" : " · provisional"
+                        }`}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="deck-input">
+            <input
+              value={typed}
+              disabled={recording || transcribing || sending || isLoading}
+              onChange={(event) => setTyped(event.target.value)}
+              onKeyDown={async (event) => {
+                if (event.key === "Enter") {
+                  await sendToAgent(typed);
+                  setTyped("");
+                }
+              }}
+              placeholder="Or type a command for the agent"
+              aria-label="Type a command for the agent"
+            />
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!canSend || !typed.trim()}
+              onClick={async () => {
+                await sendToAgent(typed);
+                setTyped("");
+              }}
+            >
+              {busy ? "WORKING" : "SEND"}
+            </button>
+          </div>
+
+          <div className="deck-tools">
+            <button
+              type="button"
+              className="btn"
+              data-testid="undo-button"
+              disabled={historySize === 0}
+              onClick={() => {
+                undoLast();
+              }}
+            >
+              UNDO
+            </button>
+            <button
+              type="button"
+              className="btn"
+              data-testid="dock-expand"
+              aria-expanded={dockOpen}
+              onClick={() => setDockOpen((value) => !value)}
+            >
+              {dockOpen ? "CLOSE" : "CONTROLS"}
+            </button>
+          </div>
         </div>
-        <div aria-hidden="true" style={{ height: "8px", background: "#2c376e", borderRadius: "999px", marginTop: "0.5rem", overflow: "hidden" }}>
-          <div style={{ width: `${Math.round((doneCount / 6) * 100)}%`, height: "100%", background: "#ffd166", transition: "width 400ms" }} />
-        </div>
-        <p data-testid="mission-prompt">{mission.prompt}</p>
-        {celebrated ? <p data-testid="mission-celebrated" role="status">Mission complete: {celebrated} — next mission unlocked.</p> : null}
-        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-          {mission.chips.map((chip) => (
+
+        <div className="deck-chips" aria-label="Example commands">
+          <span className="eyebrow">QUICK</span>
+          {EXAMPLE_COMMANDS.map((chip) => (
             <button
               key={chip.label}
               type="button"
-              data-testid={`mission-chip-${chip.label}`}
-              disabled={recording || transcribing || sending || isLoading}
-              onClick={async () => { await sendToAgent(chip.command); }}
+              className="chip-btn"
+              data-testid={`example-chip-${chip.label}`}
+              disabled={!canSend}
+              onClick={async () => {
+                await sendToAgent(chip.command);
+              }}
             >
               {chip.label}
             </button>
           ))}
+          <span className="deck-legal">DEMO ONLY · NO FILING · NO EMAIL</span>
         </div>
-      </section>
-
-      <div data-beat="jurisdiction" data-beat-active={view.currentBeat === "jurisdiction"}>
-      <GalaxyHero
-        rows={view.jurisdictions}
-        selected={view.selectedJurisdiction}
-        onSelect={handleSelectJurisdiction}
-      />
-
-      <JurisdictionTable
-        rows={view.jurisdictions}
-        selected={view.selectedJurisdiction}
-        focus={view.focusJurisdiction}
-        focusReason={view.focusReason}
-        onSelect={handleSelectJurisdiction}
-      />
-      </div>
-
-      <nav data-testid="quest-progress" aria-label="Quest progress">
-        <strong>Mission progress:</strong>{" "}
-        {BEATS.map((beat, i) => (
-          <span key={beat.id} data-testid={`quest-beat-${beat.id}`} data-active={view.currentBeat === beat.id}>
-            {i > 0 ? " → " : ""}{view.currentBeat === beat.id ? "▶ " : ""}{beat.label}
-          </span>
-        ))}
-      </nav>
-
-      <ColonyView
-        selected={view.selectedJurisdiction}
-        checklist={view.checklist}
-        founders={view.founders}
-        lawyerPackage={view.lawyerPackage}
-      />
-
-      <TrustStrip result={verification} />
-
-      <div data-beat="equity" data-beat-active={view.currentBeat === "equity"}>
-      <EquitySlider
-        founders={view.founders}
-        equityNote={view.equityNote}
-        onShareChange={(index, percent) => updateEquity(index, percent, "slider")}
-      />
-      </div>
-
-      <div data-beat="checklist" data-beat-active={view.currentBeat === "checklist"}>
-      <FilingChecklist items={view.checklist} onToggle={updateChecklistItem} flags={checklistFlags} />
-      </div>
-
-      <div data-beat="filingsteps" data-beat-active={view.currentBeat === "filingsteps"}>
-      <FilingSteps card={view.filingStepsCard} filingStepsNote={view.filingStepsNote} flagReason={filingFlag ? `${filingFlag.reason}: ${filingFlag.detail}` : null} />
-      </div>
-
-      <div data-beat="rollover" data-beat-active={view.currentBeat === "rollover"}>
-      <RolloverFactCard card={view.rolloverCard} rolloverNote={view.rolloverNote} flagReason={rolloverFlag ? `${rolloverFlag.reason}: ${rolloverFlag.detail}` : null} />
-      </div>
-
-      <div data-beat="summary" data-beat-active={view.currentBeat === "summary"}>
-      <LawyerSummary
-        view={view}
-        companyName={DEMO_COMPANY_NAME}
-        lawyerPackage={view.lawyerPackage}
-        lawyerNote={view.lawyerNote}
-        onPrepare={prepareLawyerPackage}
-      />
-      </div>
+      </footer>
     </main>
   );
+
 }
 
 export default function CanvasHost() {
   return (
-    <CopilotKit runtimeUrl="/api/copilotkit">
-      <ReactLenis root options={{ lerp: 0.09, duration: 1.2, smoothWheel: true }}>
-        <Canvas />
-      </ReactLenis>
+    <CopilotKit runtimeUrl="/api/copilotkit" showDevConsole={false} enableInspector={false}>
+      <Canvas />
     </CopilotKit>
   );
 }

@@ -15,9 +15,9 @@ export type HeroPlanet = {
 // Fixed layout for exactly the DEMO jurisdictions, in caller order.
 // Colors are invented demo art (drawn with Graphics, no image assets).
 const PLANET_STYLE = [
-  { x: 0.2, y: 0.52, radius: 44, color: 0xd1603d }, // Mars-like rust
-  { x: 0.5, y: 0.42, radius: 38, color: 0x9fd8e8 }, // Europa-like ice
-  { x: 0.8, y: 0.55, radius: 50, color: 0x8f7fe8 }, // Andromeda-like violet
+  { x: 0.2, y: 0.5, radius: 52, color: 0xd1603d }, // Mars-like rust
+  { x: 0.5, y: 0.4, radius: 44, color: 0x9fd8e8 }, // Europa-like ice
+  { x: 0.8, y: 0.53, radius: 60, color: 0x8f7fe8 }, // Andromeda-like violet
 ];
 
 export function heroPlanets(names: string[]): HeroPlanet[] {

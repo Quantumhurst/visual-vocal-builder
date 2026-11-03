@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber } from "../lib/state-updates.ts";
+import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount } from "../lib/state-updates.ts";
 import { DEMO_JURISDICTIONS } from "../lib/demo-data.ts";
 
 const base = () => withDefaults(null);
@@ -83,9 +83,52 @@ test("cheapestByNumber returns Europa with sameCurrency false", () => {
   assert.match(c.fee, /DEMO 400/);
   assert.equal(c.sameCurrency, false);
 });
-test("applyLawyerSummary", () => {
-  const s = applyLawyerSummary(base());
-  assert.equal(s.currentBeat, "summary");
-  assert.match(s.lawyerPackage, /Galactic Bagels/);
-  assert.match(s.lawyerNote, /does not send email/);
+test("applyLawyerSummary gates the company name until the checklist is 5/5", () => {
+  const unnamed = applyLawyerSummary(base());
+  assert.equal(unnamed.currentBeat, "summary");
+  assert.match(unnamed.lawyerPackage, /company name not chosen yet/);
+  assert.doesNotMatch(unnamed.lawyerPackage, /Galactic Bagels/);
+  assert.match(unnamed.lawyerNote, /does not send email/);
+
+  const namedOnly = applyLawyerSummary(applyChecklistItem(base(), "check-name", true));
+  assert.match(namedOnly.lawyerPackage, /company name not chosen yet/);
+  assert.doesNotMatch(namedOnly.lawyerPackage, /Galactic Bagels/);
+
+  const complete = base().checklist.reduce(
+    (state, item) => applyChecklistItem(state, item.id, true),
+    base(),
+  );
+  const named = applyLawyerSummary(complete);
+  assert.match(named.lawyerPackage, /Galactic Bagels/);
+});
+
+test("applyOwnerCount supports 1–5 owners and keeps the split at 100", () => {
+  const b = base();
+  const solo = applyOwnerCount(b, 1);
+  assert.equal(solo.founders.length, 1);
+  assert.equal(solo.founders[0].percent, 100);
+  assert.equal(solo.currentBeat, "equity");
+  assert.match(solo.equityNote, /1 owner/);
+
+  const three = applyOwnerCount(b, 3);
+  assert.equal(three.founders.length, 3);
+  assert.equal(three.founders.reduce((sum, f) => sum + f.percent, 0), 100);
+  assert.ok(three.founders.every((f) => f.percent > 0));
+  assert.match(three.equityNote, /3 owners/);
+
+  // No count change -> same state object (no phantom undo step).
+  assert.equal(applyOwnerCount(b, 2), b);
+});
+
+test("applyChecklistCount ticks the first N undone, or all remaining", () => {
+  const b = base();
+  const two = applyChecklistCount(b, 2);
+  assert.equal(two.checklist.filter((i) => i.done).length, 2);
+  assert.equal(two.currentBeat, "checklist");
+  const all = applyChecklistCount(b, "all");
+  assert.equal(all.checklist.filter((i) => i.done).length, 5);
+  const none = applyChecklistCount(b, 0);
+  assert.equal(none, b);
+  const more = applyChecklistCount(b, 99);
+  assert.equal(more.checklist.filter((i) => i.done).length, 5);
 });

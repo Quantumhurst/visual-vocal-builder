@@ -15,46 +15,47 @@ type Props = {
 // never an actual registry filing, and there is no submission path.
 export default function FilingChecklist({ items, onToggle, flags }: Props) {
   const doneCount = items.filter((item) => item.done).length;
+  const percent = items.length > 0 ? Math.round((doneCount / items.length) * 100) : 0;
+
   return (
-    <section aria-label="Filing checklist">
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-        <h2>Filing checklist (guidance only)</h2>
-        <span
-          style={{
-            border: "1px solid currentColor",
-            borderRadius: "999px",
-            padding: "0.1rem 0.6rem",
-            fontSize: "0.8rem",
-          }}
-        >
-          DEMO — guidance only, not a filing
-        </span>
+    <section aria-label="Filing checklist" className="sys-section">
+      <div className="section-head">
+        <h2>Build queue</h2>
+        <span className="chip chip-demo">GUIDANCE ONLY</span>
       </div>
-      <p>Check items by click or by voice.</p>
-      <p>
-        {doneCount} of {items.length} done
+      <p className="section-lede">
+        Every tick raises a structure on the colony board. No registry is contacted.
       </p>
-      <ul style={{ listStyle: "none", paddingLeft: 0 }}>
-        {items.map((item) => (
-          <li key={item.id} style={{ marginBottom: "0.75rem" }}>
-            <label>
+
+      <div className="build-meter" aria-hidden="true">
+        <span style={{ width: `${percent}%` }} />
+      </div>
+      <p className="build-count">
+        <strong>{doneCount}</strong> / {items.length} structures online
+      </p>
+
+      <ul className="build-list">
+        {items.map((item, index) => (
+          <li key={item.id} className={item.done ? "is-built" : ""}>
+            <label className="build-item">
               <input
                 type="checkbox"
                 checked={item.done}
                 onChange={(event) => onToggle(item.id, event.target.checked)}
-              />{" "}
-              <strong>{item.label}</strong>
+              />
+              <span className="build-check" aria-hidden="true">
+                {item.done ? "✓" : String(index + 1).padStart(2, "0")}
+              </span>
+              <span className="build-body">
+                <strong>{item.label}</strong>
+                <span>{item.guidance}</span>
+              </span>
             </label>
-            <br />
-            <span>{item.guidance}</span>
             {flags?.[item.id] ? (
-              <>
-                <br />
-                <span data-testid={`checklist-flag-${item.id}`}>
-                  <strong>FLAGGED</strong> — verifier: {flags[item.id]}. Shown
-                  as painted; never silently dropped or rewritten.
-                </span>
-              </>
+              <p className="flag-box" data-testid={`checklist-flag-${item.id}`}>
+                <strong>FLAGGED</strong> — verifier: {flags[item.id]}. Shown
+                as painted; never silently dropped or rewritten.
+              </p>
             ) : null}
           </li>
         ))}

@@ -5,9 +5,11 @@ export default function Home() {
   return (
     <Suspense
       fallback={
-        <main style={{ maxWidth: "900px", margin: "0 auto", padding: "2rem" }}>
+        <main className="boot-screen">
+          <span className="boot-orbit" aria-hidden="true" />
+          <p className="eyebrow">VVB-01 · ORBITAL FOUNDRY</p>
           <h1>Visual Vocal Builder</h1>
-          <p>Loading the canvas…</p>
+          <p>Booting the bridge…</p>
         </main>
       }
     >

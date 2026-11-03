@@ -1,5 +1,5 @@
 import { DEMO_CHECKLIST, DEMO_COMPANY_NAME, DEMO_FOUNDERS, DEMO_JURISDICTIONS } from "./demo-data.ts";
-import { setFounderShare } from "./equity.ts";
+import { resizeFounders, setFounderShare } from "./equity.ts";
 import type { FounderShare } from "./equity.ts";
 import { FILING_STEPS_PACK, findFact, findFactById } from "./knowledge.ts";
 import { buildLawyerSummary } from "./lawyer-summary.ts";
@@ -45,6 +45,18 @@ export function applyEquity(state: SharedState, index: number, percent: number, 
   };
 }
 
+export function applyOwnerCount(state: SharedState, count: number): SharedState {
+  const founders = resizeFounders(state.founders, count);
+  if (founders === state.founders) return state;
+  const label = founders.length === 1 ? "1 owner" : `${founders.length} owners`;
+  return {
+    ...state,
+    currentBeat: "equity",
+    founders,
+    equityNote: `${label} — the split still totals 100%.`,
+  };
+}
+
 export function applyChecklistItem(state: SharedState, itemId: string, done: boolean): SharedState {
   return {
     ...state,
@@ -57,6 +69,15 @@ export function applyAdvanceChecklist(state: SharedState): SharedState {
   const next = state.checklist.find((item) => !item.done);
   if (!next) return state;
   return applyChecklistItem(state, next.id, true);
+}
+
+// Tick the first N not-yet-done checklist items (or all remaining).
+// This is the deterministic fast-lane version of "tick the first two".
+export function applyChecklistCount(state: SharedState, count: number | "all"): SharedState {
+  const undone = state.checklist.filter((item) => !item.done);
+  const take = count === "all" ? undone.length : Math.max(0, Math.min(undone.length, Math.floor(count)));
+  if (take === 0) return state;
+  return applyChecklistItems(state, undone.slice(0, take).map((item) => item.id), true);
 }
 
 export function applyJurisdiction(state: SharedState, jurisdiction?: string | null): SharedState {
@@ -169,11 +190,19 @@ export function cheapestByNumber(rows: JurisdictionRow[]): {
   };
 }
 
+// The company is not named until the incorporation checklist is complete
+// (5/5). Before that, the prepared package must not present the demo name
+// as already chosen.
+export function companyNameFor(state: SharedState): string {
+  const complete = state.checklist.length > 0 && state.checklist.every((item) => item.done);
+  return complete ? DEMO_COMPANY_NAME : "(company name not chosen yet)";
+}
+
 export function applyLawyerSummary(state: SharedState): SharedState {
   return {
     ...state,
     currentBeat: "summary",
-    lawyerPackage: buildLawyerSummary(state, DEMO_COMPANY_NAME),
+    lawyerPackage: buildLawyerSummary(state, companyNameFor(state)),
     lawyerNote: "Summary prepared. Copy or download it and forward it yourself — this app does not send email.",
   };
 }

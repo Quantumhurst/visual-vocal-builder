@@ -26,8 +26,15 @@ test("equity touched means equity is done (equityNote path)", () => {
   assert.equal(beatProgress(s).done.equity, true);
 });
 
-test("checklist done when any item ticked", () => {
-  const b = base();
-  const s = applyChecklistItem(b, b.checklist[0].id, true);
-  assert.equal(beatProgress(s).done.checklist, true);
+test("checklist stays open until every item is ticked", () => {
+  const b = applyEquity(applyJurisdiction(base(), "Mars"), 0, 70, "test");
+  const one = applyChecklistItem(b, b.checklist[0].id, true);
+  assert.equal(beatProgress(one).done.checklist, false);
+  assert.equal(beatProgress(one).nextBeat, "checklist");
+  const all = b.checklist.reduce(
+    (state, item) => applyChecklistItem(state, item.id, true),
+    b,
+  );
+  assert.equal(beatProgress(all).done.checklist, true);
+  assert.equal(beatProgress(all).nextBeat, "summary");
 });

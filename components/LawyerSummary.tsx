@@ -48,42 +48,54 @@ export default function LawyerSummary({
   }
 
   return (
-    <section aria-label="Lawyer summary">
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-        <h2>Send to a lawyer for a second opinion</h2>
-        <span
-          style={{
-            border: "1px solid currentColor",
-            borderRadius: "999px",
-            padding: "0.1rem 0.6rem",
-            fontSize: "0.8rem",
-          }}
-        >
-          DEMO data — package display, no send
+    <section aria-label="Lawyer summary" className="sys-section">
+      <div className="section-head">
+        <h2>Launch package</h2>
+        <span className={`chip ${prepared ? "chip-live" : "chip-demo"}`}>
+          {prepared ? "PACKAGE READY" : "NOT PREPARED"}
         </span>
       </div>
-      <p>Prepares a summary package for you to forward yourself.</p>
-      <button onClick={onPrepare}>Prepare lawyer summary</button>{" "}
-      {prepared ? (
-        <>
-          <button onClick={copyPrepared}>Copy summary</button>{" "}
-          <button onClick={downloadPrepared}>Download summary (.txt)</button>
-        </>
+      <p className="section-lede">
+        Builds a summary for you to forward yourself. Prep only — there is no send path.
+      </p>
+
+      <div className={`launch-pad${prepared ? " is-ready" : ""}`}>
+        <span className="launch-orbit" aria-hidden="true" />
+        <span className="launch-core" aria-hidden="true">
+          ▲
+        </span>
+        <span className="launch-copy">
+          <strong>{prepared ? "CLEARED FOR HANDOFF" : "AWAITING PACKAGE"}</strong>
+          <span>
+            {prepared
+              ? "Copy or download the package, then forward it yourself."
+              : "Prepare the package to fill the launch bay."}
+          </span>
+        </span>
+      </div>
+
+      <div className="button-row">
+        <button type="button" className="btn btn-primary" onClick={onPrepare}>
+          {prepared ? "Rebuild lawyer summary" : "Prepare lawyer summary"}
+        </button>
+        {prepared ? (
+          <>
+            <button type="button" className="btn" onClick={copyPrepared}>
+              Copy summary
+            </button>
+            <button type="button" className="btn" onClick={downloadPrepared}>
+              Download summary (.txt)
+            </button>
+          </>
+        ) : null}
+      </div>
+      {lawyerNote ? <p className="hint-line">{lawyerNote}</p> : null}
+      {notice ? (
+        <p className="hint-line" role="status">
+          {notice}
+        </p>
       ) : null}
-      {lawyerNote ? <p>{lawyerNote}</p> : null}
-      {notice ? <p>{notice}</p> : null}
-      {prepared ? (
-        <pre
-          style={{
-            whiteSpace: "pre-wrap",
-            border: "1px solid currentColor",
-            borderRadius: "8px",
-            padding: "1rem",
-          }}
-        >
-          {prepared}
-        </pre>
-      ) : null}
+      {prepared ? <pre className="package">{prepared}</pre> : null}
     </section>
   );
 }

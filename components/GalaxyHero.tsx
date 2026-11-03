@@ -27,8 +27,8 @@ type Props = {
   onSelect: (jurisdiction: string) => void;
 };
 
-const WIDTH = 860;
-const HEIGHT = 320;
+const WIDTH = 960;
+const HEIGHT = 620;
 
 export default function GalaxyHero({ rows, selected, onSelect }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -67,7 +67,7 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
         await app.init({
           width: WIDTH,
           height: HEIGHT,
-          background: "#0b1026",
+          backgroundAlpha: 0,
           antialias: true,
         });
       } catch {
@@ -79,6 +79,9 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
         return;
       }
       host.appendChild(app.canvas);
+      (app.canvas as HTMLCanvasElement).style.width = "100%";
+      (app.canvas as HTMLCanvasElement).style.height = "100%";
+      (app.canvas as HTMLCanvasElement).style.objectFit = "contain";
       (app.canvas as HTMLCanvasElement).setAttribute(
         "aria-label",
         "Interactive galaxy scene with three demo planets: " +
@@ -116,7 +119,7 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
         node.addChild(pulse, halo, body);
         const label = new Text({
           text: planet.name,
-          style: new TextStyle({ fill: "#ffffff", fontSize: 15, fontFamily: "sans-serif" }),
+          style: new TextStyle({ fill: "#ffffff", fontSize: 16, fontFamily: "sans-serif" }),
         });
         label.anchor.set(0.5, 0);
         label.y = planet.radius + 10;
@@ -252,41 +255,65 @@ export default function GalaxyHero({ rows, selected, onSelect }: Props) {
   }, [useFallback]);
 
   return (
-    <section aria-label="Galaxy hero — pick a demo world">
-      <h2>Mission 1: pick your home base</h2>
-      <p>
-        <span style={{ border: "1px solid currentColor", borderRadius: "999px", padding: "0.1rem 0.6rem", fontSize: "0.8rem" }}>DEMO</span>{" "}
-        Pick a fictional world below — or ask by voice — and the
-        incorporation walk starts there.
+    <section aria-label="Galaxy hero — pick a demo world" className="stage-scene hero-scene">
+      <div className="stage-title-row">
+        <h2 className="stage-title">Mission 1: pick your home base</h2>
+        <span className="chip chip-demo">DEMO WORLDS</span>
+      </div>
+      <p className="stage-desc">
+        Pick a fictional world — or ask by voice — and the incorporation walk starts there.
       </p>
 
       {useFallback ? (
-        <div role="img" aria-label={"Static galaxy scene with three demo planets: " + names.join(", ")}>
-          <div style={{ display: "flex", gap: "2rem", background: "#0b1026", padding: "2rem", borderRadius: "8px", justifyContent: "center" }}>
-            {planets.map((planet, i) => (
-              <div key={planet.name} style={{ textAlign: "center", color: "#fff" }}>
-                <div style={{ width: planet.radius * 2, height: planet.radius * 2, borderRadius: "50%", background: `#${planet.color.toString(16).padStart(6, "0")}`, margin: "0 auto", boxShadow: i === active ? "0 0 24px #fff" : undefined }} />
-                <div>{planet.name}</div>
-              </div>
-            ))}
-          </div>
+        <div
+          role="img"
+          aria-label={"Static galaxy scene with three demo planets: " + names.join(", ")}
+          className="hero-fallback"
+        >
+          {planets.map((planet, i) => (
+            <div key={planet.name} className="fallback-planet">
+              <div
+                className="fallback-body"
+                style={{
+                  width: planet.radius * 1.7,
+                  height: planet.radius * 1.7,
+                  background: `#${planet.color.toString(16).padStart(6, "0")}`,
+                  boxShadow: i === active ? "0 0 28px #fff" : undefined,
+                }}
+              />
+              <div className="fallback-label">{planet.name}</div>
+            </div>
+          ))}
         </div>
       ) : (
-        <div ref={hostRef} />
+        <div ref={hostRef} className="pixi-host" />
       )}
 
-      <div>
+      <div className="planet-picker" aria-label="Select a demo world">
         {planets.map((planet, i) => (
           <button
             key={planet.name}
-            onClick={() => { const pick = selectFromHero(names, planet.name); if (pick) { burstRef.current?.(i); onSelect(pick); } }}
+            type="button"
+            className="planet-chip"
+            onClick={() => {
+              const pick = selectFromHero(names, planet.name);
+              if (pick) {
+                burstRef.current?.(i);
+                onSelect(pick);
+              }
+            }}
             aria-pressed={i === active}
           >
+            <span
+              className="planet-dot"
+              aria-hidden="true"
+              style={{ background: `#${planet.color.toString(16).padStart(6, "0")}` }}
+            />
             {planet.name}
           </button>
         ))}
       </div>
-      {selected ? <p>Selected jurisdiction: {selected}</p> : null}
+      {selected ? <p className="stage-status">HOME BASE LOCKED · {selected}</p> : <p className="stage-status is-dim">NO HOME BASE SELECTED</p>}
     </section>
   );
 }

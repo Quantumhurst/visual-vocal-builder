@@ -33,10 +33,10 @@ type Props = {
   lawyerPackage: string;
 };
 
-const WIDTH = 860;
-const HEIGHT = 300;
-const GROUND_H = 58;
-const QUARTER_COLORS = [0x7aa2ff, 0xffd166, 0x8fe3b0, 0xff8fa3];
+const WIDTH = 960;
+const HEIGHT = 620;
+const GROUND_H = 64;
+const QUARTER_COLORS = [0x7aa2ff, 0xffd166, 0x8fe3b0, 0xff8fa3, 0xb18cff];
 
 export default function ColonyView({ selected, checklist, founders, lawyerPackage }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -74,6 +74,14 @@ export default function ColonyView({ selected, checklist, founders, lawyerPackag
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, checklist, founders, lawyerPackage]);
 
+  // The landing toast is a moment, not a permanent label: clear it after
+  // the pad has had time to build so it never contradicts a finished colony.
+  useEffect(() => {
+    if (!landing) return;
+    const timer = setTimeout(() => setLanding(null), 3500);
+    return () => clearTimeout(timer);
+  }, [landing]);
+
   useEffect(() => {
     if (useFallback) return;
     const host = hostRef.current;
@@ -87,7 +95,7 @@ export default function ColonyView({ selected, checklist, founders, lawyerPackag
       if (cancelled) return;
       const app = new Application();
       try {
-        await app.init({ width: WIDTH, height: HEIGHT, background: "#0b1026", antialias: true });
+        await app.init({ width: WIDTH, height: HEIGHT, backgroundAlpha: 0, antialias: true });
       } catch {
         if (!cancelled) setUseFallback(true);
         return;
@@ -98,7 +106,8 @@ export default function ColonyView({ selected, checklist, founders, lawyerPackag
       }
       host.appendChild(app.canvas);
       (app.canvas as HTMLCanvasElement).style.width = "100%";
-      (app.canvas as HTMLCanvasElement).style.height = "auto";
+      (app.canvas as HTMLCanvasElement).style.height = "100%";
+      (app.canvas as HTMLCanvasElement).style.objectFit = "contain";
       (app.canvas as HTMLCanvasElement).setAttribute(
         "aria-label",
         "Colony board: structures appear as you complete the incorporation checklist. " +
@@ -318,49 +327,68 @@ export default function ColonyView({ selected, checklist, founders, lawyerPackag
   }, [useFallback]);
 
   return (
-    <section aria-label="Colony board — your corporation takes shape">
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
-        <h2>Colony board</h2>
-        <span style={{ border: "1px solid currentColor", borderRadius: "999px", padding: "0.1rem 0.6rem", fontSize: "0.8rem" }}>
-          DEMO — watch it build
+    <section aria-label="Colony board — your corporation takes shape" className="stage-scene colony-scene">
+      <div className="stage-title-row">
+        <h2 className="stage-title">Colony board</h2>
+        <span className={`chip ${launch === "launched" ? "chip-live" : "chip-demo"}`}>
+          {launch === "launched" ? "LAUNCHED" : launch === "ready" ? "READY ON PAD" : "LIVE BUILD"}
         </span>
       </div>
-      <p>
-        {selected ? <>Home base: <strong>{selected}</strong>. </> : "Pick a home base above, then "}
-        Complete checklist steps and structures rise here. Crew quarters resize with the equity split
-        {" "}({quarters.map((q) => `${q.name.replace("DEMO Founder ", "").replace(" (fictional)", "")} ${q.percent}%`).join(" / ")}).
-        Prepare the lawyer summary and the rocket launches.
+      <p className="stage-desc">
+        {selected ? <>Home base: <strong>{selected}</strong>. </> : "Pick a home base, then "}
+        each checklist tick raises a structure. Crew quarters resize with the equity split and the
+        rocket launches when the lawyer package is prepared.
       </p>
-      <p data-testid="colony-progress">
-        Colony built: {progress.built} of {progress.total} structures ({progress.percent}%)
-        {" · "}Launch: {launch === "launched" ? "launched" : launch === "ready" ? "ready on the pad" : "not ready"}
-      </p>
-      {landing ? (
-        <p data-testid="colony-landing" data-selected={landing} role="status" style={{ display: "inline-block", border: "2px solid #ffd166", borderRadius: "999px", padding: "0.25rem 0.75rem", animation: "colonyLandingPulse 0.9s ease-in-out 3" }}>
-          <style>{`@keyframes colonyLandingPulse { 0% { box-shadow: 0 0 0 0 rgba(255,209,102,0.8); } 100% { box-shadow: 0 0 0 14px rgba(255,209,102,0); } }`}</style>
-          Landing on {landing} — landing pad building
-        </p>
-      ) : null}
 
       {useFallback ? (
-        <div role="img" aria-label="Static colony board" style={{ background: "#0b1026", padding: "1rem", borderRadius: "8px" }}>
-          <div style={{ display: "flex", height: "26px", overflow: "hidden", borderRadius: "6px", border: "1px solid #2c376e" }} aria-label="Crew quarters split">
+        <div role="img" aria-label="Static colony board" className="colony-fallback">
+          <div className="split-bar" aria-label="Crew quarters split">
             {quarters.map((q, i) => (
-              <div key={q.name} style={{ width: `${q.widthFraction * 100}%`, background: ["#7aa2ff", "#ffd166", "#8fe3b0", "#ff8fa3"][i % 4], color: "#0b1026", fontSize: "0.75rem", fontWeight: 700, textAlign: "center", lineHeight: "26px", overflow: "hidden", whiteSpace: "nowrap" }}>
+              <div
+                key={q.name}
+                className={`split-seg split-seg-${i % 5}`}
+                style={{ width: `${q.widthFraction * 100}%` }}
+              >
                 {q.percent}%
               </div>
             ))}
           </div>
-          <ul style={{ color: "#e6eaff" }}>
+          <ul className="fallback-build-list">
             {structures.map((s) => (
-              <li key={s.checklistId}>{s.built ? "Built: " : "Not built: "}{s.label}</li>
+              <li key={s.checklistId}>
+                <span aria-hidden="true">{s.built ? "▰" : "▱"}</span>
+                {s.built ? "Built: " : "Not built: "}
+                {s.label}
+              </li>
             ))}
           </ul>
-          <p style={{ color: "#e6eaff" }}>Launch: {launch}</p>
+          <p className="stage-status">LAUNCH · {launch}</p>
         </div>
       ) : (
-        <div ref={hostRef} />
+        <div ref={hostRef} className="pixi-host colony-host" />
       )}
+
+      <div className="colony-hud">
+        <span>
+          STRUCTURES <strong>{progress.built}/{progress.total}</strong>
+        </span>
+        <span>
+          CREW{" "}
+          {quarters.map((q) => `${q.name.replace("DEMO Founder ", "").replace(" (fictional)", "")} ${q.percent}%`).join(" / ")}
+        </span>
+        <span>
+          LAUNCH <strong>{launch === "launched" ? "LAUNCHED" : launch === "ready" ? "READY" : "STANDBY"}</strong>
+        </span>
+      </div>
+      <p data-testid="colony-progress" className="stage-status">
+        Colony built: {progress.built} of {progress.total} structures ({progress.percent}%)
+        {" · "}Launch: {launch === "launched" ? "launched" : launch === "ready" ? "ready on the pad" : "not ready"}
+      </p>
+      {landing ? (
+        <p data-testid="colony-landing" data-selected={landing} role="status" className="landing-toast">
+          Landing on {landing} — landing pad building
+        </p>
+      ) : null}
     </section>
   );
 }

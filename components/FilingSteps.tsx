@@ -15,57 +15,52 @@ type Props = {
 // answer is never rendered as a card.
 export default function FilingSteps({ card, filingStepsNote, flagReason }: Props) {
   return (
-    <section aria-label="Filing steps and fees">
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-        <h2>Filing steps &amp; fees (grounded)</h2>
-        <span
-          style={{
-            border: "1px solid currentColor",
-            borderRadius: "999px",
-            padding: "0.1rem 0.6rem",
-            fontSize: "0.8rem",
-          }}
-        >
-          DEMO — grounded facts, not legal advice
-        </span>
+    <section aria-label="Filing steps and fees" className="sys-section">
+      <div className="section-head">
+        <h2>Filing steps &amp; fees</h2>
+        <span className="chip chip-demo">GROUNDED</span>
       </div>
+      <p className="section-lede">
+        Answers here come only from the filing-steps/fees knowledge pack — never from the host’s prose.
+      </p>
+
       {card ? (
-        <article
-          style={{
-            border: "1px solid currentColor",
-            borderRadius: "8px",
-            padding: "1rem",
-          }}
-        >
-          <p>
-            <strong>Question:</strong> {card.question}
+        <article className="data-slate">
+          <p className="slate-question">
+            <span>QUERY</span>
+            {card.question}
           </p>
           {card.facts.map((fact) => (
-            <div key={fact.factId} style={{ marginBottom: "0.75rem" }}>
-              <p>
-                <strong>{fact.topic}</strong> (<code>{fact.factId}</code>)
+            <div key={fact.factId} className="slate-fact">
+              <p className="slate-topic">
+                {fact.topic} <code>{fact.factId}</code>
               </p>
-              <p>{fact.text}</p>
+              <p className="slate-text">{fact.text}</p>
             </div>
           ))}
-          <p>
-            Grounding: pack <code>{card.packId}</code> ({card.packTitle})
+          <p className="grounding">
+            <span>GROUNDING</span>
+            pack <code>{card.packId}</code> · {card.packTitle}
           </p>
           {flagReason ? (
-            <p data-testid="filing-steps-flag">
+            <p className="flag-box" data-testid="filing-steps-flag">
               <strong>FLAGGED</strong> — verifier: {flagReason}. Shown as
               painted; never silently dropped or rewritten.
             </p>
           ) : null}
         </article>
       ) : (
-        <p>
-          Ask by voice, e.g. “What are the filing steps and fees?” The
-          answer appears here only when it is grounded in the
-          filing-steps/fees knowledge pack.
-        </p>
+        <div className="empty-slate">
+          <span className="empty-glyph" aria-hidden="true">
+            ▥
+          </span>
+          <p>
+            Ask by voice, e.g. “What are the filing steps and fees?” The answer appears
+            here only when it is grounded in the filing-steps/fees knowledge pack.
+          </p>
+        </div>
       )}
-      {filingStepsNote ? <p>{filingStepsNote}</p> : null}
+      {filingStepsNote ? <p className="hint-line">{filingStepsNote}</p> : null}
     </section>
   );
 }

@@ -11,8 +11,11 @@ import assert from "node:assert/strict";
 import {
   setFounderShare,
   normalizeShares,
+  resizeFounders,
   totalPercent,
   assertTotals100,
+  MAX_OWNERS,
+  MIN_OWNERS,
 } from "../lib/equity.ts";
 
 const founders = (a, b) => [
@@ -65,4 +68,45 @@ test("edge cases: single founder, zero split, clamping", () => {
   const clamped = setFounderShare(founders(60, 40), 0, 140);
   assert.equal(clamped[0].percent, 100);
   assert.equal(totalPercent(clamped), 100);
+});
+
+test("owner count runs 1–5 and every size still totals 100", () => {
+  const two = founders(60, 40);
+  const solo = resizeFounders(two, 1);
+  assert.equal(solo.length, 1);
+  assert.equal(solo[0].percent, 100);
+  assert.equal(totalPercent(solo), 100);
+
+  const three = resizeFounders(two, 3);
+  assert.equal(three.length, 3);
+  assert.equal(totalPercent(three), 100);
+  assert.ok(three.every((f) => f.percent > 0));
+  assert.equal(new Set(three.map((f) => f.name)).size, 3);
+
+  const five = resizeFounders(two, MAX_OWNERS);
+  assert.equal(five.length, 5);
+  assert.equal(totalPercent(five), 100);
+  assert.equal(new Set(five.map((f) => f.name)).size, 5);
+  assert.deepEqual(five.map((f) => f.percent), [20, 20, 20, 20, 20]);
+
+  // Same count is a no-op (same reference, no history entry).
+  assert.equal(resizeFounders(two, 2), two);
+  // Out-of-range requests clamp to 1..5.
+  assert.equal(resizeFounders(two, 0).length, MIN_OWNERS);
+  assert.equal(resizeFounders(two, 99).length, MAX_OWNERS);
+  assert.equal(totalPercent(resizeFounders(two, 99)), 100);
+});
+
+test("shrinking a team redistributes the removed owner's share", () => {
+  const three = [
+    { name: "DEMO Founder Nova (fictional)", percent: 70 },
+    { name: "DEMO Founder Vega (fictional)", percent: 20 },
+    { name: "DEMO Founder Lyra (fictional)", percent: 10 },
+  ];
+  const two = resizeFounders(three, 2);
+  assert.equal(two.length, 2);
+  assert.equal(totalPercent(two), 100);
+  assert.equal(two[0].percent + two[1].percent, 100);
+  assert.ok(two[0].percent > 70);
+  assert.ok(two[1].percent > 20);
 });

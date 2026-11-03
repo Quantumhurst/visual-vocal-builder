@@ -6,9 +6,10 @@ export type Beat = SharedState["currentBeat"];
 export function shortFounderNames(founders: readonly ({ name: string } | string)[] = []): string[] {
   return founders.map((f) => {
     const name = typeof f === "string" ? f : f.name;
-    if (name.includes("Orbit")) return "Orbit";
-    if (name.includes("Nova")) return "Nova";
-    return name;
+    return name
+      .replace(/^DEMO Founder /, "")
+      .replace(/^DEMO Owner /, "")
+      .replace(/ \(fictional\)$/, "");
   });
 }
 
@@ -16,7 +17,18 @@ export function getHostQuestion(beat: Beat, founderNames: string[] = ["Nova", "O
   const [a = "Nova", b = "Orbit"] = founderNames;
   switch (beat) {
     case "jurisdiction": return "Pick your home base — Mars, Europa, or Andromeda Galaxy?";
-    case "equity": return selected ? `${selected} locked in! Next up: how should ${a} and ${b} split the 100% equity?` : `Home base pending. Next up: how should ${a} and ${b} split the 100% equity?`;
+    case "equity": {
+      const names = founderNames.length ? founderNames : [a, b];
+      const who = names.length === 1
+        ? names[0]
+        : names.length === 2
+          ? `${names[0]} and ${names[1]}`
+          : `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+      const verb = names.length === 1 ? "hold" : "split";
+      return selected
+        ? `${selected} locked in! Next up: how should ${who} ${verb} the 100% equity?`
+        : `Home base pending. Next up: how should ${who} ${verb} the 100% equity?`;
+    }
     case "checklist": return "Equity set. Which filing step should we tackle first?";
     case "rollover": return "Checklist moving. Want the s.85 rollover fact card for this setup?";
     case "filingsteps": return "Rollover noted. Ready to walk the filing steps and fees in order?";
