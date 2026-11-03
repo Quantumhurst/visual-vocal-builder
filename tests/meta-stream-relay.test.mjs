@@ -90,13 +90,13 @@ test("meta-stream-relay: connects, handshakes, streams PCM, and relays partials 
   await new Promise((r) => setTimeout(r, 50));
   assert.ok(metaReceivedChunks >= 1, "Meta received audio frame");
 
-  // Simulate Meta sending partial transcript
+  // Simulate Meta sending speechStart, partial transcript, speechEnd, speechComplete
   const [metaSocket] = Array.from(metaServer.clients);
   assert.ok(metaSocket, "Meta socket connected");
+  metaSocket.send(JSON.stringify({ type: "speechStart", turnId: 7, audioProcessedMs: 100 }));
   metaSocket.send(JSON.stringify({ type: "transcript", transcript: "pick eur" }));
-
-  // Simulate Meta sending speechComplete
-  metaSocket.send(JSON.stringify({ type: "speechComplete", transcript: "pick Europa" }));
+  metaSocket.send(JSON.stringify({ type: "speechEnd", turnId: 7, audioProcessedMs: 1200 }));
+  metaSocket.send(JSON.stringify({ type: "speechComplete", turnId: 7, transcript: "pick Europa" }));
 
   await new Promise((resolve) => {
     const check = () => {
@@ -106,9 +106,14 @@ test("meta-stream-relay: connects, handshakes, streams PCM, and relays partials 
     check();
   });
 
+  const start = clientMessages.find((m) => m.type === "speechStart");
   const partial = clientMessages.find((m) => m.type === "transcript");
+  const end = clientMessages.find((m) => m.type === "speechEnd");
   const complete = clientMessages.find((m) => m.type === "speechComplete");
+  assert.equal(start?.turnId, 7);
   assert.equal(partial?.transcript, "pick eur");
+  assert.equal(end?.turnId, 7);
+  assert.equal(complete?.turnId, 7);
   assert.equal(complete?.transcript, "pick Europa");
 
   // Clean up

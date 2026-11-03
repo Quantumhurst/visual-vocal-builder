@@ -120,15 +120,41 @@ export function handleStreamClient(clientWs: WebSocket, options: StreamRelayOpti
           if (clientWs.readyState === WebSocket.OPEN) {
             clientWs.send(JSON.stringify({ type: "ready", sessionId: msg.sessionId }));
           }
+        } else if (type === "speechStart") {
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({
+              type: "speechStart",
+              turnId: msg.turnId,
+              audioProcessedMs: msg.audioProcessedMs,
+            }));
+          }
         } else if (type === "transcript") {
           // Forward CUMULATIVE partial transcript verbatim
           if (clientWs.readyState === WebSocket.OPEN) {
-            clientWs.send(JSON.stringify({ type: "transcript", transcript: msg.transcript }));
+            clientWs.send(JSON.stringify({
+              type: "transcript",
+              transcript: msg.transcript,
+              final: msg.final,
+              audioProcessedMs: msg.audioProcessedMs,
+            }));
+          }
+        } else if (type === "speechEnd") {
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({
+              type: "speechEnd",
+              turnId: msg.turnId,
+              audioProcessedMs: msg.audioProcessedMs,
+            }));
           }
         } else if (type === "speechComplete") {
           // Forward authoritative final transcript
           if (clientWs.readyState === WebSocket.OPEN) {
-            clientWs.send(JSON.stringify({ type: "speechComplete", transcript: msg.transcript, turnId: msg.turnId }));
+            clientWs.send(JSON.stringify({
+              type: "speechComplete",
+              transcript: msg.transcript,
+              turnId: msg.turnId,
+              audioProcessedMs: msg.audioProcessedMs,
+            }));
           }
         } else if (type === "error") {
           log("meta error", msg.message);

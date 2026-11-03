@@ -69,6 +69,9 @@ import { MODULES, flightPlan, flightStatusLabel, formatClock, moduleFor, shipLab
 import { spokenHostText } from "../lib/spoken-text";
 import { HOST_VOICE_STORAGE_KEY, defaultHostVoice, isSelectableVoice, pickVoice, prosodyFor, resolveVoiceSelection } from "../lib/voice-select";
 import { summarizeTimings, type TurnTimings } from "../lib/turn-timing";
+import { HybridEndpointer } from "../lib/voice/hybrid-endpointer";
+import { speechQueue } from "../lib/voice/surviving-speech-queue";
+import { echoFilter } from "../lib/voice/echo-filter";
 
 
 
@@ -203,6 +206,7 @@ function Canvas() {
   // True while the host voice is actually speaking. The mic stays closed
   // during this window, and the deck says so instead of claiming LIVE.
   const [hostSpeaking, setHostSpeaking] = useState(false);
+  const hostSpeakingRef = useRef(false);
   // Continuous conversation (OpenClaw pattern): talk, agent answers
   // out loud, mic re-opens by itself. On by default; a manual Stop
   // ends it. The full control set lives in a pop-out, not the bar.
@@ -241,6 +245,16 @@ function Canvas() {
     }
   }
 
+  const endpointerRef = useRef<HybridEndpointer | null>(null);
+  const equityConfirmRef = useRef(equityConfirm);
+  useEffect(() => {
+    equityConfirmRef.current = equityConfirm;
+  }, [equityConfirm]);
+  const namePromptActiveRef = useRef(namePromptActive);
+  useEffect(() => {
+    namePromptActiveRef.current = namePromptActive;
+  }, [namePromptActive]);
+
   function logToolCall() {
     stampTiming("firstToolCall");
   }
@@ -248,7 +262,10 @@ function Canvas() {
   // The conversation loop re-arms the mic only once the host has
   // finished speaking, so it never cancels the reply mid-flight.
   function isSpeechActive(): boolean {
-    return typeof window !== "undefined" && Boolean(window.speechSynthesis?.speaking);
+    return (
+      typeof window !== "undefined" &&
+      Boolean(window.speechSynthesis?.speaking || speechQueue.isSpeaking() || hostSpeakingRef.current)
+    );
   }
   const [celebrated, setCelebrated] = useState("");
   const sfxCtxRef = useRef<AudioContext | null>(null);
@@ -402,12 +419,10 @@ function Canvas() {
     clearSpeechWatchdog();
     clearRearmTimer();
     utteranceRef.current = null;
+    hostSpeakingRef.current = false;
     setHostSpeaking(false);
-    try {
-      window.speechSynthesis?.cancel();
-    } catch {
-      // ignore
-    }
+    echoFilter.clear();
+    speechQueue.hardFlushOnBargeIn();
   }
 
   // On-end re-arm (primary path; the poll below is fallback only). Wait a
@@ -419,12 +434,14 @@ function Canvas() {
     if (!convoRef.current) return;
     if (recordingRef.current) return;
     if (busyRef.current || turnErrorRef.current) return;
+    if (hostSpeakingRef.current || speechQueue.isSpeaking()) return;
     clearRearmTimer();
     rearmTimerRef.current = setTimeout(() => {
       rearmTimerRef.current = null;
       if (!convoRef.current) return;
       if (recordingRef.current) return;
       if (busyRef.current || turnErrorRef.current) return;
+      if (hostSpeakingRef.current || speechQueue.isSpeaking()) return;
       stampTiming("rearm");
       console.info(`[vvb-timing] rearm ${summarizeTimings(turnTimingRef.current)}`);
       void startRecording();
@@ -438,6 +455,7 @@ function Canvas() {
     if (typeof window === "undefined" || !window.speechSynthesis) return false;
     const spoken = spokenHostText(text);
     if (!spoken) return false;
+    echoFilter.recordHostSpeech(spoken);
     if (typeof window !== "undefined") {
       const win = window as unknown as { __vvbLastSpoken?: string; __vvbAllSpoken?: string[] };
       win.__vvbLastSpoken = spoken;
@@ -448,64 +466,45 @@ function Canvas() {
       refreshCachedVoice();
       const voice = cachedVoiceRef.current ?? pickVoice(window.speechSynthesis.getVoices());
       const { rate, pitch } = prosodyFor(spoken);
-      const utter = new SpeechSynthesisUtterance(spoken);
-      if (voice) utter.voice = voice;
-      utter.rate = rate;
-      utter.pitch = pitch;
       clearSpeechWatchdog();
       utterCancelledRef.current = false;
-      utteranceRef.current = utter;
+      hostSpeakingRef.current = true;
       setHostSpeaking(true);
+
       const finishSpeech = () => {
-        // A cancelled/replaced utterance can fire onend after a new one
-        // has started; it must never tear down the current speech state.
-        if (utteranceRef.current !== utter) return;
         clearSpeechWatchdog();
         utteranceRef.current = null;
+        hostSpeakingRef.current = false;
         setHostSpeaking(false);
+        echoFilter.scheduleClear(1200);
         if (utterCancelledRef.current) return;
-        // First-Speak owns its post-speech action (open the mic after the
-        // greeting). Run it before requestRearm so startRecording can
-        // cancel/close cleanly without a second auto-rearm racing it.
         onDone?.();
         requestRearm();
       };
-      utter.onend = () => {
+
+      const utter = speechQueue.enqueue(spoken, "CONTENT", rate, () => {
         stampTiming("speechEnd");
         finishSpeech();
-      };
-      utter.onerror = () => {
-        if (utteranceRef.current === utter) {
-          setNotice("Host voice could not play — open Controls, choose Auto, and press PREVIEW.");
-        }
-        finishSpeech();
-      };
-      // Chrome can park speechSynthesis in a paused state after a cancel
-      // or a page transition; resume before every utterance. Do not call
-      // cancel() immediately before speak() — Chrome can drop that new
-      // utterance, which looks exactly like "no voice".
-      try {
-        window.speechSynthesis.resume();
-      } catch {
-        // ignore
+      });
+
+      if (utter) {
+        if (voice) utter.voice = voice;
+        utter.pitch = pitch;
+        utteranceRef.current = utter;
       }
-      window.speechSynthesis.speak(utter);
-      // Chrome can lose onend (especially if the utterance is GC'd). Never
-      // leave the conversation saying LIVE with the mic closed: after a
-      // generous estimate, cut the line and open the mic.
+
       speechWatchdogRef.current = setTimeout(() => {
         speechWatchdogRef.current = null;
         if (utteranceRef.current !== utter) return;
-        try {
-          window.speechSynthesis?.cancel();
-        } catch {
-          // ignore
-        }
+        speechQueue.hardFlushOnBargeIn();
         finishSpeech();
       }, Math.min(9000, 2000 + spoken.length * 55));
-      return true;
+
+      return utter !== null;
     } catch {
+      hostSpeakingRef.current = false;
       setHostSpeaking(false);
+      echoFilter.clear();
       return false;
     }
   }
@@ -653,7 +652,7 @@ function Canvas() {
   // The state is already normalized; this only acknowledges it and then
   // advances the required walk.
   function confirmEquitySelection() {
-    if (!equityConfirm) return;
+    if (!equityConfirm && !equityConfirmRef.current) return;
     const state = withDefaults(stateRef.current);
     const next = beatProgress(state).nextBeat;
     const owners = state.founders.length;
@@ -673,6 +672,47 @@ function Canvas() {
       speakNative(line);
     }
   }
+
+  useEffect(() => {
+    endpointerRef.current = new HybridEndpointer(
+      () => ({
+        equityConfirm: equityConfirmRef.current,
+        namePromptActive: namePromptActiveRef.current,
+      }),
+      {
+        stabilityMs: 250,
+        silenceMs: 350,
+        rmsThreshold: 0.015,
+        onFastCommit: (turnId, cmd, rawText) => {
+          if (cmd.kind === "CONFIRM_EQUITY") {
+            clearConfirmationTimer();
+            previewKeyRef.current = null;
+            committedKeyRef.current = null;
+            pendingTurnRef.current = null;
+            setLivePreview(null);
+            setLiveTranscript(rawText);
+            setLastTranscript(rawText);
+            setState((prev) => ({ ...withDefaults(prev), transcript: rawText }));
+            setAck("");
+            confirmEquitySelection();
+          } else if (cmd.kind === "CHANGE_EQUITY") {
+            clearConfirmationTimer();
+            answerLocally(
+              "No problem — change the owner count or drag a slider, then confirm.",
+              rawText,
+              { module: "equity", stageTab: "colony", cue: "adjust" },
+            );
+          } else if (cmd.kind === "APPROVE_NAME") {
+            void sendToAgent(rawText, true);
+          }
+        },
+        onModelCommit: (turnId, finalTranscript) => {
+          onStreamingSpeechComplete(finalTranscript, turnId);
+        },
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Grounding for the agent: fictional company/places, current equity
   // and checklist state, and the s.85 pack's fact ids + topics. The
@@ -771,13 +811,17 @@ function Canvas() {
       intentMatchedRef.current = true;
       setLivePreview({ key: "confirm-equity", label: "Confirming equity split…", status: "live" });
       // Fast endpointing: short affirmative answers ("yes", "confirm", "split")
-      // should finish and advance immediately in ~450ms (or 150ms on final), not wait 16+ seconds.
+      // should finish and advance immediately in ~350ms (or 150ms on final), not wait 16+ seconds.
       clearConfirmationTimer();
       confirmationTimerRef.current = setTimeout(() => {
         if (recordingRef.current && !finishingRef.current) {
-          void finishRecording();
+          if (streamingReadyRef.current && endpointerRef.current) {
+            endpointerRef.current.forceFastCommitNow(trimmed);
+          } else {
+            void finishRecording();
+          }
         }
-      }, isFinal ? 150 : 450);
+      }, isFinal ? 150 : 350);
       return;
     }
 
@@ -787,9 +831,13 @@ function Canvas() {
       clearConfirmationTimer();
       confirmationTimerRef.current = setTimeout(() => {
         if (recordingRef.current && !finishingRef.current) {
-          void finishRecording();
+          if (streamingReadyRef.current && endpointerRef.current) {
+            endpointerRef.current.forceFastCommitNow(trimmed);
+          } else {
+            void finishRecording();
+          }
         }
-      }, isFinal ? 150 : 450);
+      }, isFinal ? 150 : 350);
       return;
     }
     clearConfirmationTimer();
@@ -1373,11 +1421,10 @@ function Canvas() {
               : "On it.";
       speakNative(ack);
     }
-    // Paint instantly, confirm asynchronously. For a typed command there
-    // is no interim preview, so reset the key and apply. For a spoken
-    // command, the interim already applied this key: do NOT apply it
-    // again (especially checklist ticks, which are not idempotent).
-    if (!fromVoice) previewKeyRef.current = null;
+    // Paint instantly, confirm asynchronously. Authoritative commit for this turn:
+    // reset keys so state appliers (e.g. jurisdiction pick) always execute.
+    previewKeyRef.current = null;
+    committedKeyRef.current = null;
     const applied = applyLiveIntent(trimmed, "confirming");
     setLiveTranscript(trimmed);
     setLastTranscript(trimmed);
@@ -1466,14 +1513,40 @@ function Canvas() {
           const raw = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data as ArrayBuffer);
           const msg = JSON.parse(raw) as Record<string, unknown>;
           const type = msg.type as string | undefined;
-          if (type === "transcript") {
-            const transcript = msg.transcript as string | undefined;
-            if (transcript) {
-              handleLiveTranscript(transcript, false);
+
+          if (type === "speechStart") {
+            const turnId = msg.turnId as number | undefined;
+            if (turnId !== undefined) {
+              activeTurnIdRef.current = turnId;
+              endpointerRef.current?.setActiveTurnId(turnId);
             }
+            endpointerRef.current?.handleMetaEvent(msg);
+          } else if (type === "transcript") {
+            const transcript = msg.transcript as string | undefined;
+            const turnId = (msg.turnId as number | undefined) ?? activeTurnIdRef.current;
+            if (transcript) {
+              if (echoFilter.checkAndTombstone(turnId, transcript)) {
+                return;
+              }
+              handleLiveTranscript(transcript, false);
+              endpointerRef.current?.onTranscript(transcript);
+            }
+            endpointerRef.current?.handleMetaEvent(msg);
+          } else if (type === "speechEnd") {
+            const turnId = (msg.turnId as number | undefined) ?? activeTurnIdRef.current;
+            if (echoFilter.isTurnIgnored(turnId)) return;
+            endpointerRef.current?.handleMetaEvent(msg);
           } else if (type === "speechComplete") {
             const transcript = (msg.transcript as string | undefined) ?? "";
-            onStreamingSpeechComplete(transcript, activeTurnIdRef.current);
+            const turnId = (msg.turnId as number | undefined) ?? activeTurnIdRef.current;
+            if (echoFilter.checkAndTombstone(turnId, transcript)) {
+              return;
+            }
+            if (endpointerRef.current) {
+              endpointerRef.current.handleMetaEvent(msg);
+            } else {
+              onStreamingSpeechComplete(transcript, turnId);
+            }
           } else if (type === "ready") {
             streamingReadyRef.current = true;
           } else if (type === "error") {
@@ -1500,8 +1573,9 @@ function Canvas() {
   }
 
   function onStreamingSpeechComplete(transcript: string, turnId: number) {
-    if (turnId !== activeTurnIdRef.current) return;
-    if (!recordingRef.current && !finishingRef.current) return;
+    if (endpointerRef.current?.isFastCommitted(turnId)) {
+      return;
+    }
     finishingRef.current = true;
     recordingRef.current = false;
     isTurnListeningRef.current = false;
@@ -1613,6 +1687,7 @@ function Canvas() {
       rec.interimResults = true;
       rec.continuous = true;
       rec.onresult = (event: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal?: boolean }> }) => {
+        if (hostSpeakingRef.current || speechQueue.isSpeaking()) return;
         let text = "";
         let isFinal = false;
         for (let i = 0; i < event.results.length; i++) {
@@ -1627,6 +1702,11 @@ function Canvas() {
       };
       rec.onend = () => {
         recognitionRef.current = null;
+        if (streamingReadyRef.current) {
+          // Streaming ASR is active: Meta endpointing and HybridEndpointer are the authority.
+          // Web Speech must never prematurely tear down the active streaming session.
+          return;
+        }
         if (
           recordingRef.current &&
           !finishingRef.current &&
@@ -1723,18 +1803,27 @@ function Canvas() {
     clearConfirmationTimer();
     if (finishingRef.current) return;
     finishingRef.current = true;
+
+    // If streaming ASR is active, check if there's a pending fast-commit to fire
+    if (streamingReadyRef.current) {
+      if (endpointerRef.current?.forceFastCommitNow(liveTranscriptRef.current)) {
+        finishingRef.current = false;
+        return;
+      }
+      recordingRef.current = false;
+      isTurnListeningRef.current = false;
+      stopWebSpeech();
+      setMicLevel(0);
+      setRecording(false);
+      finishingRef.current = false;
+      return;
+    }
+
     recordingRef.current = false;
     isTurnListeningRef.current = false;
     stopWebSpeech();
     setMicLevel(0);
     setRecording(false);
-
-    // If streaming ASR is active, speechComplete from Meta endpointing is the authority
-    if (streamingReadyRef.current) {
-      finishingRef.current = false;
-      return;
-    }
-
     const ctx = audioContextRef.current;
     const inputRate = ctx?.sampleRate ?? 0;
     const chunks = chunksRef.current;
@@ -1885,6 +1974,8 @@ function Canvas() {
       const block = event.data as Float32Array;
       if (!block || block.length === 0) return;
       if (!isTurnListeningRef.current) return;
+      // Mic gated during host playback to eliminate acoustic self-echo
+      if (hostSpeakingRef.current || speechQueue.isSpeaking()) return;
 
       chunksRef.current.push(block);
       const rate = audioContextRef.current?.sampleRate ?? 0;
@@ -1912,6 +2003,7 @@ function Canvas() {
       levelRef.current = level;
       peakLevelRef.current = Math.max(peakLevelRef.current, level);
       const now = performance.now();
+      endpointerRef.current?.onAudioRms(level, now);
       const listened = now - (turnTimingRef.current.micStart ?? now);
 
       // Guard 1: No speech detected after 8s -> close quietly, say "Didn't hear anything — say it again", re-arm once
@@ -1961,6 +2053,7 @@ function Canvas() {
     clearConfirmationTimer();
     liveTranscriptRef.current = "";
     activeTurnIdRef.current += 1;
+    endpointerRef.current?.setActiveTurnId(activeTurnIdRef.current);
     recordingRef.current = true;
     isTurnListeningRef.current = true;
     turnTimingRef.current = { micStart: performance.now() };
