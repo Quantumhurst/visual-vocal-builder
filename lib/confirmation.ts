@@ -5,7 +5,7 @@
 // turn; a "change"/"no" keeps the card open so the user can adjust.
 
 const CONFIRM =
-  /^(?:yes|yeah|yep|sure|ok|okay|confirm|confirmed|correct|looks good|that'?s right|that is right|lock it in|do it|go ahead)(?:,?\s*please)?[.!?]*$/i;
+  /^(?:(?:yes|yeah|yep|sure|ok|okay|correct|looks good|that'?s right|that is right|lock it in|do it|go ahead)(?:,?\s+confirm)?|confirm(?:ed)?(?:\s+(?:the\s+|this\s+)?split)?)(?:,?\s*please)?[.!?]*$/i;
 
 const CHANGE =
   /^(?:no|nope|not right|not yet|change|edit|adjust|go back|wait|hold on)(?:\s+(?:it|that|this|the split))?[.!?]*$/i;

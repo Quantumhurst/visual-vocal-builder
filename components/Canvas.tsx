@@ -235,6 +235,7 @@ function Canvas() {
   // true and the mic closed forever. The watchdog is the last resort.
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const speechWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rearmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const busyRef = useRef(false);
   const turnErrorRef = useRef(false);
   // Single-slot pending turn: a command sent while the agent is busy is
@@ -355,9 +356,17 @@ function Canvas() {
     }
   }
 
+  function clearRearmTimer() {
+    if (rearmTimerRef.current !== null) {
+      clearTimeout(rearmTimerRef.current);
+      rearmTimerRef.current = null;
+    }
+  }
+
   function cancelSpeech() {
     utterCancelledRef.current = true;
     clearSpeechWatchdog();
+    clearRearmTimer();
     utteranceRef.current = null;
     setHostSpeaking(false);
     try {
@@ -367,16 +376,25 @@ function Canvas() {
     }
   }
 
-  // On-end re-arm (primary path; the poll below is fallback only). A
-  // cancelled utterance never re-arms: cancelSpeech always runs first
-  // and marks it, so only natural speech end reaches startRecording.
+  // On-end re-arm (primary path; the poll below is fallback only). Wait a
+  // short beat after the host stops before opening the mic: Chrome can
+  // still be draining the last words, and hearing its own confirmation
+  // line caused the 4-owner confirm loop. A cancelled utterance never
+  // re-arms: cancelSpeech always runs first and marks it.
   function requestRearm() {
     if (!convoRef.current) return;
     if (recordingRef.current) return;
     if (busyRef.current || turnErrorRef.current) return;
-    stampTiming("rearm");
-    console.info(`[vvb-timing] rearm ${summarizeTimings(turnTimingRef.current)}`);
-    void startRecording();
+    clearRearmTimer();
+    rearmTimerRef.current = setTimeout(() => {
+      rearmTimerRef.current = null;
+      if (!convoRef.current) return;
+      if (recordingRef.current) return;
+      if (busyRef.current || turnErrorRef.current) return;
+      stampTiming("rearm");
+      console.info(`[vvb-timing] rearm ${summarizeTimings(turnTimingRef.current)}`);
+      void startRecording();
+    }, 420);
   }
 
   // Voice-out is the curated system voice only: pick the best English
@@ -1028,12 +1046,13 @@ function Canvas() {
         }
         return;
       }
-      const canAdjust =
-        pendingIntent?.kind === "owner-count" || pendingIntent?.kind === "equity";
-      const canEscape =
-        pendingIntent?.kind === "undo" || pendingIntent?.kind === "start-over";
-      if (!canAdjust && !canEscape) {
-        const reply = "Confirm the split first — say “confirm”, or choose a different owner count.";
+      const stateNow = withDefaults(stateRef.current);
+      const sameOwnerCount =
+        pendingIntent?.kind === "owner-count" &&
+        pendingIntent.count === stateNow.founders.length;
+      if (sameOwnerCount) {
+        // Repeating the same owner count is a confirmation, not a new
+        // split. This breaks the "4 owners → confirm" echo loop.
         previewKeyRef.current = null;
         pendingTurnRef.current = null;
         setLivePreview(null);
@@ -1041,13 +1060,18 @@ function Canvas() {
         setLastTranscript(trimmed);
         setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
         setAck("");
-        setLocalHost(reply);
-        playCue("adjust");
-        if (voiceOn && unlockedRef.current) {
-          lastSpokenRef.current = spokenHostText(reply);
-          speakNative(reply);
-        }
+        confirmEquitySelection();
         return;
+      }
+      const canAdjust =
+        pendingIntent?.kind === "owner-count" || pendingIntent?.kind === "equity";
+      const canEscape =
+        pendingIntent?.kind === "undo" || pendingIntent?.kind === "start-over";
+      if (!canAdjust && !canEscape) {
+        // The split is already applied; the next command is an implicit
+        // confirmation. Do not add another prompt or block the walk.
+        setEquityConfirm(false);
+        setLocalHost("");
       }
     }
 
@@ -1144,8 +1168,9 @@ function Canvas() {
       setAck("");
       if (line) {
         setLocalHost(line);
-        if (voiceOn && unlockedRef.current) {
-          lastSpokenRef.current = spokenHostText(line);
+        const spoken = spokenHostText(line);
+        if (voiceOn && unlockedRef.current && spoken !== lastSpokenRef.current) {
+          lastSpokenRef.current = spoken;
           speakNative(line);
         }
       }
@@ -1277,6 +1302,7 @@ function Canvas() {
       cleanupAudio();
       stopWebSpeech();
       clearSpeechWatchdog();
+      clearRearmTimer();
       utteranceRef.current = null;
       if (travelFrameRef.current !== null) cancelAnimationFrame(travelFrameRef.current);
       try {
@@ -1429,6 +1455,7 @@ function Canvas() {
 
   async function startRecording() {
     if (recordingRef.current) return;
+    clearRearmTimer();
     recordingRef.current = true;
     turnTimingRef.current = { micStart: performance.now() };
     // Barge-in: the host stops talking the moment the user speaks.
