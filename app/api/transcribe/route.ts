@@ -64,13 +64,23 @@ function transcribePcm(pcm: Buffer, apiKey: string): Promise<string> {
       reject(error);
     };
 
-    socket.on("open", () => {
+    const sendHandshake = () => {
       // First frame: handshake + auth. The header is ignored by this
       // endpoint, so the credential goes here and nowhere else. The
       // handshake also carries ASR keyword/language biasing (it cannot
       // change mid-session) — see lib/meta-models.ts.
-      socket.send(JSON.stringify(buildAsrHandshake(apiKey)));
-    });
+      try {
+        socket.send(JSON.stringify(buildAsrHandshake(apiKey)));
+      } catch (err) {
+        fail(err instanceof Error ? err : new Error(String(err)));
+      }
+    };
+
+    if (socket.readyState === WebSocket.OPEN) {
+      sendHandshake();
+    } else {
+      socket.on("open", sendHandshake);
+    }
 
     let handshakeDone = false;
     socket.on("message", async (data: WebSocket.RawData) => {
