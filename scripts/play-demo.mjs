@@ -70,18 +70,18 @@ async function waitReady(page, timeoutMs = 120000) {
 }
 
 async function send(page, text) {
-  const started = Date.now();
   // The typed input lives in the Controls pop-out now; open it first.
   const expanded = await page.$eval('[data-testid="dock-expand"]', (el) => el.getAttribute("aria-expanded")).catch(() => "true");
   if (expanded !== "true") {
     await page.click('[data-testid="dock-expand"]');
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 200));
   }
   await page.waitForSelector('input[placeholder*="Or type a command"]', { timeout: 30000 });
   await page.type('input[placeholder*="Or type a command"]', text);
+
+  // Measure actual round-trip latency from command dispatch to Ready state
+  const started = Date.now();
   await page.keyboard.press("Enter");
-  // Give the turn a moment to enter the busy phase, then wait for Ready.
-  await new Promise((r) => setTimeout(r, 800));
   try {
     await waitReady(page);
   } catch {

@@ -65,11 +65,18 @@ Day 3 catalog + knowledge extension (two components, both fresh in-window): a gr
 - CopilotKit v2 migration.
 - Shared rate-limit store (e.g. Upstash/Redis) instead of per-instance in-memory counts.
 
-## Provenance
+## Provenance & Hackathon Disclosure
 
-Built from October 27, 2026, during the hackathon window. It does not include or call any pre-existing project code or private service.
-
-Open-source libraries, Next.js, CopilotKit, PixiJS, and the rest in THIRD-PARTY-NOTICES.md, are used as libraries. This work was built with Muse agent assistance, Nuntuk, within the same window, under my direction.
+### Meta Global AI Developer Hackathon
+- **Problem Statement:** Build for Your World / Push the Frontier — Voice-driven spatial interface transforming complex corporate planning into a hands-free, visual, interactive canvas.
+- **Meta Models Incorporated:**
+  - **Muse Voice Transcribe (`muse-voice-transcribe-1.0`)**: Realtime streaming speech-to-text with WebSocket chunk pacing, keyword biasing (fictional jurisdictions, founder names, legal concepts), and English language biasing via Meta Model API.
+  - **Muse Spark (`muse-spark-1.3`)**: Cognitive agent brain driving multi-turn tool calling, invariant validation, and co-agent state synchronization via Meta Model API.
+- **Code & Planning Disclosure:**
+  - Written planning and high-level architectural design were developed prior to the event; zero code, datasets, or UI components were carried over.
+  - All application code, styles, tests, and documentation in this repository were authored from scratch during the hackathon window starting on October 27, 2026.
+  - Does not call or rely on any pre-existing private services.
+  - Built with Muse agent assistance (Nuntuk) under direct developer guidance.
 
 ## Credits
 
