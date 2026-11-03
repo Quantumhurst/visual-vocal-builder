@@ -16,7 +16,7 @@
 // voice list without touching SSR or hydration.
 
 import { useEffect, useState } from "react";
-import { HOST_VOICE_STORAGE_KEY, selectableVoices } from "../lib/voice-select";
+import { HOST_VOICE_STORAGE_KEY, defaultHostVoice, resolveVoiceSelection, selectableVoices } from "../lib/voice-select";
 
 type Props = {
   voiceOn: boolean;
@@ -27,7 +27,15 @@ type Props = {
 function readStoredChoice(): string {
   if (typeof window === "undefined") return "auto";
   try {
-    return window.localStorage.getItem(HOST_VOICE_STORAGE_KEY) ?? "auto";
+    const stored = window.localStorage.getItem(HOST_VOICE_STORAGE_KEY);
+    const voices = window.speechSynthesis?.getVoices() ?? [];
+    if (stored === "auto") return "auto";
+    if (stored) {
+      const chosen = resolveVoiceSelection(voices, stored);
+      if (chosen?.voiceURI === stored) return stored;
+    }
+    // Fresh session (or a stale saved voice): Karen is the default.
+    return defaultHostVoice(voices)?.voiceURI ?? "auto";
   } catch {
     return "auto";
   }
@@ -45,7 +53,21 @@ export default function HostVoicePicker({ voiceOn, onSelect, onPreview }: Props)
   useEffect(() => {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
     const synth = window.speechSynthesis;
-    const refresh = () => setVoices(selectableVoices(synth.getVoices()));
+    const refresh = () => {
+      const next = selectableVoices(synth.getVoices());
+      setVoices(next);
+      // If the picker opened before voices loaded, move the initial Auto
+      // placeholder to Karen, but keep an explicit saved Auto choice.
+      setChoice((previous) => {
+        if (previous !== "auto") return previous;
+        try {
+          if (window.localStorage.getItem(HOST_VOICE_STORAGE_KEY) === "auto") return "auto";
+        } catch {
+          // Storage is optional.
+        }
+        return defaultHostVoice(next)?.voiceURI ?? "auto";
+      });
+    };
     // Some browsers publish the list after first paint; the delayed
     // refresh covers a missed voiceschanged event without a sync setState
     // in the effect body.

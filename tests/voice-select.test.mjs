@@ -7,6 +7,7 @@ import {
   prosodyFor,
   resolveVoiceSelection,
   selectableVoices,
+  defaultHostVoice,
 } from "../lib/voice-select.ts";
 
 const V = (name, lang = "en-US", extra = {}) => ({ name, lang, ...extra });
@@ -93,4 +94,16 @@ test("auto prefers a reliable local voice over a higher-scoring network voice", 
     V("Samantha"),
   ];
   assert.equal(pickVoice(voices)?.name, "Samantha");
+});
+
+test("Karen is the default host voice when available", () => {
+  const voices = [
+    V("Samantha", "en-US", { voiceURI: "samantha" }),
+    V("Karen", "en-AU", { voiceURI: "karen" }),
+  ];
+  assert.equal(defaultHostVoice(voices)?.name, "Karen");
+  assert.equal(defaultHostVoice([V("Samantha")]), null);
+  // A network-only Karen is not the default; a local Karen is.
+  assert.equal(defaultHostVoice([V("Karen", "en-AU", { localService: false })]), null);
+  assert.equal(defaultHostVoice([V("Karen", "en-AU", { localService: true })])?.name, "Karen");
 });

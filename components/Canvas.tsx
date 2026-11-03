@@ -55,7 +55,7 @@ import { missionFor } from "../lib/mission";
 import { colonyPalette, colonyProgress } from "../lib/colony";
 import { MODULES, flightPlan, flightStatusLabel, formatClock, moduleFor, shipLabel } from "../lib/game-ui";
 import { spokenHostText } from "../lib/spoken-text";
-import { HOST_VOICE_STORAGE_KEY, pickVoice, prosodyFor, resolveVoiceSelection } from "../lib/voice-select";
+import { HOST_VOICE_STORAGE_KEY, defaultHostVoice, isSelectableVoice, pickVoice, prosodyFor, resolveVoiceSelection } from "../lib/voice-select";
 import { summarizeTimings, type TurnTimings } from "../lib/turn-timing";
 
 
@@ -257,16 +257,19 @@ function Canvas() {
   function readStoredVoiceUri(): string | null {
     try {
       const stored = window.localStorage.getItem(HOST_VOICE_STORAGE_KEY);
-      if (!stored || stored === "auto") return null;
       const voices = window.speechSynthesis?.getVoices() ?? [];
-      // Before the browser publishes voices, keep the saved URI; once it
-      // has, reject a stale or novelty voice and reset to Auto so the
-      // host cannot be left silent by an unusable saved voice.
+      // No saved choice: land on Karen when the machine exposes her.
+      if (!stored) {
+        return defaultHostVoice(voices)?.voiceURI ?? null;
+      }
+      if (stored === "auto") return null;
       if (voices.length === 0) return stored;
       const chosen = resolveVoiceSelection(voices, stored);
       if (chosen?.voiceURI === stored) return stored;
-      window.localStorage.setItem(HOST_VOICE_STORAGE_KEY, "auto");
-      return null;
+      // A stale or unreliable saved voice is removed so the next read
+      // applies the Karen default rather than leaving the host silent.
+      window.localStorage.removeItem(HOST_VOICE_STORAGE_KEY);
+      return defaultHostVoice(voices)?.voiceURI ?? null;
     } catch {
       return null;
     }
@@ -275,19 +278,20 @@ function Canvas() {
   function refreshCachedVoice() {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
     const voices = window.speechSynthesis.getVoices();
-    const selected = chosenVoiceUriRef.current ?? readStoredVoiceUri();
-    const picked = resolveVoiceSelection(voices, selected);
-    if (picked) cachedVoiceRef.current = picked;
-    // A previously saved novelty voice may still sit in the ref. Clear it
-    // rather than pinning an unusable voice.
-    if (chosenVoiceUriRef.current && picked?.voiceURI !== chosenVoiceUriRef.current) {
+    let selected = chosenVoiceUriRef.current;
+    // Sanitize a stale ref only after the browser has published voices;
+    // before that, an empty list would look like every voice vanished.
+    if (selected && voices.length > 0 && !voices.some((voice) => voice.voiceURI === selected && isSelectableVoice(voice))) {
       chosenVoiceUriRef.current = null;
       try {
-        window.localStorage.setItem(HOST_VOICE_STORAGE_KEY, "auto");
+        window.localStorage.removeItem(HOST_VOICE_STORAGE_KEY);
       } catch {
         // Storage is optional.
       }
+      selected = null;
     }
+    const picked = resolveVoiceSelection(voices, selected ?? readStoredVoiceUri());
+    if (picked) cachedVoiceRef.current = picked;
   }
 
   function selectHostVoice(uri: string) {

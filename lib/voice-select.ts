@@ -60,6 +60,18 @@ export function selectableVoices<T extends VoiceLike>(voices: readonly T[]): T[]
   return rankVoices(voices).filter(isSelectableVoice);
 }
 
+// Product default: Karen when the machine/OS exposes her. Auto remains
+// the explicit "best available" option; a fresh session with no saved
+// choice should land on Karen instead of Samantha.
+export const DEFAULT_HOST_VOICE_NAME = "Karen";
+
+export function defaultHostVoice<T extends VoiceLike & { voiceURI?: string }>(
+  voices: readonly T[],
+): T | null {
+  const target = new RegExp(`^${DEFAULT_HOST_VOICE_NAME}\\b`, "i");
+  return selectableVoices(voices).find((voice) => target.test(voice.name)) ?? null;
+}
+
 // The host-voice picker stores a voiceURI. Resolve it against the live
 // voice list; if the saved voice is gone (OS update, other browser), or
 // it is a novelty/low-confidence/network voice that cannot speak
