@@ -4,7 +4,9 @@
 //
 // The host speaks through the browser/OS `speechSynthesis` voice. There
 // is no voice model download and no network voice call; this picker lets
-// the user choose among the English system voices the browser exposes.
+// the user choose among the curated English system voices the browser
+// exposes. Novelty/character voices are hidden: they exist in the list but
+// several are silent or unusable in Chrome, which looks like lost voice.
 // The choice is stored by voiceURI (not index) so it survives voice-list
 // reordering and OS updates. A stale URI falls back to the curated auto
 // pick in lib/voice-select.ts.
@@ -14,7 +16,7 @@
 // voice list without touching SSR or hydration.
 
 import { useEffect, useState } from "react";
-import { HOST_VOICE_STORAGE_KEY, rankVoices } from "../lib/voice-select";
+import { HOST_VOICE_STORAGE_KEY, selectableVoices } from "../lib/voice-select";
 
 type Props = {
   voiceOn: boolean;
@@ -33,7 +35,7 @@ function readStoredChoice(): string {
 
 function readVoices(): SpeechSynthesisVoice[] {
   if (typeof window === "undefined" || !window.speechSynthesis) return [];
-  return rankVoices(window.speechSynthesis.getVoices());
+  return selectableVoices(window.speechSynthesis.getVoices());
 }
 
 export default function HostVoicePicker({ voiceOn, onSelect, onPreview }: Props) {
@@ -43,7 +45,7 @@ export default function HostVoicePicker({ voiceOn, onSelect, onPreview }: Props)
   useEffect(() => {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
     const synth = window.speechSynthesis;
-    const refresh = () => setVoices(rankVoices(synth.getVoices()));
+    const refresh = () => setVoices(selectableVoices(synth.getVoices()));
     // Some browsers publish the list after first paint; the delayed
     // refresh covers a missed voiceschanged event without a sync setState
     // in the effect body.
@@ -96,7 +98,7 @@ export default function HostVoicePicker({ voiceOn, onSelect, onPreview }: Props)
           PREVIEW
         </button>
       </div>
-      <p className="micro">Browser/OS system voice — no voice model download.</p>
+      <p className="micro">Curated browser/OS system voices; novelty voices are hidden. No voice model download.</p>
     </div>
   );
 }

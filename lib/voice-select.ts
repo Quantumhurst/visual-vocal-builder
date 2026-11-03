@@ -9,7 +9,7 @@ export type VoiceLike = { name: string; lang: string; localService?: boolean; de
 // localStorage key shared by the host-voice picker and the speech path.
 export const HOST_VOICE_STORAGE_KEY = "vvb.host-voice";
 
-const NOVELTY = /\b(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Deranged|Fred|Good News|Hysterical|Jester|Pipe|Superstar|Trinoids|Whisper|Zarvox|Organ|Wobble)\b/i;
+const NOVELTY = /\b(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Deranged|Eddy|Flo|Fred|Good News|Grandma|Grandpa|Hysterical|Jester|Junior|Kathy|Organ|Pipe|Ralph|Reed|Rocko|Sandy|Shelley|Superstar|Trinoids|Whisper|Wobble|Zarvox)\b/i;
 
 export function voiceScore(voice: VoiceLike): number {
   const name = voice.name ?? "";
@@ -39,9 +39,18 @@ export function pickVoice<T extends VoiceLike>(voices: readonly T[]): T | null {
   return ranked.length && voiceScore(ranked[0]) > -100 ? ranked[0] : null;
 }
 
+// The picker should only offer voices the host can actually use for the
+// English host lines. Novelty/character voices are localService too, but
+// several of them are silent or unusable in Chrome; keep them out so a
+// judge cannot pin one and lose voice-out.
+export function selectableVoices<T extends VoiceLike>(voices: readonly T[]): T[] {
+  return rankVoices(voices).filter((voice) => voiceScore(voice) > -100);
+}
+
 // The host-voice picker stores a voiceURI. Resolve it against the live
-// voice list; if the saved voice is gone (OS update, other browser), fall
-// back to the curated automatic pick instead of leaving the host silent.
+// voice list; if the saved voice is gone (OS update, other browser), or
+// it is a novelty voice that cannot speak reliably, fall back to the
+// curated automatic pick instead of leaving the host silent.
 export function resolveVoiceSelection<T extends VoiceLike & { voiceURI?: string }>(
   voices: readonly T[],
   selectedUri?: string | null,
@@ -50,7 +59,8 @@ export function resolveVoiceSelection<T extends VoiceLike & { voiceURI?: string 
     const match = voices.find(
       (voice) =>
         voice.voiceURI === selectedUri &&
-        (voice.lang ?? "").toLowerCase().startsWith("en"),
+        (voice.lang ?? "").toLowerCase().startsWith("en") &&
+        voiceScore(voice) > -100,
     );
     if (match) return match;
   }

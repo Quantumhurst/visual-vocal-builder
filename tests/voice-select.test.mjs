@@ -6,6 +6,7 @@ import {
   pickVoice,
   prosodyFor,
   resolveVoiceSelection,
+  selectableVoices,
 } from "../lib/voice-select.ts";
 
 const V = (name, lang = "en-US", extra = {}) => ({ name, lang, ...extra });
@@ -41,23 +42,42 @@ test("questions get a small lift, statements stay neutral", () => {
 test("a saved voiceURI selects that exact voice", () => {
   const voices = [
     V("Ava (Premium)", "en-US", { voiceURI: "ava" }),
-    V("Fred", "en-US", { voiceURI: "fred" }),
+    V("Samantha", "en-US", { voiceURI: "samantha" }),
     V("Amélie", "fr-CA", { voiceURI: "amelie" }),
   ];
-  assert.equal(resolveVoiceSelection(voices, "fred")?.name, "Fred");
+  assert.equal(resolveVoiceSelection(voices, "samantha")?.name, "Samantha");
   assert.equal(resolveVoiceSelection(voices, "ava")?.name, "Ava (Premium)");
 });
 
-test("missing or ineligible saved voices fall back to the automatic pick", () => {
+test("missing, novelty, or ineligible saved voices fall back to the automatic pick", () => {
   const voices = [
     V("Ava (Premium)", "en-US", { voiceURI: "ava" }),
     V("Samantha", "en-US", { voiceURI: "samantha" }),
+    V("Rocko (English (United States))", "en-US", { voiceURI: "rocko" }),
+    V("Fred", "en-US", { voiceURI: "fred" }),
     V("Amélie", "fr-CA", { voiceURI: "amelie" }),
   ];
   // Stale URI after an OS/browser update.
   assert.equal(resolveVoiceSelection(voices, "gone")?.name, "Ava (Premium)");
   // A non-English voice is not used for the English host line.
   assert.equal(resolveVoiceSelection(voices, "amelie")?.name, "Ava (Premium)");
+  // Novelty/character voices are filtered out even when explicitly saved.
+  assert.equal(resolveVoiceSelection(voices, "rocko")?.name, "Ava (Premium)");
+  assert.equal(resolveVoiceSelection(voices, "fred")?.name, "Ava (Premium)");
   assert.equal(resolveVoiceSelection(voices, "auto")?.name, "Ava (Premium)");
   assert.equal(resolveVoiceSelection(voices, null)?.name, "Ava (Premium)");
+});
+
+test("selectableVoices hides novelty/character voices but keeps usable English voices", () => {
+  const voices = [
+    V("Samantha"),
+    V("Rocko (English (United States))"),
+    V("Fred"),
+    V("Ava (Premium)"),
+    V("Amélie", "fr-CA"),
+  ];
+  assert.deepEqual(
+    selectableVoices(voices).map((voice) => voice.name),
+    ["Ava (Premium)", "Samantha"],
+  );
 });

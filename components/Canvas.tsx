@@ -257,7 +257,16 @@ function Canvas({ autoStart = false }: { autoStart?: boolean }) {
   function readStoredVoiceUri(): string | null {
     try {
       const stored = window.localStorage.getItem(HOST_VOICE_STORAGE_KEY);
-      return stored && stored !== "auto" ? stored : null;
+      if (!stored || stored === "auto") return null;
+      const voices = window.speechSynthesis?.getVoices() ?? [];
+      // Before the browser publishes voices, keep the saved URI; once it
+      // has, reject a stale or novelty voice and reset to Auto so the
+      // host cannot be left silent by an unusable saved voice.
+      if (voices.length === 0) return stored;
+      const chosen = resolveVoiceSelection(voices, stored);
+      if (chosen?.voiceURI === stored) return stored;
+      window.localStorage.setItem(HOST_VOICE_STORAGE_KEY, "auto");
+      return null;
     } catch {
       return null;
     }
@@ -265,11 +274,20 @@ function Canvas({ autoStart = false }: { autoStart?: boolean }) {
 
   function refreshCachedVoice() {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
-    const picked = resolveVoiceSelection(
-      window.speechSynthesis.getVoices(),
-      chosenVoiceUriRef.current ?? readStoredVoiceUri(),
-    );
+    const voices = window.speechSynthesis.getVoices();
+    const selected = chosenVoiceUriRef.current ?? readStoredVoiceUri();
+    const picked = resolveVoiceSelection(voices, selected);
     if (picked) cachedVoiceRef.current = picked;
+    // A previously saved novelty voice may still sit in the ref. Clear it
+    // rather than pinning an unusable voice.
+    if (chosenVoiceUriRef.current && picked?.voiceURI !== chosenVoiceUriRef.current) {
+      chosenVoiceUriRef.current = null;
+      try {
+        window.localStorage.setItem(HOST_VOICE_STORAGE_KEY, "auto");
+      } catch {
+        // Storage is optional.
+      }
+    }
   }
 
   function selectHostVoice(uri: string) {
@@ -365,14 +383,24 @@ function Canvas({ autoStart = false }: { autoStart?: boolean }) {
     const spoken = spokenHostText(text);
     if (!spoken) return false;
     try {
+      refreshCachedVoice();
       const voice = cachedVoiceRef.current ?? pickVoice(window.speechSynthesis.getVoices());
       const { rate, pitch } = prosodyFor(spoken);
       const utter = new SpeechSynthesisUtterance(spoken);
       if (voice) utter.voice = voice;
       utter.rate = rate;
       utter.pitch = pitch;
-      utterCancelledRef.current = false;
+      // Clear any stale/queued utterance before speaking. Chrome can leave
+      // speechSynthesis.speaking stuck after a failed or interrupted voice;
+      // a fresh cancel prevents the new host line from queueing forever.
       clearSpeechWatchdog();
+      utteranceRef.current = null;
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // ignore
+      }
+      utterCancelledRef.current = false;
       utteranceRef.current = utter;
       setHostSpeaking(true);
       const finishSpeech = () => {
