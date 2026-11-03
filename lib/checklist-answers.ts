@@ -56,3 +56,16 @@ export function isCompanyNameQuestion(text: string): boolean {
 export function companyNameReply(): string {
   return "Our fictional company name is Galactic Bagels Inc. (fictional).";
 }
+
+export function isNameApproval(text: string): boolean {
+  const lower = (text ?? "").trim().toLowerCase();
+  return (
+    /^(?:yes|yeah|yep|sure|ok|okay|approve|approved|looks good|confirm(?:ed)?|that works|that'?s fine|that'?s good|lock it in|go ahead|use that|use that name|go with that)(?:,?\s*please)?[.!?]*$/i.test(lower) ||
+    /\b(?:galactic\s+bagels|use\s+galactic\s+bagels|approve\s+galactic\s+bagels)\b/i.test(lower)
+  );
+}
+
+export function isNameCancel(text: string): boolean {
+  const lower = (text ?? "").trim().toLowerCase();
+  return /^(?:no|nope|cancel|skip|not yet|wait|hold on|go back|never mind)[.!?]*$/i.test(lower);
+}

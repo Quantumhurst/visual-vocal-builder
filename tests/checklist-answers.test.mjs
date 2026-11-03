@@ -9,6 +9,8 @@ import {
   isNothingDoneAnswer,
   isCompanyNameQuestion,
   companyNameReply,
+  isNameApproval,
+  isNameCancel,
 } from "../lib/checklist-answers.ts";
 import {
   applyChecklistItem,
@@ -84,4 +86,15 @@ test("company name questions are recognized and answer names Galactic Bagels Inc
   assert.equal(isCompanyNameQuestion("Pick a company name"), false);
   assert.equal(isCompanyNameQuestion("tick next step"), false);
   assert.match(companyNameReply(), /Galactic Bagels Inc\. \(fictional\)/);
+});
+
+test("name approval and cancellation helpers identify responses", () => {
+  for (const text of ["yes", "yeah", "sure", "approve", "Galactic Bagels", "use that name", "looks good", "lock it in"]) {
+    assert.equal(isNameApproval(text), true, text);
+  }
+  for (const text of ["no", "cancel", "skip", "wait", "not yet", "go back"]) {
+    assert.equal(isNameCancel(text), true, text);
+  }
+  assert.equal(isNameApproval("call it Cosmic Donuts"), false);
+  assert.equal(isNameCancel("call it Cosmic Donuts"), false);
 });
