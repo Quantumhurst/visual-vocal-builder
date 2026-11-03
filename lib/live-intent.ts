@@ -32,22 +32,28 @@ const COUNT_WORDS: Record<string, number> = {
   "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6,
 };
 
+import { ALL_DEMO_FOUNDER_NAMES, DEMO_JURISDICTIONS } from "./demo-data.ts";
+
 function countFrom(token: string | undefined): number | null {
   if (!token) return null;
   const value = COUNT_WORDS[token.toLowerCase()];
   return value && value > 0 ? value : null;
 }
 
+const OWNER_NAMES_PATTERN = new RegExp(
+  `\\b(${ALL_DEMO_FOUNDER_NAMES.map((n) => n.toLowerCase()).join("|")}|me|i)\\b`,
+  "i",
+);
+
 function ownerName(text: string): string | null {
-  const match = text.match(/\b(nova|orbit|vega|lyra|orion|altair|rigel|me|i)\b/);
-  return match ? match[1] : null;
+  const match = text.match(OWNER_NAMES_PATTERN);
+  return match ? match[1].toLowerCase() : null;
 }
 
-const PLANETS: { needle: string; name: string }[] = [
-  { needle: "mars", name: "Mars" },
-  { needle: "europa", name: "Europa" },
-  { needle: "andromeda", name: "Andromeda Galaxy" },
-];
+const PLANETS: { needle: string; name: string }[] = DEMO_JURISDICTIONS.map((j) => ({
+  needle: j.jurisdiction.toLowerCase().split(/\s+/)[0],
+  name: j.jurisdiction,
+}));
 
 function mentionedPlanets(lower: string): string[] {
   return PLANETS.filter((p) => lower.includes(p.needle)).map((p) => p.name);

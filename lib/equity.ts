@@ -14,7 +14,7 @@ export type FounderShare = {
 export const MIN_OWNERS = 1;
 export const MAX_OWNERS = 5;
 
-const EXTRA_OWNER_NAMES = ["Vega", "Lyra", "Orion", "Altair", "Rigel"];
+export const EXTRA_OWNER_NAMES = ["Vega", "Lyra", "Orion", "Altair", "Rigel"] as const;
 
 export function totalPercent(shares: FounderShare[]): number {
   return shares.reduce((sum, founder) => sum + founder.percent, 0);

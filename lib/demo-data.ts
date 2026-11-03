@@ -5,8 +5,11 @@
 // anywhere in this demo. Fictional demo content only.
 
 import type { ChecklistItem, JurisdictionRow } from "./state";
-import type { FounderShare } from "./equity";
+import { type FounderShare, EXTRA_OWNER_NAMES } from "./equity.ts";
 import { CHECKLIST_PACK } from "./knowledge.ts";
+
+export const PRIMARY_FOUNDER_NAMES = ["Nova", "Orbit"] as const;
+export const ALL_DEMO_FOUNDER_NAMES = [...PRIMARY_FOUNDER_NAMES, ...EXTRA_OWNER_NAMES];
 
 export const DEMO_JURISDICTIONS: JurisdictionRow[] = [
   {

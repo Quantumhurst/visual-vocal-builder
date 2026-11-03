@@ -1089,6 +1089,37 @@ function Canvas() {
     }
   }
 
+  function answerLocally(
+    reply: string,
+    trimmed: string,
+    options?: {
+      module?: SharedState["currentBeat"];
+      stageTab?: "galaxy" | "colony";
+      cue?: CueName;
+      mutate?: (prev: SharedState) => SharedState;
+    },
+  ) {
+    previewKeyRef.current = null;
+    pendingTurnRef.current = null;
+    setLivePreview(null);
+    setLiveTranscript(trimmed);
+    setLastTranscript(trimmed);
+    if (options?.mutate) {
+      commit("agent", options.mutate);
+    } else {
+      setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
+    }
+    setLocalHost(reply);
+    setAck("");
+    if (options?.module) setActiveModule(options.module);
+    if (options?.stageTab) setStageTab(options.stageTab);
+    if (options?.cue) playCue(options.cue);
+    if (voiceOn && unlockedRef.current) {
+      lastSpokenRef.current = spokenHostText(reply);
+      speakNative(reply);
+    }
+  }
+
   async function sendToAgent(text: string, fromVoice = false) {
     const trimmed = text.trim();
     if (!trimmed) {
@@ -1136,22 +1167,11 @@ function Canvas() {
         return;
       }
       if (isChangeAnswer(trimmed)) {
-        const reply = "No problem — change the owner count or drag a slider, then confirm.";
-        previewKeyRef.current = null;
-        pendingTurnRef.current = null;
-        setLivePreview(null);
-        setLiveTranscript(trimmed);
-        setLastTranscript(trimmed);
-        setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
-        setAck("");
-        setActiveModule("equity");
-        setStageTab("colony");
-        setLocalHost(reply);
-        playCue("adjust");
-        if (voiceOn && unlockedRef.current) {
-          lastSpokenRef.current = spokenHostText(reply);
-          speakNative(reply);
-        }
+        answerLocally(
+          "No problem — change the owner count or drag a slider, then confirm.",
+          trimmed,
+          { module: "equity", stageTab: "colony", cue: "adjust" },
+        );
         return;
       }
       const stateNow = withDefaults(stateRef.current);
@@ -1187,20 +1207,7 @@ function Canvas() {
     // state change. Answer it locally so the guard turn never waits on
     // the model.
     if (isFilingGuardQuestion(trimmed)) {
-      const reply = FILING_GUARD_REPLY;
-      previewKeyRef.current = null;
-      pendingTurnRef.current = null;
-      setLivePreview(null);
-      setLiveTranscript(trimmed);
-      setLastTranscript(trimmed);
-      setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
-      setAck("");
-      setLocalHost(reply);
-      playCue("adjust");
-      if (voiceOn && unlockedRef.current) {
-        lastSpokenRef.current = spokenHostText(reply);
-        speakNative(reply);
-      }
+      answerLocally(FILING_GUARD_REPLY, trimmed, { cue: "adjust" });
       return;
     }
 
@@ -1209,41 +1216,17 @@ function Canvas() {
     // to call. Acknowledge it from the real board and show the build
     // queue instead of sending a dead turn and reporting an agent error.
     if (beatProgress(view).nextBeat === "checklist" && isNothingDoneAnswer(trimmed)) {
-      const reply = checklistNoopReply(view);
-      previewKeyRef.current = null;
-      pendingTurnRef.current = null;
-      setLivePreview(null);
-      setLiveTranscript(trimmed);
-      setLastTranscript(trimmed);
-      setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
-      setLocalHost(reply);
-      setAck("");
-      setActiveModule("checklist");
-      setStageTab("colony");
-      playCue("adjust");
-      if (voiceOn && unlockedRef.current) {
-        lastSpokenRef.current = spokenHostText(reply);
-        speakNative(reply);
-      }
+      answerLocally(checklistNoopReply(view), trimmed, {
+        module: "checklist",
+        stageTab: "colony",
+        cue: "adjust",
+      });
       return;
     }
 
     // Querying the company name: answer locally with the fictional demo name instantly
     if (isCompanyNameQuestion(trimmed)) {
-      const reply = companyNameReply();
-      previewKeyRef.current = null;
-      pendingTurnRef.current = null;
-      setLivePreview(null);
-      setLiveTranscript(trimmed);
-      setLastTranscript(trimmed);
-      setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
-      setLocalHost(reply);
-      setAck("");
-      playCue("adjust");
-      if (voiceOn && unlockedRef.current) {
-        lastSpokenRef.current = spokenHostText(reply);
-        speakNative(reply);
-      }
+      answerLocally(companyNameReply(), trimmed, { cue: "adjust" });
       return;
     }
 
@@ -1273,22 +1256,11 @@ function Canvas() {
         return;
       }
       if (isNameCancel(trimmed)) {
-        const reply = "No problem — we can pick the company name later. Which checklist item shall we do next?";
-        previewKeyRef.current = null;
-        pendingTurnRef.current = null;
-        setLivePreview(null);
-        setLiveTranscript(trimmed);
-        setLastTranscript(trimmed);
-        setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
-        setLocalHost(reply);
-        setAck("");
-        setActiveModule("checklist");
-        setStageTab("colony");
-        playCue("adjust");
-        if (voiceOn && unlockedRef.current) {
-          lastSpokenRef.current = spokenHostText(reply);
-          speakNative(reply);
-        }
+        answerLocally(
+          "No problem — we can pick the company name later. Which checklist item shall we do next?",
+          trimmed,
+          { module: "checklist", stageTab: "colony", cue: "adjust" },
+        );
         return;
       }
       // If user suggested a custom name (e.g. "Call it Cosmic Donuts", "Starlight Coffee")
@@ -1331,29 +1303,18 @@ function Canvas() {
     if (isPickName && !isExplicitTick && !isCompanyNameQuestion(trimmed)) {
       const isAlreadyDone = view.checklist.find((i) => i.id === "check-name")?.done;
       if (isAlreadyDone) {
-        const line = "Company name is already confirmed as Galactic Bagels Inc. (fictional). Which checklist item shall we do next?";
-        setLocalHost(line);
-        if (voiceOn && unlockedRef.current) {
-          lastSpokenRef.current = spokenHostText(line);
-          speakNative(line);
-        }
+        answerLocally(
+          "Company name is already confirmed as Galactic Bagels Inc. (fictional). Which checklist item shall we do next?",
+          trimmed,
+        );
         return;
       }
       setNamePromptActive(true);
-      previewKeyRef.current = null;
-      pendingTurnRef.current = null;
-      setLivePreview(null);
-      setLiveTranscript(trimmed);
-      setLastTranscript(trimmed);
-      setActiveModule("checklist");
-      setStageTab("colony");
-      const promptLine = "We have the fictional demo name ready: Galactic Bagels Inc. (fictional). Would you like to approve Galactic Bagels, or what name should we pick?";
-      setLocalHost(promptLine);
-      playCue("highlight");
-      if (voiceOn && unlockedRef.current) {
-        lastSpokenRef.current = spokenHostText(promptLine);
-        speakNative(promptLine);
-      }
+      answerLocally(
+        "We have the fictional demo name ready: Galactic Bagels Inc. (fictional). Would you like to approve Galactic Bagels, or what name should we pick?",
+        trimmed,
+        { module: "checklist", stageTab: "colony", cue: "highlight" },
+      );
       return;
     }
 
