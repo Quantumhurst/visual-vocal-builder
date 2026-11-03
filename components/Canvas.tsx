@@ -109,6 +109,8 @@ const FAST_INTENT_KINDS: ReadonlySet<LiveIntent["kind"]> = new Set([
   "lawyer-summary",
 ]);
 
+const activeVoiceTurnRef = { current: false };
+
 function Canvas() {
   const { state, setState } = useCoAgent<SharedState>({
     name: "vvb",
@@ -1426,6 +1428,7 @@ function Canvas() {
     pendingTurnRef.current = { signature: turnResultSignature(view, hostPrompt.text), text: trimmed, beat: view.currentBeat };
     setSending(true);
     messageIdRef.current += 1;
+    activeVoiceTurnRef.current = fromVoice;
     try {
       await appendMessage(
         new TextMessage({
@@ -1437,6 +1440,7 @@ function Canvas() {
     } catch (error) {
       setTurnError(`Agent error: ${error instanceof Error ? error.message : "the agent run failed"}. Nothing was changed by that turn — type the command again.`);
     } finally {
+      activeVoiceTurnRef.current = false;
       setSending(false);
     }
   }
@@ -3143,7 +3147,14 @@ function Canvas() {
 
 export default function CanvasHost() {
   return (
-    <CopilotKit runtimeUrl="/api/copilotkit" showDevConsole={false} enableInspector={false}>
+    <CopilotKit
+      runtimeUrl="/api/copilotkit"
+      showDevConsole={false}
+      enableInspector={false}
+      headers={() => ({
+        "X-Voice-Turn": activeVoiceTurnRef.current ? "1" : "0",
+      })}
+    >
       <Canvas />
     </CopilotKit>
   );
