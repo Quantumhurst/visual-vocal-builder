@@ -94,8 +94,11 @@ test("meta model config: best-fit models + ASR biasing handshake", () => {
   assert.equal(hs.partialMode, "CUMULATIVE");
   assert.equal(hs.authorization.accessToken, "Bearer KEY");
   for (const w of ["Mars", "Europa", "Andromeda Galaxy", "section 85"]) assert.ok(hs.keywords.includes(w), w);
+  for (const w of ["three owners", "five people", "founders", "Vega", "confirm", "tick next step", "zero"]) {
+    assert.ok(hs.keywords.includes(w), w);
+  }
   assert.deepEqual(hs.languageBias, ["English"]);
-  assert.ok(ASR_KEYWORDS.length >= 8);
+  assert.ok(ASR_KEYWORDS.length >= 30);
 });
 
 test("owner-count intents cover solo and 1-5 owners", () => {

@@ -167,6 +167,8 @@ async function oneRun(browser, idx) {
 
   const s1 = await step("pick-mars", "Let's go with Mars");
   const s2 = await step("orbit-70", "Make Orbit 70%");
+  // Equity pauses on the confirmation card; confirm before the next beat.
+  const s2b = await step("confirm-equity", "Confirm");
   const s3 = await step("voice-undo", "Actually, undo that");
   // G1b: Undo button (trial only; baseline records N/A).
   let g1b = "N/A";
@@ -211,9 +213,9 @@ async function oneRun(browser, idx) {
     G4: s2.oscCount > 0 && s2.hasSoundToggle,
     G5: s1.spoken.length > 0 && s1.spoken[s1.spoken.length - 1] === spokenHostText(s1.host) && s1.hasVoiceToggle,
     // Mission tracks the next incomplete beat: equity after the Mars
-    // pick, checklist after equity, back to jurisdiction after the
-    // two undos + start-over reset the board.
-    G6: s1.missionBeat === "equity" && s2.missionBeat === "checklist" && s8.missionBeat === "jurisdiction",
+    // pick, checklist after the explicit equity confirmation, back to
+    // jurisdiction after the two undos + start-over reset the board.
+    G6: s1.missionBeat === "equity" && s2b.missionBeat === "checklist" && s8.missionBeat === "jurisdiction",
   };
   await page.close();
   return { run: idx, turns, checks, httpErrors };

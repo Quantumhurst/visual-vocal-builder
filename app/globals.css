@@ -2396,6 +2396,28 @@ pre {
   padding-top: 7px;
 }
 
+.objective-confirm {
+  border-color: rgba(127, 231, 255, 0.45);
+  background:
+    radial-gradient(120% 80% at 100% 0%, rgba(127, 231, 255, 0.14), transparent 55%),
+    linear-gradient(180deg, rgba(18, 36, 66, 0.92), rgba(8, 13, 30, 0.94));
+}
+
+.objective-confirm .objective-head .eyebrow {
+  color: var(--cyan);
+}
+
+.objective-confirm h2 {
+  font-size: 18px;
+}
+
+.confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
 /* Left-rail build queue: the five required steps stay visible while the
    host asks which one to tackle. Same state path as the BUILD panel. */
 .objective-build {

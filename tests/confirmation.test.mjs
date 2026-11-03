@@ -1,0 +1,24 @@
+// Confirmation answers for the equity gate.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { isConfirmationAnswer, isChangeAnswer } from "../lib/confirmation.ts";
+
+test("short yes/confirm answers are confirmations", () => {
+  for (const text of ["yes", "Yeah!", "yep", "confirm", "Confirmed.", "looks good", "that's right", "lock it in", "OK", "yes please"]) {
+    assert.equal(isConfirmationAnswer(text), true, text);
+  }
+});
+
+test("change/no answers keep the card open", () => {
+  for (const text of ["no", "nope", "change", "edit it", "not right", "wait", "go back"]) {
+    assert.equal(isChangeAnswer(text), true, text);
+  }
+});
+
+test("a confirmation with a new command is not a pure yes", () => {
+  assert.equal(isConfirmationAnswer("yes, make it four owners"), false);
+  assert.equal(isConfirmationAnswer("confirm and tick the next step"), false);
+  assert.equal(isConfirmationAnswer(""), false);
+  assert.equal(isChangeAnswer("no, make it four owners"), false);
+});

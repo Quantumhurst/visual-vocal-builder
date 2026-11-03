@@ -34,3 +34,13 @@ export function checklistHostLine(state: SharedState): string {
     ? `${built} of ${total} structures online. Next: ${next.label}.`
     : `All ${total} structures online.`;
 }
+
+// Equity/owner changes pause on a confirmation card before the cockpit
+// advances to BUILD. The line states the actual normalized split from
+// shared state, never a proposed raw split that could total more than 100.
+export function equityConfirmationLine(state: SharedState): string {
+  const owners = state.founders.length;
+  const split = state.founders.map((founder) => `${founder.percent}%`).join(" / ");
+  const noun = owners === 1 ? "owner" : "owners";
+  return `${owners} ${noun} — ${split}. Confirm this split, or choose another owner count.`;
+}

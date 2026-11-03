@@ -32,7 +32,9 @@ import type { SharedState } from "../lib/state";
 import TrustStrip from "./TrustStrip";
 import { verifyPaintedCards } from "../lib/verifier";
 import { getHostQuestion, resolveHostPrompt, shortFounderNames, shouldSpeakFallbackQuestion, type Beat } from "../lib/host-questions";
-import { checklistHostLine, nextObjectiveHostLine } from "../lib/build-host";
+import { checklistHostLine, equityConfirmationLine, nextObjectiveHostLine } from "../lib/build-host";
+import { isChangeAnswer, isConfirmationAnswer } from "../lib/confirmation";
+import { FILING_GUARD_REPLY, isFilingGuardQuestion } from "../lib/filing-guard";
 import { FIRST_SPEAK_GREETING, hasFirstSpeakGreeting, markFirstSpeakGreeting } from "../lib/first-speak";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
 import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount } from "../lib/state-updates";
@@ -182,6 +184,10 @@ function Canvas() {
   // still comes from the same shared state and appliers.
   const [activeModule, setActiveModule] = useState<SharedState["currentBeat"]>("jurisdiction");
   const [stageTab, setStageTab] = useState<"galaxy" | "colony">("galaxy");
+  // Equity/owner changes pause here: the split is already applied through
+  // the one invariant path, but the cockpit does not advance to BUILD
+  // until the user confirms the visible split.
+  const [equityConfirm, setEquityConfirm] = useState(false);
   // Optional archive (s.85 / fees) is collapsed by default; opening an
   // optional system or clicking one of its tabs reveals it.
   const [archiveOpen, setArchiveOpen] = useState(false);
@@ -419,6 +425,13 @@ function Canvas() {
     cancelSpeech();
     speakNative(text);
   }
+  function foundersChanged(before: SharedState, after: SharedState): boolean {
+    if (before.founders.length !== after.founders.length) return true;
+    return before.founders.some(
+      (founder, index) => founder.percent !== after.founders[index]?.percent,
+    );
+  }
+
   function commit(label: string, fn: (s: SharedState) => SharedState): string {
     const before = withDefaults(stateRef.current);
     const after = fn(before);
@@ -445,16 +458,26 @@ function Canvas() {
         setActiveModule("equity");
         setStageTab("colony");
       }
-      // Required-task handoff: when a change completes the current
-      // required beat, open the next one in the same handler. Equity
-      // completion moves to BUILD (the five-step queue), and 5/5 moves
-      // to LAUNCH. This keeps the spoken prompt, the left objective and
-      // the right panel on the same task.
+      // Equity/owner changes pause on confirmation before the required
+      // walk advances. The split is already applied through the one
+      // invariant path, so the card shows the real normalized totals.
       const beforeNext = beatProgress(before).nextBeat;
       const afterNext = beatProgress(after).nextBeat;
-      if (afterNext !== "complete" && afterNext !== beforeNext) {
-        setActiveModule(afterNext);
-        setStageTab(afterNext === "jurisdiction" ? "galaxy" : "colony");
+      const equityChanged = foundersChanged(before, after);
+      if (after.currentBeat === "equity" && equityChanged) {
+        setEquityConfirm(true);
+        setActiveModule("equity");
+        setStageTab("colony");
+        setLocalHost(equityConfirmationLine(after));
+      } else {
+        if (after.currentBeat !== "equity" && equityChanged) setEquityConfirm(false);
+        // Required-task handoff: when a change completes the current
+        // required beat, open the next one in the same handler. 5/5
+        // moves to LAUNCH; equity waits for confirmation above.
+        if (afterNext !== "complete" && afterNext !== beforeNext) {
+          setActiveModule(afterNext);
+          setStageTab(afterNext === "jurisdiction" ? "galaxy" : "colony");
+        }
       }
       if (selectionChanged && after.selectedJurisdiction) {
         const planet = after.selectedJurisdiction;
@@ -492,12 +515,15 @@ function Canvas() {
     const summary = describeChange(current, restored);
     stateRef.current = restored;
     setState(restored);
+    setEquityConfirm(false);
     setActiveModule(restored.selectedJurisdiction && restored.currentBeat === "jurisdiction" ? "equity" : restored.currentBeat);
     setStageTab(restored.selectedJurisdiction ? "colony" : "galaxy");
     playCue("adjust");
     // Labels like "live-preview" are internal; the summary already says
     // exactly what changed. Never speak internal state-machine jargon.
-    return `Undid the last change. ${summary}`;
+    const line = `Undid the last change. ${summary}`;
+    setLocalHost(line);
+    return line;
   }
 
   // THE one shared-state update path for equity (beat 2 invariant).
@@ -506,13 +532,11 @@ function Canvas() {
   // neither surface can leave the split inconsistent — it totals 100%.
   function updateEquity(index: number, percent: number, via: string) {
     commit("slider", (s) => applyEquity(s, index, percent, via));
-    setLocalHost(nextObjectiveHostLine(withDefaults(stateRef.current)));
   }
 
   // The owner-count control and the agent action share this one path.
   function updateOwnerCount(count: number) {
     commit("owners", (s) => applyOwnerCount(s, count));
-    setLocalHost(nextObjectiveHostLine(withDefaults(stateRef.current)));
   }
 
   // THE one shared-state update path for the checklist (beat 3):
@@ -520,6 +544,31 @@ function Canvas() {
   function updateChecklistItem(itemId: string, done: boolean) {
     commit("click", (s) => applyChecklistItem(s, itemId, done));
     setLocalHost(checklistHostLine(withDefaults(stateRef.current)));
+  }
+
+  // The explicit gate between "the split changed" and "move to BUILD".
+  // The state is already normalized; this only acknowledges it and then
+  // advances the required walk.
+  function confirmEquitySelection() {
+    if (!equityConfirm) return;
+    const state = withDefaults(stateRef.current);
+    const next = beatProgress(state).nextBeat;
+    const owners = state.founders.length;
+    const split = state.founders.map((founder) => `${founder.percent}%`).join(" / ");
+    const nextLine =
+      next === "complete"
+        ? "Mission complete — colony founded."
+        : nextObjectiveHostLine(state);
+    const line = `${owners} ${owners === 1 ? "owner" : "owners"} confirmed — ${split}. ${nextLine}`;
+    setEquityConfirm(false);
+    setActiveModule(next === "complete" ? "summary" : next);
+    setStageTab(next === "jurisdiction" ? "galaxy" : "colony");
+    setLocalHost(line);
+    playCue("highlight");
+    if (voiceOn && unlockedRef.current) {
+      lastSpokenRef.current = spokenHostText(line);
+      speakNative(line);
+    }
   }
 
   // Grounding for the agent: fictional company/places, current equity
@@ -865,11 +914,10 @@ function Canvas() {
       case "jurisdiction":
         return question || `${intent.jurisdiction} locked in.`;
       case "equity":
-        return question || "Split updated.";
-      case "owner-count": {
-        const label = `${state.founders.length} owner${state.founders.length === 1 ? "" : "s"} — the split totals 100%.`;
-        return question ? `${label} ${question}` : label;
-      }
+      case "owner-count":
+        // Equity changes pause on the confirmation card; do not append
+        // the next task's question and make the user feel rushed.
+        return equityConfirmationLine(state);
       case "checklist-advance": {
         const built = state.checklist.filter((item) => item.done).length;
         const total = state.checklist.length;
@@ -908,6 +956,86 @@ function Canvas() {
     cancelSpeech();
     setDockOpen(false);
     clearTurnErrors();
+
+    // Equity/owner changes are gated: the card asks for confirmation
+    // before the required walk advances. A new owner/equity command is
+    // still allowed (it updates the split and the card); undo/start over
+    // remain escape hatches; other commands wait for the confirmation.
+    if (equityConfirm) {
+      const pendingIntent = parseLiveIntent(trimmed);
+      if (isConfirmationAnswer(trimmed)) {
+        previewKeyRef.current = null;
+        pendingTurnRef.current = null;
+        setLivePreview(null);
+        setLiveTranscript(trimmed);
+        setLastTranscript(trimmed);
+        setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
+        setAck("");
+        confirmEquitySelection();
+        return;
+      }
+      if (isChangeAnswer(trimmed)) {
+        const reply = "No problem — change the owner count or drag a slider, then confirm.";
+        previewKeyRef.current = null;
+        pendingTurnRef.current = null;
+        setLivePreview(null);
+        setLiveTranscript(trimmed);
+        setLastTranscript(trimmed);
+        setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
+        setAck("");
+        setActiveModule("equity");
+        setStageTab("colony");
+        setLocalHost(reply);
+        playCue("adjust");
+        if (voiceOn && unlockedRef.current) {
+          lastSpokenRef.current = spokenHostText(reply);
+          speakNative(reply);
+        }
+        return;
+      }
+      const canAdjust =
+        pendingIntent?.kind === "owner-count" || pendingIntent?.kind === "equity";
+      const canEscape =
+        pendingIntent?.kind === "undo" || pendingIntent?.kind === "start-over";
+      if (!canAdjust && !canEscape) {
+        const reply = "Confirm the split first — say “confirm”, or choose a different owner count.";
+        previewKeyRef.current = null;
+        pendingTurnRef.current = null;
+        setLivePreview(null);
+        setLiveTranscript(trimmed);
+        setLastTranscript(trimmed);
+        setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
+        setAck("");
+        setLocalHost(reply);
+        playCue("adjust");
+        if (voiceOn && unlockedRef.current) {
+          lastSpokenRef.current = spokenHostText(reply);
+          speakNative(reply);
+        }
+        return;
+      }
+    }
+
+    // This answer is fixed safety copy, not a fact lookup and not a
+    // state change. Answer it locally so the guard turn never waits on
+    // the model.
+    if (isFilingGuardQuestion(trimmed)) {
+      const reply = FILING_GUARD_REPLY;
+      previewKeyRef.current = null;
+      pendingTurnRef.current = null;
+      setLivePreview(null);
+      setLiveTranscript(trimmed);
+      setLastTranscript(trimmed);
+      setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
+      setAck("");
+      setLocalHost(reply);
+      playCue("adjust");
+      if (voiceOn && unlockedRef.current) {
+        lastSpokenRef.current = spokenHostText(reply);
+        speakNative(reply);
+      }
+      return;
+    }
 
     // "None" / "zero" / "not yet" is a valid answer to the checklist
     // question, but it changes no shared state, so the agent has nothing
@@ -1468,7 +1596,7 @@ function Canvas() {
       setCelebrated(`${complete ? "MISSION CLEARED" : "OBJECTIVE UPDATED"} · ${label}`);
       // Selecting a home base already gets the rocket/travel cinematic;
       // confetti on top of it is noise, not celebration.
-      if (justDone !== "jurisdiction" && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      if (justDone !== "jurisdiction" && justDone !== "equity" && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
         const launched = Boolean(view.lawyerPackage);
         void confetti({
           particleCount: launched ? 120 : 40,
@@ -1717,6 +1845,45 @@ function Canvas() {
 
       <div className="bridge">
         <aside className="rail rail-mission" aria-label="Mission control">
+          {equityConfirm ? (
+            <section
+              className="panel objective objective-confirm"
+              data-testid="mission-banner"
+              data-equity-confirm="true"
+              data-beat="equity"
+              data-celebrated="false"
+            >
+              <div className="objective-head">
+                <span className="eyebrow">CONFIRM CREW SPLIT</span>
+                <span className="objective-step">2/4</span>
+              </div>
+              <h2>
+                {view.founders.length} owner{view.founders.length === 1 ? "" : "s"} — {equityLabel}
+              </h2>
+              <p className="objective-prompt">
+                Does this split look right? Confirm to move on, or choose another owner count / drag a slider.
+              </p>
+              <div className="confirm-actions" data-testid="equity-confirm">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  data-testid="confirm-equity"
+                  onClick={confirmEquitySelection}
+                >
+                  CONFIRM SPLIT
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  data-testid="edit-equity"
+                  onClick={() => selectModule("equity")}
+                >
+                  KEEP EDITING
+                </button>
+              </div>
+              <p className="objective-build-hint">Or say “confirm” / “change”.</p>
+            </section>
+          ) : (
           <section
             className="panel objective"
             data-testid="mission-banner"
@@ -1833,6 +2000,7 @@ function Canvas() {
               </div>
             </details>
           </section>
+          )}
         </aside>
 
         <section className="stage" aria-label="Ship viewport">
@@ -2378,6 +2546,8 @@ function Canvas() {
               className="btn"
               data-testid="dock-expand"
               aria-expanded={dockOpen}
+              aria-label="Controls — host voice, sound, quick commands"
+              title="Controls — host voice, sound, quick commands"
               onClick={toggleControls}
             >
               {dockOpen ? "CLOSE" : "CONTROLS"}

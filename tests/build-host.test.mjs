@@ -3,7 +3,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checklistHostLine, nextObjectiveHostLine } from "../lib/build-host.ts";
+import { checklistHostLine, equityConfirmationLine, nextObjectiveHostLine } from "../lib/build-host.ts";
+import { applyOwnerCount } from "../lib/state-updates.ts";
 import { CHECKLIST_PACK } from "../lib/knowledge.ts";
 import {
   applyChecklistItem,
@@ -60,4 +61,16 @@ test("all required work complete uses a complete line, not a stale question", ()
   }
   state = { ...state, lawyerPackage: "package" };
   assert.equal(nextObjectiveHostLine(state), "Mission complete — colony founded.");
+});
+
+test("equity confirmation reports the normalized split and owner count", () => {
+  let state = applyJurisdiction(base(), "Mars");
+  state = applyEquity(state, 0, 70, "test");
+  assert.equal(equityConfirmationLine(state), "2 owners — 70% / 30%. Confirm this split, or choose another owner count.");
+  state = applyOwnerCount(state, 3);
+  assert.match(equityConfirmationLine(state), /^3 owners — \d+% \/ \d+% \/ \d+%\./);
+  assert.match(equityConfirmationLine(state), /Confirm this split/);
+  // The line is built from the normalized state, so it always totals 100.
+  const percents = state.founders.map((founder) => founder.percent);
+  assert.equal(percents.reduce((a, b) => a + b, 0), 100);
 });
