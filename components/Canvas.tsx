@@ -1294,7 +1294,7 @@ function Canvas() {
       }
       if (isChangeAnswer(trimmed)) {
         answerLocally(
-          "No problem — change the owner count or drag a slider, then confirm.",
+          "No problem — say the percentages you want, choose another owner count, or drag a slider.",
           trimmed,
           { module: "equity", stageTab: "colony", cue: "adjust" },
         );

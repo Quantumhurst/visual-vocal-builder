@@ -48,5 +48,5 @@ export function equityConfirmationLine(state: SharedState): string {
   // split", a genuine "confirm split" is 2/2 host words and gets tombstoned
   // as speaker bleed. The visible confirmation card still shows the exact
   // "confirm"/"change" words. This keeps the 4972d2b echo guard strict.
-  return `${owners} ${noun} — ${split}. Does this ownership look right? Pick a different owner count or drag a slider if not.`;
+  return `${owners} ${noun} — ${split}. Does this ownership look right? Say the percentages you want, pick a different owner count, or drag a slider.`;
 }

@@ -68,7 +68,7 @@ test("equity confirmation reports the normalized split and owner count", () => {
   state = applyEquity(state, 0, 70, "test");
   assert.equal(
     equityConfirmationLine(state),
-    "2 owners — 70% / 30%. Does this ownership look right? Pick a different owner count or drag a slider if not.",
+    "2 owners — 70% / 30%. Does this ownership look right? Say the percentages you want, pick a different owner count, or drag a slider.",
   );
   state = applyOwnerCount(state, 3);
   assert.match(equityConfirmationLine(state), /^3 owners — \d+% \/ \d+% \/ \d+%\./);
