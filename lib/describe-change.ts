@@ -38,7 +38,13 @@ export function describeChange(before: SharedState, after: SharedState): string 
   const unticked: string[] = [];
   after.checklist.forEach((item, i) => {
     const was = before.checklist[i]?.done;
-    if (item.done && !was) ticked.push(item.label);
+    if (item.done && !was) {
+      if (item.id === "check-name") {
+        ticked.push(`${item.label} (confirmed as Galactic Bagels Inc. (fictional))`);
+      } else {
+        ticked.push(item.label);
+      }
+    }
     if (!item.done && was) unticked.push(item.label);
   });
   const doneCount = after.checklist.filter((i) => i.done).length;

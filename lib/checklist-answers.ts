@@ -39,3 +39,20 @@ export function checklistNoopReply(state: SharedState): string {
   }
   return `I have ${done} of ${total} checked so far. Say “tick the next one” or name the step you want to change.`;
 }
+
+const COMPANY_NAME_QUESTION_PATTERNS: RegExp[] = [
+  /\b(?:what(?:'s|\s+is|\s+was)?|tell me|repeat|verify|check)\s+(?:the\s+|our\s+|a\s+)?(?:company\s+)?name\b/i,
+  /\bwhat\s+name\s+(?:did\s+we\s+pick|is\s+it|was\s+picked|do\s+we\s+have)\b/i,
+  /\bdid\s+we\s+pick\s+(?:a\s+|the\s+)?(?:company\s+)?name\b/i,
+  /\b(?:what\s+is\s+our\s+name|what's\s+our\s+name)\b/i,
+];
+
+export function isCompanyNameQuestion(text: string): boolean {
+  const value = (text ?? "").trim();
+  if (!value) return false;
+  return COMPANY_NAME_QUESTION_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+export function companyNameReply(): string {
+  return "Our fictional company name is Galactic Bagels Inc. (fictional).";
+}

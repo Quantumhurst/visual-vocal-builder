@@ -5,7 +5,35 @@ import assert from "node:assert/strict";
 import { isConfirmationAnswer, isChangeAnswer } from "../lib/confirmation.ts";
 
 test("short yes/confirm answers are confirmations", () => {
-  for (const text of ["yes", "Yeah!", "yep", "confirm", "Confirmed.", "looks good", "that's right", "lock it in", "OK", "yes please", "confirm the split", "confirm split", "yes, confirm"]) {
+  for (const text of [
+    "yes",
+    "Yeah!",
+    "yep",
+    "confirm",
+    "Confirmed.",
+    "looks good",
+    "that's right",
+    "lock it in",
+    "lock in the split",
+    "OK",
+    "yes please",
+    "confirm the split",
+    "confirm split",
+    "confirm crew split",
+    "split",
+    "the split",
+    "split confirmed",
+    "confirm it",
+    "confirm that",
+    "move on",
+    "let's move on",
+    "confirm to move on",
+    "yes, confirm",
+    "that works",
+    "done",
+    "proceed",
+    "agree",
+  ]) {
     assert.equal(isConfirmationAnswer(text), true, text);
   }
 });

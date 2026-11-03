@@ -44,7 +44,7 @@ import { REQUIRED_BEATS, beatProgress } from "../lib/beat-progress";
 import { concatFloat32, toPcm16k } from "../lib/pcm";
 import { clearedVoiceErrors, hasRetryAudio, makeTranscribeFailure, type TranscribeFailure } from "../lib/voice-reliability";
 import { loadPcmWorklet, micFailureNotice } from "../lib/mic";
-import { checklistNoopReply, isNothingDoneAnswer } from "../lib/checklist-answers";
+import { checklistNoopReply, isNothingDoneAnswer, isCompanyNameQuestion, companyNameReply } from "../lib/checklist-answers";
 import { turnResultSignature } from "../lib/scroll";
 import confetti from "canvas-confetti";
 import { MAX_PCM_BYTES } from "../lib/request-guard";
@@ -602,7 +602,17 @@ function Canvas() {
   // clicks and voice-agent actions both go through here.
   function updateChecklistItem(itemId: string, done: boolean) {
     commit("click", (s) => applyChecklistItem(s, itemId, done));
-    setLocalHost(checklistHostLine(withDefaults(stateRef.current)));
+    const current = withDefaults(stateRef.current);
+    if (itemId === "check-name" && done) {
+      const built = current.checklist.filter((i) => i.done).length;
+      const total = current.checklist.length;
+      const undoneNext = current.checklist.find((i) => !i.done);
+      setLocalHost(
+        `Company name confirmed as Galactic Bagels Inc. (fictional) — ${built} of ${total} structures online.${undoneNext ? ` Next: ${undoneNext.label}.` : ""}`
+      );
+    } else {
+      setLocalHost(checklistHostLine(current));
+    }
   }
 
   // The explicit gate between "the split changed" and "move to BUILD".
@@ -704,6 +714,16 @@ function Canvas() {
     if (!trimmed) return;
     stampTiming("firstPartial");
     setLiveTranscript(trimmed);
+    if (equityConfirm && isConfirmationAnswer(trimmed)) {
+      intentMatchedRef.current = true;
+      setLivePreview({ key: "confirm-equity", label: "Confirming equity split…", status: "live" });
+      return;
+    }
+    if (isCompanyNameQuestion(trimmed)) {
+      intentMatchedRef.current = true;
+      setLivePreview({ key: "company-name-q", label: "Fictional company: Galactic Bagels Inc. (fictional)", status: "live" });
+      return;
+    }
     const intent = applyLiveIntent(trimmed, "live");
     // Adaptive endpointing: a recognised command shortens the stop pause
     // to 600 ms. Questions keep 1100 ms — a slow ask needs its full pause.
@@ -1022,7 +1042,8 @@ function Canvas() {
     // remain escape hatches; other commands wait for the confirmation.
     if (equityConfirm) {
       const pendingIntent = parseLiveIntent(trimmed);
-      if (isConfirmationAnswer(trimmed)) {
+      const isConfirm = isConfirmationAnswer(trimmed) || (!isChangeAnswer(trimmed) && /\b(?:confirm(?:ed)?|the split)\b/i.test(trimmed));
+      if (isConfirm) {
         previewKeyRef.current = null;
         pendingTurnRef.current = null;
         setLivePreview(null);
@@ -1122,6 +1143,55 @@ function Canvas() {
       if (voiceOn && unlockedRef.current) {
         lastSpokenRef.current = spokenHostText(reply);
         speakNative(reply);
+      }
+      return;
+    }
+
+    // Querying the company name: answer locally with the fictional demo name instantly
+    if (isCompanyNameQuestion(trimmed)) {
+      const reply = companyNameReply();
+      previewKeyRef.current = null;
+      pendingTurnRef.current = null;
+      setLivePreview(null);
+      setLiveTranscript(trimmed);
+      setLastTranscript(trimmed);
+      setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
+      setLocalHost(reply);
+      setAck("");
+      playCue("adjust");
+      if (voiceOn && unlockedRef.current) {
+        lastSpokenRef.current = spokenHostText(reply);
+        speakNative(reply);
+      }
+      return;
+    }
+
+    // Direct company name checklist step:
+    // "pick a company name", "name", "pick name", "tick name", "company name"
+    const isNameTick =
+      /^(?:(?:pick|choose|set|check|tick)\s+)?(?:the\s+|a\s+)?(?:company\s+)?name[.!?]*$/i.test(trimmed) ||
+      /\b(?:pick|choose|set|check|tick)\s+(?:the\s+|a\s+)?company\s+name\b/i.test(trimmed) ||
+      /\b(?:pick|tick)\s+(?:the\s+)?name\b/i.test(trimmed);
+
+    if (isNameTick && !isCompanyNameQuestion(trimmed)) {
+      previewKeyRef.current = null;
+      pendingTurnRef.current = null;
+      setLivePreview(null);
+      setLiveTranscript(trimmed);
+      setLastTranscript(trimmed);
+      commit("checklist", (s) => applyChecklistItem(s, "check-name", true));
+      const current = withDefaults(stateRef.current);
+      const built = current.checklist.filter((i) => i.done).length;
+      const total = current.checklist.length;
+      const undoneNext = current.checklist.find((i) => !i.done);
+      const line = `Company name confirmed as Galactic Bagels Inc. (fictional) — ${built} of ${total} structures online.${undoneNext ? ` Next: ${undoneNext.label}.` : ""}`;
+      setLocalHost(line);
+      setAck("");
+      setActiveModule("checklist");
+      setStageTab("colony");
+      if (voiceOn && unlockedRef.current) {
+        lastSpokenRef.current = spokenHostText(line);
+        speakNative(line);
       }
       return;
     }
