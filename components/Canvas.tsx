@@ -422,6 +422,9 @@ function Canvas({ autoStart = false }: { autoStart?: boolean }) {
         finishSpeech();
       };
       utter.onerror = () => {
+        if (utteranceRef.current === utter) {
+          setNotice("Host voice could not play — open Controls, choose Auto, and press PREVIEW.");
+        }
         finishSpeech();
       };
       window.speechSynthesis.speak(utter);
@@ -2421,6 +2424,11 @@ function Canvas({ autoStart = false }: { autoStart?: boolean }) {
           <span data-testid="flow-status" className="deck-flow" role="status">
             {flowStatus}
           </span>
+          {!voiceOn ? (
+            <span className="deck-vox-off" data-testid="vox-off" role="status">
+              VOX OFF
+            </span>
+          ) : null}
         </div>
 
         <div className="deck-host" data-testid="host-prompt" aria-label="Host prompt">

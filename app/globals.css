@@ -2093,6 +2093,15 @@ pre {
   white-space: nowrap;
 }
 
+.deck-vox-off {
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 209, 102, 0.45);
+  border-radius: 999px;
+  color: var(--gold);
+  white-space: nowrap;
+  animation: pipPulse 1.4s ease-in-out infinite;
+}
+
 .deck-busy {
   color: var(--cyan);
   white-space: nowrap;
