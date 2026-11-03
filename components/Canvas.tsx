@@ -127,12 +127,8 @@ function Canvas() {
   const levelRef = useRef(0);
   const previewKeyRef = useRef<string | null>(null);
   const recordingRef = useRef(false);
-  const lastWebSpeechAtRef = useRef(0);
   const webSpeechFailedRef = useRef(false);
   const recognitionRef = useRef<{ stop: () => void; onresult: unknown; onerror: unknown; onend: unknown } | null>(null);
-  const previewInFlightRef = useRef(false);
-  const previewBytesRef = useRef(0);
-  const lastPreviewAtRef = useRef(0);
 
   // Shared commit path: every canvas change (voice, slider, click)
   // funnels through here so handlers can report what actually changed
@@ -178,6 +174,19 @@ function Canvas() {
   const unlockedRef = useRef(false);
   const lastSpokenRef = useRef("");
   const prevDoneCountRef = useRef(-1);
+  // Voice pre-warm: cache the picked system voice, re-pick once when
+  // the browser finishes loading voices, preload on first gesture.
+  const cachedVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  const voicesRepickedRef = useRef(false);
+  const utterCancelledRef = useRef(false);
+  const busyRef = useRef(false);
+  const turnErrorRef = useRef(false);
+
+  function refreshCachedVoice() {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    const picked = pickVoice(window.speechSynthesis.getVoices());
+    if (picked) cachedVoiceRef.current = picked;
+  }
 
   // Synthesised cues only (no assets). Browsers refuse audio before a
   // user gesture, so cues stay silent until the first interaction.
@@ -208,11 +217,24 @@ function Canvas() {
   }
 
   function cancelSpeech() {
+    utterCancelledRef.current = true;
     try {
       window.speechSynthesis?.cancel();
     } catch {
       // ignore
     }
+  }
+
+  // On-end re-arm (primary path; the poll below is fallback only). A
+  // cancelled utterance never re-arms: cancelSpeech always runs first
+  // and marks it, so only natural speech end reaches startRecording.
+  function requestRearm() {
+    if (!convoRef.current) return;
+    if (recordingRef.current) return;
+    if (busyRef.current || turnErrorRef.current) return;
+    stampTiming("rearm");
+    console.info(`[vvb-timing] rearm ${summarizeTimings(turnTimingRef.current)}`);
+    void startRecording();
   }
 
   // Voice-out is the curated system voice only: pick the best English
@@ -223,12 +245,17 @@ function Canvas() {
     const spoken = spokenHostText(text);
     if (!spoken) return false;
     try {
-      const voice = pickVoice(window.speechSynthesis.getVoices());
+      const voice = cachedVoiceRef.current ?? pickVoice(window.speechSynthesis.getVoices());
       const { rate, pitch } = prosodyFor(spoken);
       const utter = new SpeechSynthesisUtterance(spoken);
       if (voice) utter.voice = voice;
       utter.rate = rate;
       utter.pitch = pitch;
+      utterCancelledRef.current = false;
+      utter.onend = () => {
+        stampTiming("speechEnd");
+        if (!utterCancelledRef.current) requestRearm();
+      };
       window.speechSynthesis.speak(utter);
       return true;
     } catch {
@@ -674,29 +701,6 @@ function Canvas() {
     return String(data.transcript ?? "");
   }
 
-  // Best-effort live preview for browsers without SpeechRecognition:
-  // transcribe everything captured so far. Failures are silent here —
-  // the final transcription after Stop reports errors properly.
-  async function previewChunksSoFar() {
-    if (previewInFlightRef.current || finishingRef.current || !recordingRef.current) return;
-    const rate = audioContextRef.current?.sampleRate ?? 0;
-    if (!rate || chunksRef.current.length === 0) return;
-    const pcm = toPcm16k(concatFloat32(chunksRef.current), rate);
-    if (pcm.byteLength < 16000 || pcm.byteLength <= previewBytesRef.current + 4000) return;
-    previewInFlightRef.current = true;
-    previewBytesRef.current = pcm.byteLength;
-    try {
-      const buf = new ArrayBuffer(pcm.byteLength);
-      new Int16Array(buf).set(pcm);
-      const transcript = await fetchTranscript(buf);
-      if (recordingRef.current && transcript) handleLiveTranscript(transcript);
-    } catch {
-      // Preview only; the authoritative path below owns error display.
-    } finally {
-      previewInFlightRef.current = false;
-    }
-  }
-
   function stopWebSpeech() {
     const rec = recognitionRef.current;
     recognitionRef.current = null;
@@ -711,10 +715,10 @@ function Canvas() {
     }
   }
 
-  // Instant interim words where the browser offers them (Chrome/Edge).
-  // This is a *preview* recogniser only: the Meta transcript after Stop
-  // is still the authority that goes to the agent. Any error quietly
-  // hands over to the chunked Meta preview above — never a dead mic.
+  // Instant interim words where the browser offers them (Chrome/Edge
+  // only). This is a *preview* recogniser only: the Meta transcript
+  // after Stop is still the authority that goes to the agent. Other
+  // browsers get no interim words — just the final Meta transcript.
   function startWebSpeech() {
     if (webSpeechFailedRef.current || typeof window === "undefined") return;
     const w = window as unknown as Record<string, unknown>;
@@ -728,7 +732,6 @@ function Canvas() {
       rec.interimResults = true;
       rec.continuous = true;
       rec.onresult = (event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => {
-        lastWebSpeechAtRef.current = performance.now();
         let text = "";
         for (let i = 0; i < event.results.length; i++) text += event.results[i][0]?.transcript ?? "";
         handleLiveTranscript(text);
@@ -761,24 +764,18 @@ function Canvas() {
     };
   }, []);
 
-  // While recording: meter + clock, and — when the browser has no live
-  // speech recogniser — periodic Meta-transcribe previews of the audio
-  // captured so far, so partial words still paint before Stop.
+  // While recording: meter + clock only. Interim words come solely
+  // from Web Speech (Chrome/Edge); nothing re-uploads audio mid-turn.
   useEffect(() => {
     if (!recording) return;
     const meter = setInterval(() => {
       setMicLevel(Math.min(1, levelRef.current * 3.5));
-      if (performance.now() - lastWebSpeechAtRef.current > 3000 && performance.now() - lastPreviewAtRef.current > 2800) {
-        lastPreviewAtRef.current = performance.now();
-        void previewChunksSoFar();
-      }
     }, 200);
     const clock = setInterval(() => setRecordSeconds((s) => s + 1), 1000);
     return () => {
       clearInterval(meter);
       clearInterval(clock);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recording]);
 
   // Same existing transcribe path for a fresh recording and for Retry.
@@ -874,6 +871,8 @@ function Canvas() {
   }
 
   async function startRecording() {
+    if (recordingRef.current) return;
+    recordingRef.current = true;
     turnTimingRef.current = { micStart: performance.now() };
     // Barge-in: the host stops talking the moment the user speaks.
     cancelSpeech();
@@ -884,9 +883,6 @@ function Canvas() {
     activityRef.current = IDLE_ACTIVITY;
     levelRef.current = 0;
     previewKeyRef.current = null;
-    previewBytesRef.current = 0;
-    lastPreviewAtRef.current = 0;
-    lastWebSpeechAtRef.current = 0;
     setLiveTranscript("");
     setLivePreview(null);
     setMicLevel(0);
@@ -959,18 +955,36 @@ function Canvas() {
   const doneCount = Object.values(progress.done).filter(Boolean).length;
 
   // First gesture unlocks audio/speech (browser autoplay policy)
-  // and starts the neural voice downloading in the background.
+  // and pre-loads the curated system voice. Voices often arrive
+  // after first paint, so re-pick once when the list updates.
   useEffect(() => {
     const unlock = () => {
       unlockedRef.current = true;
+      refreshCachedVoice();
+    };
+    const repickOnce = () => {
+      if (voicesRepickedRef.current) return;
+      voicesRepickedRef.current = true;
+      refreshCachedVoice();
     };
     window.addEventListener("pointerdown", unlock);
     window.addEventListener("keydown", unlock);
+    const synth = window.speechSynthesis;
+    if (synth && typeof synth.addEventListener === "function") synth.addEventListener("voiceschanged", repickOnce);
     return () => {
       window.removeEventListener("pointerdown", unlock);
       window.removeEventListener("keydown", unlock);
+      if (synth && typeof synth.removeEventListener === "function") synth.removeEventListener("voiceschanged", repickOnce);
     };
   }, []);
+
+  // Mirrors so the utterance onend handler re-arms with fresh state.
+  useEffect(() => {
+    busyRef.current = transcribing || sending || isLoading;
+  }, [transcribing, sending, isLoading]);
+  useEffect(() => {
+    turnErrorRef.current = Boolean(turnError || transcribeFailure);
+  }, [turnError, transcribeFailure]);
 
   // The agent talks back: speak its latest line once a turn completes.
   useEffect(() => {
@@ -1271,7 +1285,7 @@ function Canvas() {
             ) : null}
             {livePreview ? (
               <p data-testid="live-preview" role="status" style={{ margin: "0.4rem 0 0", display: "inline-block", border: "1px solid #ffd166", borderRadius: "999px", padding: "0.2rem 0.7rem" }}>
-                {livePreview.status === "confirmed" ? `Confirmed: ${livePreview.label}` : livePreview.status === "confirming" ? `Live preview: ${livePreview.label} Confirming with the agent…` : `Live preview: ${livePreview.label} — already on the canvas below`}
+                {livePreview.status === "confirmed" ? `Confirmed: ${livePreview.label}` : `heard: “${liveTranscript || livePreview.label}”…${livePreview.status === "confirming" ? " confirming with the agent…" : " (provisional)"}`}
               </p>
             ) : null}
           </div>

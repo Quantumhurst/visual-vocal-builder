@@ -10,6 +10,8 @@ export type TurnTimings = {
   firstToolCall?: number;
   firstPaint?: number;
   done?: number;
+  speechEnd?: number;
+  rearm?: number;
   hostChars?: number;
 };
 
@@ -26,6 +28,8 @@ export function summarizeTimings(t: TurnTimings): string {
     `tool ${lag(t.micStart, t.firstToolCall)}`,
     `paint ${lag(t.micStart, t.firstPaint)}`,
     `done ${lag(t.micStart, t.done)}`,
+    `speechEnd ${lag(t.micStart, t.speechEnd)}`,
+    `rearm ${lag(t.micStart, t.rearm)}`,
   ];
   if (t.hostChars !== undefined) parts.push(`host ${t.hostChars}ch`);
   return parts.join(", ");
