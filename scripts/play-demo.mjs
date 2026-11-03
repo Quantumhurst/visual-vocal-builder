@@ -159,6 +159,11 @@ async function oneRun(browser, idx) {
     return snap;
   };
   await page.goto(URL, { waitUntil: "networkidle2", timeout: 60000 });
+  const enterBtn = await page.$('[data-testid="enter-bridge"]');
+  if (enterBtn) {
+    await enterBtn.click();
+    await page.waitForSelector('[data-testid="turn-phase"]', { timeout: 15000 });
+  }
   // Turn-phase lives in the Controls pop-out; open it before waiting.
   await page.click('[data-testid="dock-expand"]').catch(() => {});
   await waitReady(page, 60000);
