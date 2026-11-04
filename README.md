@@ -1,12 +1,16 @@
 # Visual Vocal Builder
 
+## Demo video
+
+Demo video link — to be added after recording.
+
 Build a fictional colony and incorporate a fictional company by voice, hands-free. Spoken words move an orbital foundry world: pick a home base, name the company, split equity, raise five structures, and prepare a lawyer summary. A founder who cannot use a mouse, keyboard, or pointer can finish the whole journey on a headset.
 
 > **Demo data only. This is not legal advice, not a filing, and nothing here is submitted to any registry.**
 
 ## Run it locally
 
-Requirements: Node 20.9+ and npm, Git, a Meta Model API key.
+Requirements: use Node 22.18+ to run everything; the app itself also runs on Node 20.9+. You also need npm, Git, and a Meta Model API key.
 
 ```bash
 git clone https://github.com/Quantumhurst/visual-vocal-builder.git
@@ -15,6 +19,8 @@ npm install
 cp .env.example .env   # fill in META_API_KEY (never commit .env)
 node server.mjs        # unified Next + ASR WebSocket server on :3000
 ```
+
+This repository includes no Meta API key — you must supply your own. Get one at [dev.meta.ai/platform](https://dev.meta.ai/platform), then put it in `.env` as `META_API_KEY`.
 
 Open http://localhost:3000 and allow the microphone once. The landing page listens; say **“Enter the bridge”**. The cockpit opens the conversation and the mic itself — there is no TALK button to press. The visible button is only a fallback.
 
@@ -91,10 +97,13 @@ The optional Filing Intel archive (steps and fees) remains available by voice bu
 - **Meta Models Incorporated:**
   - **Muse Voice Transcribe (`muse-voice-transcribe-1.0`)**: Realtime streaming speech-to-text with WebSocket chunk pacing, keyword biasing (fictional jurisdictions, founder names, legal concepts), and English language biasing via Meta Model API.
   - **Muse Spark (`muse-spark-1.3`)**: Cognitive agent brain driving multi-turn tool calling, invariant validation, and co-agent state synchronization via Meta Model API.
+
+  The openai package is a client library only, pointed at api.meta.ai; no OpenAI model is called. Speech-out is the OS system voice, not an AI model call, and no other AI model, local or otherwise, is called at runtime.
+
 - **Code & Planning Disclosure:**
   - Written planning only was developed prior to the event; zero code, datasets, or UI components were carried over.
-  - All application code, styles, tests, and documentation in this repository were authored from scratch in-window, October 27–November 4, 2026.
-  - The Corp Plan pack texts in `lib/knowledge.ts` were written in-window during the hackathon, not copied from Corp Plan.
+  - All application code, styles, tests, and documentation in this repository were authored from scratch during the hackathon, October 27–November 4, 2026.
+  - The Corp Plan pack texts in `lib/knowledge.ts` were written during the hackathon, October 27–November 4, 2026, not copied from Corp Plan.
   - Does not call or rely on any pre-existing private services.
   - Built with three assistant tools under direct developer guidance: Muse (Nuntuk), DeepSeek, and the Google coding agent.
 
@@ -103,8 +112,6 @@ The optional Filing Intel archive (steps and fees) remains available by voice bu
 <img src="public/nuntuk-avatar.webp" alt="Nuntuk — a shrew wearing headphones, wraparound sunglasses, and a chunky gold chain" width="120" />
 
 Built with Muse (Nuntuk), DeepSeek, and the Google coding agent, under Steve Maley's direction. The owner owns the repo and all rights to the work.
-
-Note: the GitHub commit badge reads Quantumhurst because the push tool carries no author field; this image and credit line are where Muse's face and name appear.
 
 ## License
 
