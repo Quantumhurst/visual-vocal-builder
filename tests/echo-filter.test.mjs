@@ -52,3 +52,12 @@ test("LexicalEchoFilter: clears tokens after speech finishes", async () => {
   assert.equal(isEcho, false);
 });
 
+
+test("lexical echo only applies while host audio is active", () => {
+  const filter = new LexicalEchoFilter();
+  filter.recordHostSpeech("Pick Mars");
+  // Host finished: a fast "Mars" reply is the user's, not self-echo.
+  assert.equal(filter.checkWhileHostActive(false, 7, "Mars"), false);
+  // Host still speaking: the same words are the host's own audio.
+  assert.equal(filter.checkWhileHostActive(true, 8, "Pick Mars"), true);
+});

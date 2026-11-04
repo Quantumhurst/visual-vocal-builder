@@ -671,7 +671,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         utteranceRef.current = null;
         hostSpeakingRef.current = false;
         setHostSpeaking(false);
-        echoFilter.scheduleClear(1200);
+        // Keep the lexical guard only for the brief speaker tail. The mic
+        // is gated during playback, so holding host words for 1.2s after
+        // the line ends only drops the user's natural fast answer.
+        echoFilter.scheduleClear(200);
         if (utterCancelledRef.current) return;
         hostAudioRef.current.ended += 1;
         onDone?.();
@@ -1953,7 +1956,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
             if (completedStreamingTurnRef.current === turnId) return;
             logEvent(`asr transcript ${JSON.stringify(transcript)}`);
             if (transcript) {
-              if (echoFilter.checkAndTombstone(turnId, transcript)) {
+              // Only treat words as self-echo while the host is actually
+              // speaking. Once the host stops, the user's reply is theirs.
+              const hostActive = hostSpeakingRef.current || speechQueue.isSpeaking();
+              if (echoFilter.checkWhileHostActive(hostActive, turnId, transcript)) {
                 return;
               }
               handleLiveTranscript(transcript, false);
@@ -1971,7 +1977,13 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
             const turnId = (msg.turnId as number | undefined) ?? activeTurnIdRef.current;
             if (bufferedFallbackTurnRef.current === turnId) return;
             if (completedStreamingTurnRef.current === turnId) return;
-            if (echoFilter.checkAndTombstone(turnId, transcript)) {
+            if (
+              echoFilter.checkWhileHostActive(
+                hostSpeakingRef.current || speechQueue.isSpeaking(),
+                turnId,
+                transcript,
+              )
+            ) {
               return;
             }
             if (endpointerRef.current) {

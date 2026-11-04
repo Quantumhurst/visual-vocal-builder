@@ -40,6 +40,14 @@ export class LexicalEchoFilter {
     return this.ignoredEchoTurnIds.has(turnId);
   }
 
+  // The mic is gated while the host speaks, so lexical filtering is only
+  // valid while host audio is actually active. After the host stops, a
+  // short answer that reuses a host word ("Mars") is the user, not echo.
+  public checkWhileHostActive(hostActive: boolean, turnId: number, transcript: string): boolean {
+    if (!hostActive) return false;
+    return this.checkAndTombstone(turnId, transcript);
+  }
+
   public checkAndTombstone(turnId: number, transcript: string): boolean {
     if (this.ignoredEchoTurnIds.has(turnId)) return true;
     if (this.activeHostTokens.size === 0) return false;
