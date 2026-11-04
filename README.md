@@ -2,7 +2,7 @@
 
 ## Demo video
 
-Demo video link — to be added after recording.
+https://youtu.be/SMe399KwzjM
 
 Build a fictional colony and incorporate a fictional company by voice, hands-free. Spoken words move an orbital foundry world: pick a home base, name the company, split equity, raise five structures, and prepare a lawyer summary. A founder who cannot use a mouse, keyboard, or pointer can finish the whole journey on a headset.
 
@@ -17,8 +17,11 @@ git clone https://github.com/Quantumhurst/visual-vocal-builder.git
 cd visual-vocal-builder
 npm install
 cp .env.example .env   # fill in META_API_KEY (never commit .env)
+npm run build
 node server.mjs        # unified Next + ASR WebSocket server on :3000
 ```
+
+Windows: use Git Bash, or replace cp with Copy-Item.
 
 This repository includes no Meta API key — you must supply your own. Get one at [dev.meta.ai/platform](https://dev.meta.ai/platform), then put it in `.env` as `META_API_KEY`.
 
@@ -64,7 +67,7 @@ Tests import TypeScript sources directly and need Node 22.18+ for type stripping
 - **Live captions are the primary channel:** the HOST line and the HEARD line are always visible, large and high-contrast, directly above the controls, and the full caption history stays open in the mission rail. The HOST caption is the exact capped line the speech engine receives — never an uncapped agent reply running alongside a shortened utterance. The transcript modal remains as an expanded view, not the only way to read the run. If the reader scrolls back, auto-follow pauses and a RESUME LIVE control appears; a new conversational turn or that tap resumes following.
 - **Async summary, never a silent wait:** preparing the lawyer summary runs in short timer slices with a visible “BUILDING YOUR SUMMARY · %” caption. The host speaks a short start line and speaks the finished summary when it lands, even if the user is mid-turn (it waits for a free moment). The mic stays responsive throughout.
 - **One clear next step:** every required mission shows exactly one SAY cue and at most one fallback chip. The host asks for the same single step; alternate phrasings remain understood by voice but are not presented as a menu.
-- **Voice downloads and safe close:** after the summary lands, the host asks whether you want the demo package; say **“yes”** to save it (or **“no”** to skip). “Download package” (or “download both”) saves one company-named `.txt` containing both sections for a single-download demo; “download” saves the lawyer summary when the transcript is closed and the transcript when its window is open, and “download summary” / “download transcript” work explicitly whenever that content exists. Files are named for the company (`galactic-bagels-summary.txt`, `galactic-bagels-transcript.txt`, `galactic-bagels-demo-package.txt`) and carry the demo / not-a-filing disclaimer inside. The host speaks a short confirmation on save, and says visibly when there is nothing to download. “Close” closes only the transcript window; there is no tab-close path.
+- **Voice downloads and safe close:** after the summary lands, the host asks “Would you like the demo package — nothing was filed or sent?” Say **“yes”** to save it (or **“no”** to skip); one company-named `.txt` saves both the summary and transcript. The explicit “Download package” (or “download both”) command also saves the one-file package. “download” saves the lawyer summary when the transcript is closed and the transcript when its window is open, and “download summary” / “download transcript” work explicitly whenever that content exists. Files are named for the company (`galactic-bagels-summary.txt`, `galactic-bagels-transcript.txt`, `galactic-bagels-demo-package.txt`) and carry the demo / not-a-filing disclaimer inside. The host speaks a short confirmation on save, and says visibly when there is nothing to download. “Close” closes only the transcript window; there is no tab-close path.
 - **Audio/visual agreement:** a local line is painted before it is spoken (two animation frames), and a new host line replaces the old utterance instead of queueing behind audio the caption no longer shows. Spoken lines are logged by the speech path itself, so the history never records the provisional fallback question an agent turn shows while thinking.
 - **Turn-taking that survives slow speech:** the mic reopens after every host line. A recognizer final that is visibly unfinished ("The planet I want is …") is held, the mic stays open, and the next final is merged into one command; nothing half-formed is sent as a whole turn. The utterance cap is 55 seconds, and slow mode uses a longer local pause window.
 - **Recovery, not stalls:** a dropped turn, silent host, lost live socket, stalled tool call, or a long silent LISTENING turn surfaces a visible RECOVERY banner with one next step and re-arms the mic automatically. Every agent tool has a 12-second timeout; the conversation does not pause into a click-only state.
