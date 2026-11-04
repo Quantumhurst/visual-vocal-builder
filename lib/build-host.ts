@@ -13,16 +13,40 @@ import type { SharedState } from "./state.ts";
 export function nextObjectiveHostLine(state: SharedState): string {
   const next = beatProgress(state).nextBeat;
   if (next === "complete") return "Mission complete — colony founded.";
+  if (next === "checklist") return buildQuestionLine(state);
   return getHostQuestion(next, shortFounderNames(state.founders), state.selectedJurisdiction);
 }
 
-// Checklist clicks need progress, not just the static "pick a step" line:
-// "1 of 5 structures online. Next: Pick a company name." At 5/5 the next
-// required objective is the lawyer summary, so the host hands off to it.
-export function checklistHostLine(state: SharedState): string {
+// The build is an interview, not a bulk checklist. One structure, one
+// explicit yes, one spoken confirmation, then the next question.
+export function buildQuestionLine(state: SharedState): string {
   const total = state.checklist.length;
   const built = state.checklist.filter((item) => item.done).length;
   const next = state.checklist.find((item) => !item.done);
+  if (!next) {
+    return getHostQuestion("name", shortFounderNames(state.founders), state.selectedJurisdiction);
+  }
+  return `Structure ${built + 1} of ${total}: ${next.label} — ${built} of ${total} are up. Say “yes” to raise it, or “tell me more”.`;
+}
+
+export function buildRaisedLine(state: SharedState, raisedLabel: string): string {
+  const total = state.checklist.length;
+  const built = state.checklist.filter((item) => item.done).length;
+  const next = state.checklist.find((item) => !item.done);
+  if (!next) {
+    return getHostQuestion("name", shortFounderNames(state.founders), state.selectedJurisdiction);
+  }
+  return `${raisedLabel} raised — ${built} of ${total} structures up. Next: ${next.label}, structure ${built + 1} of ${total} — say “yes” to raise it.`;
+}
+
+export function buildGuideLine(item: { label: string; guidance: string }): string {
+  return `${firstSentence(item.guidance)} Should I raise the ${item.label}? Say “yes” or “not yet”.`;
+}
+
+// Build clicks use the same guided question as voice. At 5/5 the next
+// required objective is the company-name approval, so the host hands off.
+export function checklistHostLine(state: SharedState): string {
+  const total = state.checklist.length;
   const nextBeat = beatProgress(state).nextBeat;
   if (nextBeat === "name" || nextBeat === "rollover" || nextBeat === "summary") {
     // The question itself carries the count ("five of five") where it
@@ -33,9 +57,7 @@ export function checklistHostLine(state: SharedState): string {
   if (nextBeat === "complete") {
     return `All ${total} structures online. Mission complete.`;
   }
-  return next
-    ? `${built} of ${total} structures online. Next: ${next.label}. Say “Build the next structure”.`
-    : `All ${total} structures online.`;
+  return buildQuestionLine(state);
 }
 
 // The company-name approval line. The colony must be complete first, so

@@ -41,8 +41,12 @@ test("volume, rate, pacing, transcript, save, and status are voice controls", ()
   assert.equal(parse("hide the transcript"), "hide-transcript");
   assert.equal(parse("save progress"), "save");
   assert.equal(parse("test voice"), "test-voice");
+  assert.equal(parse("save progress <|speaker_A|>"), "save");
+  assert.equal(parse("<|speaker_A|> stop"), "stop");
   assert.equal(parse("can you hear me"), "test-voice");
   assert.equal(parse("Savesave progress"), "save");
+  assert.equal(parse("repeat that. that"), "repeat");
+  assert.equal(parse("stop stop"), "stop");
   assert.equal(parse("where am I"), "status");
   assert.equal(parse("what's next"), "status");
 });

@@ -113,6 +113,21 @@ test("sanitizeState repairs structural corruption without throwing", () => {
   assert.equal(repaired.companyName, "");
 });
 
+test("an old legal-checklist save migrates to a clean guided colony build", () => {
+  const old = sanitizeState({
+    currentBeat: "checklist",
+    selectedJurisdiction: "Mars",
+    checklist: [
+      { id: "check-choose-place", label: "Choose where to incorporate", guidance: "g", done: true },
+      { id: "check-name", label: "Pick a company name", guidance: "g", done: true },
+    ],
+  });
+  assert.equal(old.checklist.length, 5);
+  assert.equal(old.checklist[0].id, "build-landing-pad");
+  assert.equal(old.checklist[0].label, "Landing pad");
+  assert.equal(old.checklist.every((item) => item.done === false), true);
+});
+
 test("clear removes the run", () => {
   const store = memoryStore();
   saveSession(halfRun(), DEFAULT_VOICE_SETTINGS, [], store);

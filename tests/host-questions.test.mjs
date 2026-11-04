@@ -5,8 +5,8 @@ import { getHostQuestion, getLatestAssistantText, resolveHostPrompt, shouldSpeak
 test("jurisdiction fallback", () => { assert.match(getHostQuestion("jurisdiction"), /Mars, Europa, or Andromeda/); });
 test("equity fallback uses founder names", () => { const q = getHostQuestion("equity", ["Nova", "Orbit"]); assert.match(q, /Nova/); assert.match(q, /Orbit/); assert.match(q, /100% equity/); });
 test("checklist fallback", () => {
-  assert.match(getHostQuestion("checklist"), /Build the next structure/);
-  assert.match(getHostQuestion("checklist"), /Finish the build/);
+  assert.match(getHostQuestion("checklist"), /one structure at a time/);
+  assert.match(getHostQuestion("checklist"), /tell me more/);
 });
 test("name fallback asks for the exact approval", () => {
   assert.match(getHostQuestion("name"), /Approve Galactic Bagels/);

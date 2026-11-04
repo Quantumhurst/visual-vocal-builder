@@ -32,9 +32,9 @@ test("every checklist item maps to a structure; done items are built", () => {
   assert.ok(none.every((s) => !s.built));
   assert.deepEqual(
     none.map((s) => s.kind),
-    ["landingPad", "dome", "crewQuarters", "solarArray", "bagelFactory"],
+    ["landingPad", "dome", "solarArray", "crewQuarters", "bagelFactory"],
   );
-  const some = colonyStructures(checklist(["check-choose-place", "check-equity"]));
+  const some = colonyStructures(checklist(["build-landing-pad", "build-crew-quarters"]));
   assert.equal(some.find((s) => s.kind === "landingPad").built, true);
   assert.equal(some.find((s) => s.kind === "crewQuarters").built, true);
   assert.equal(some.find((s) => s.kind === "dome").built, false);
@@ -73,7 +73,7 @@ test("crew quarters widths follow the equity split and total the building", () =
 test("launch: package launches, all-done is ready, otherwise idle", () => {
   const all = CHECKLIST_PACK.facts.map((f) => f.factId);
   assert.equal(launchState(checklist(), ""), "idle");
-  assert.equal(launchState(checklist(["check-name"]), ""), "idle");
+  assert.equal(launchState(checklist(["build-landing-pad"]), ""), "idle");
   assert.equal(launchState(checklist(all), ""), "ready");
   assert.equal(launchState(checklist(), "package text"), "launched");
   assert.equal(launchState(checklist(all), "package text"), "launched");

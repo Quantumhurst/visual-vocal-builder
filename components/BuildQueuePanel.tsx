@@ -66,7 +66,9 @@ export default function BuildQueuePanel({
           );
         })}
       </ol>
-      <p className="objective-build-hint">Click a step, or say “tick next step”.</p>
+      <p className="objective-build-hint">
+        Click a step, or say “yes” to raise the highlighted structure.
+      </p>
     </section>
   );
 }

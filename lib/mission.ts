@@ -48,15 +48,15 @@ export function missionFor(state: SharedState): Mission {
         : `Mission complete — colony ${built}/${structures}`,
       prompt: founded
         ? "All six missions are done. The summary is prepared, nothing was filed, and nothing was sent. Say “Start over” for a new colony, or “Show transcript” to review the whole run."
-        : `All six missions are cleared, but the colony is only ${built}/${structures} built. Tick off the remaining structures, or say “Start over”.`,
-      voiceCue: founded ? "Show transcript" : "Finish the build",
+        : `All six missions are cleared, but the colony is only ${built}/${structures} built. Say “Yes” to raise the next structure, or “Start over”.`,
+      voiceCue: founded ? "Show transcript" : "Yes",
       chips: founded
         ? [
             { label: "Show transcript", command: "Show transcript" },
             { label: "Start over", command: "Start over" },
           ]
         : [
-            { label: "Finish the build", command: "Tick off every remaining checklist item" },
+            { label: "Raise next structure", command: "Yes" },
             { label: "Start over", command: "Start over" },
           ],
     };
@@ -95,24 +95,19 @@ export function missionFor(state: SharedState): Mission {
     case "checklist": {
       const built = state.checklist.filter((item) => item.done).length;
       const structures = state.checklist.length;
+      const next = state.checklist.find((item) => !item.done);
       return {
         beat: nextBeat,
         step,
         total,
-        title: "Build the colony, step by step",
-        prompt: built === 0
-          ? `Say “Build the next structure” or “Build all five” — ${built}/${structures} structures are up.`
-          : `Say “Build the next structure” or “Finish the build” — ${built}/${structures} structures are up.`,
-        voiceCue: built === 0 ? "Build the next structure" : "Finish the build",
-        chips: built === 0
-          ? [
-              { label: "Build next structure", command: "Build the next structure" },
-              { label: "Build all five", command: "Build all five structures" },
-            ]
-          : [
-              { label: "Build next structure", command: "Build the next structure" },
-              { label: "Finish the build", command: "Finish the build" },
-            ],
+        title: "Build the colony, one structure at a time",
+        prompt: `Structure ${built + 1} of ${structures}: ${next?.label ?? "next structure"} — ${built} of ${structures} are up. Say “Yes” to raise it, or “Tell me more”.`,
+        voiceCue: "Yes",
+        chips: [
+          { label: `Yes, raise the ${next?.label.toLowerCase() ?? "next structure"}`, command: "Yes" },
+          { label: "Tell me more", command: "Tell me more about this structure" },
+          { label: "Not yet", command: "Not yet" },
+        ],
       };
     }
     case "name":

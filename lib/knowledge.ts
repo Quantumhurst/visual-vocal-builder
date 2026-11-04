@@ -55,35 +55,35 @@ export const S85_PACK: KnowledgePack = {
 };
 
 export const CHECKLIST_PACK: KnowledgePack = {
-  packId: "corp-plan-incorporation-checklist-v1",
-  title: "Corp Plan — incorporation walk-through (educational pack)",
+  packId: "orbital-foundry-colony-build-v1",
+  title: "Orbital Foundry — colony build guide (fictional demo pack)",
   jurisdictionNote:
-    "DEMO guidance for the fictional demo company only — guidance and grounded facts only, never a registry filing.",
+    "Fictional colony construction guidance for the demo only. These are not legal or filing steps.",
   facts: [
     {
-      factId: "check-choose-place",
-      topic: "Choose where to incorporate",
-      text: "Guidance: compare where the fictional company will operate, where its directors are, and ongoing compliance effort before choosing. This demo compares fictional places only. (DEMO — not legal advice.)",
+      factId: "build-landing-pad",
+      topic: "Landing pad",
+      text: "DEMO build step: survey the site, pour the pad, and plant the approach beacon so the first lander has a safe mark. (Fictional colony step — not legal advice.)",
     },
     {
-      factId: "check-name",
-      topic: "Pick a company name",
-      text: "Guidance: choose a distinctive fictional name and check it does not clash with names already in use. This demo has a fictional name ready for approval; the callsign appears once the checklist is complete. (DEMO — not legal advice.)",
+      factId: "build-habitat-dome",
+      topic: "Habitat dome",
+      text: "DEMO build step: seal the habitat dome, pressurize it, and check the airlock before anyone moves in. (Fictional colony step — not legal advice.)",
     },
     {
-      factId: "check-equity",
-      topic: "Agree the equity split",
-      text: "Guidance: founders agree who owns what before incorporating; in this demo the split always totals 100% and every figure is labeled DEMO. (DEMO — not legal advice.)",
+      factId: "build-solar-array",
+      topic: "Solar array",
+      text: "DEMO build step: unfold the solar array, align it with the local star, and bring the first power bus online. (Fictional colony step — not legal advice.)",
     },
     {
-      factId: "check-articles",
-      topic: "Prepare articles guidance",
-      text: "Guidance: articles set out share classes and transfer restrictions. This demo shows guidance only and prepares no filing. (DEMO — not legal advice.)",
+      factId: "build-crew-quarters",
+      topic: "Crew quarters",
+      text: "DEMO build step: fit out the crew quarters with bunks, a galley, and a quiet room so the founders can rest between shifts. (Fictional colony step — not legal advice.)",
     },
     {
-      factId: "check-rollover-question",
-      topic: "Ask a rollover question",
-      text: "Guidance: if founders transfer existing property into the company, ask about a s.85 rollover and get a grounded fact card before deciding. (DEMO — not legal advice.)",
+      factId: "build-bagel-factory",
+      topic: "Bagel factory",
+      text: "DEMO build step: assemble the bagel factory and run the first batch, because a fictional corporation needs a product and a smell. (Fictional colony step — not legal advice.)",
     },
   ],
 };

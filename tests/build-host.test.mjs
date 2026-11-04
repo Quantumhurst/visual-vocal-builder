@@ -4,6 +4,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildGuideLine,
+  buildQuestionLine,
+  buildRaisedLine,
   checklistHostLine,
   equityConfirmationLine,
   nameApprovalLine,
@@ -26,8 +29,8 @@ test("after the equity split, the host line hands off to the build queue", () =>
   let state = applyJurisdiction(base(), "Mars");
   state = applyEquity(state, 0, 70, "test");
   const line = nextObjectiveHostLine(state);
-  assert.match(line, /Build the colony/i);
-  assert.match(line, /Build the next structure/i);
+  assert.match(line, /^Structure 1 of 5: Landing pad —/);
+  assert.match(line, /Say “yes” to raise it/);
 });
 
 test("a checklist click reports the real count and names the next step", () => {
@@ -35,8 +38,24 @@ test("a checklist click reports the real count and names the next step", () => {
   state = applyEquity(state, 0, 70, "test");
   state = applyChecklistItem(state, CHECKLIST_PACK.facts[0].factId, true);
   const line = checklistHostLine(state);
-  assert.match(line, /^1 of 5 structures online\./);
-  assert.match(line, /Next: Pick a company name\./);
+  assert.match(line, /^Structure 2 of 5: Habitat dome —/);
+  assert.match(line, /Say “yes” to raise it/);
+});
+
+test("the guided build asks for exactly one yes before raising one structure", () => {
+  const state = applyEquity(applyJurisdiction(base(), "Mars"), 0, 70, "test");
+  const question = buildQuestionLine(state);
+  assert.match(question, /^Structure 1 of 5: Landing pad —/);
+  assert.match(question, /Say “yes” to raise it/);
+  assert.doesNotMatch(question, /all five|finish the build/i);
+  const raised = buildRaisedLine(
+    applyChecklistItem(state, CHECKLIST_PACK.facts[0].factId, true),
+    "Landing pad",
+  );
+  assert.match(raised, /^Landing pad raised — 1 of 5 structures up\./);
+  assert.match(raised, /Next: Habitat dome/);
+  const guide = buildGuideLine(base().checklist[0]);
+  assert.match(guide, /Should I raise the Landing pad\?/);
 });
 
 test("the fifth structure hands off to the company-name approval", () => {
@@ -76,8 +95,8 @@ test("unticking reports the reduced count and the reopened step", () => {
   state = applyChecklistItem(state, CHECKLIST_PACK.facts[0].factId, true);
   state = applyChecklistItem(state, CHECKLIST_PACK.facts[0].factId, false);
   const line = checklistHostLine(state);
-  assert.match(line, /^0 of 5 structures online\./);
-  assert.match(line, /Next: Choose where to incorporate\./);
+  assert.match(line, /^Structure 1 of 5: Landing pad —/);
+  assert.match(line, /Say “yes” to raise it/);
 });
 
 test("all required work complete uses a complete line, not a stale question", () => {

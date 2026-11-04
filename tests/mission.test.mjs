@@ -26,7 +26,7 @@ test("mission follows the next incomplete beat", () => {
   const s2 = applyEquity(applyJurisdiction(base(), "Mars"), 1, 70, "test");
   const m2 = missionFor(s2);
   assert.equal(m2.beat, "checklist");
-  assert.match(m2.voiceCue, /Build the next structure/);
+  assert.equal(m2.voiceCue, "Yes");
   assert.ok(m2.chips.length >= 1);
 });
 
@@ -45,7 +45,7 @@ test("every mission has a sayable cue, a prompt, and at least one chip", () => {
   ]) {
     const m = missionFor(state);
     assert.ok(m.prompt.length > 10);
-    assert.ok(m.voiceCue.length > 3);
+    assert.ok(m.voiceCue.length >= 2);
     assert.equal(m.total, 6);
     for (const chip of m.chips) {
       assert.ok(chip.label && chip.command);
@@ -68,8 +68,9 @@ test("a half-built colony stays on the build mission, not the next beat", () => 
   const m = missionFor(completeChain([one]));
   assert.equal(m.beat, "checklist");
   assert.match(m.title, /Build the colony/i);
-  assert.match(m.prompt, /1\/5/);
-  assert.ok(m.chips.some((chip) => /Finish the build/i.test(chip.label)));
+  assert.match(m.prompt, /Structure 2 of 5: Habitat dome/);
+  assert.ok(m.chips.some((chip) => /Tell me more/i.test(chip.label)));
+  assert.ok(m.chips.some((chip) => /Yes, raise/i.test(chip.label)));
   assert.doesNotMatch(m.title, /founded/i);
 });
 

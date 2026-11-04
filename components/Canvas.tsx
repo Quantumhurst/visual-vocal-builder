@@ -32,7 +32,7 @@ import type { SharedState } from "../lib/state";
 import TrustStrip from "./TrustStrip";
 import { verifyPaintedCards } from "../lib/verifier";
 import { getHostQuestion, resolveHostPrompt, shortFounderNames, shouldSpeakFallbackQuestion, type Beat } from "../lib/host-questions";
-import { checklistHostLine, equityConfirmationLine, nameApprovalLine, nextObjectiveHostLine, rolloverLearnLine } from "../lib/build-host";
+import { buildGuideLine, buildQuestionLine, buildRaisedLine, equityConfirmationLine, nextObjectiveHostLine, rolloverLearnLine } from "../lib/build-host";
 import { isChangeAnswer, isConfirmationAnswer } from "../lib/confirmation";
 import { FILING_GUARD_REPLY, isFilingGuardQuestion } from "../lib/filing-guard";
 import { rolloverFactIdFor } from "../lib/knowledge";
@@ -59,7 +59,7 @@ import {
   shouldCapUtterance,
 } from "../lib/voice-reliability";
 import { loadPcmWorklet, micFailureNotice } from "../lib/mic";
-import { checklistNoopReply, isNothingDoneAnswer, isCompanyNameQuestion, companyNameReply, isNameApproval, isNameCancel } from "../lib/checklist-answers";
+import { isCompanyNameQuestion, companyNameReply, isNameApproval, isNameCancel } from "../lib/checklist-answers";
 import { turnResultSignature } from "../lib/scroll";
 import confetti from "canvas-confetti";
 import { MAX_PCM_BYTES } from "../lib/request-guard";
@@ -71,6 +71,7 @@ import { missionFor } from "../lib/mission";
 import { colonyPalette, colonyProgress } from "../lib/colony";
 import { MODULES, flightPlan, flightStatusLabel, formatClock, moduleFor, shipLabel } from "../lib/game-ui";
 import { spokenHostText } from "../lib/spoken-text";
+import { stripAsrAnnotations } from "../lib/transcript";
 import { HOST_VOICE_STORAGE_KEY, defaultHostVoice, isSelectableVoice, pickVoice, prosodyFor, resolveVoiceSelection } from "../lib/voice-select";
 import { summarizeTimings, type TurnTimings } from "../lib/turn-timing";
 import { HybridEndpointer } from "../lib/voice/hybrid-endpointer";
@@ -893,18 +894,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // THE one shared-state update path for the checklist (beat 3):
   // clicks and voice-agent actions both go through here.
   function updateChecklistItem(itemId: string, done: boolean) {
+    const before = withDefaults(stateRef.current);
+    const clicked = before.checklist.find((item) => item.id === itemId);
     commit("click", (s) => applyChecklistItem(s, itemId, done));
     const current = withDefaults(stateRef.current);
-    if (itemId === "check-name" && done) {
-      const built = current.checklist.filter((i) => i.done).length;
-      const total = current.checklist.length;
-      setLocalHost(
-        built >= total
-          ? nameApprovalLine(current)
-          : `Name prepared: Galactic Bagels Inc. (fictional). ${built} of ${total} structures online. The name is approved as its own step after 5/5.`,
-      );
+    if (done && clicked) {
+      setLocalHost(buildRaisedLine(current, clicked.label));
     } else {
-      setLocalHost(checklistHostLine(current));
+      setLocalHost(buildQuestionLine(current));
     }
   }
 
@@ -917,10 +914,18 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     const next = beatProgress(state).nextBeat;
     const owners = state.founders.length;
     const split = state.founders.map((founder) => `${founder.percent}%`).join(" / ");
-    const nextLine =
+    let nextLine =
       next === "complete"
         ? "Mission complete — colony founded."
         : nextObjectiveHostLine(state);
+    if (next === "checklist") {
+      // Keep the handoff to two sentences: the spoken cap would drop the
+      // instruction to say yes if the full build question were appended.
+      const built = state.checklist.filter((item) => item.done).length;
+      const total = state.checklist.length;
+      const nextItem = state.checklist.find((item) => !item.done);
+      nextLine = `Structure ${built + 1} of ${total}: ${nextItem?.label ?? "next structure"} — say “yes” to raise it.`;
+    }
     const line = `${owners} ${owners === 1 ? "owner" : "owners"} confirmed — ${split}. ${nextLine}`;
     setEquityConfirm(false);
     setActiveModule(next === "complete" ? "summary" : next);
@@ -1051,7 +1056,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   }
 
   function handleLiveTranscript(text: string, isFinal = false) {
-    const trimmed = text.trim();
+    const trimmed = stripAsrAnnotations(text);
     if (!trimmed) return;
     liveTranscriptRef.current = trimmed;
     stampTiming("firstPartial");
@@ -1411,14 +1416,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         // the next task's question and make the user feel rushed.
         return equityConfirmationLine(state);
       case "checklist-advance": {
-        const built = state.checklist.filter((item) => item.done).length;
-        const total = state.checklist.length;
-        if (next === "checklist") {
-          return `${built} of ${total} structures online. Tick the next step or finish the build.`;
-        }
-        // At 5/5 the next question already says "five of five"; do not
-        // prepend a third sentence the speech cap would cut.
-        return question || `${built} of ${total} structures online.`;
+        // The guided build path intercepts answers before this local fast
+        // line; this remains a safe fallback after a direct tick.
+        return buildQuestionLine(state);
       }
       case "cheapest": {
         const cheapest = cheapestByNumber(DEMO_JURISDICTIONS);
@@ -1475,6 +1475,12 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   }
 
   function helpLine(): string {
+    const current = withDefaults(stateRef.current);
+    if (beatProgress(current).nextBeat === "checklist") {
+      const next = current.checklist.find((item) => !item.done);
+      const step = current.checklist.filter((item) => item.done).length + 1;
+      return `Structure ${step} of ${current.checklist.length}: ${next?.label ?? "next structure"} — say “yes” to raise it. Other commands: help, repeat, stop, slower, test voice, start over.`;
+    }
     return `${missionSayLine()} You can always say help, repeat that, stop, slower, test voice, or start over.`;
   }
 
@@ -1607,7 +1613,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   }
 
   async function sendToAgent(text: string, fromVoice = false) {
-    const trimmed = text.trim();
+    const trimmed = stripAsrAnnotations(text);
     if (!trimmed) {
       if (fromVoice) {
         const line = emptyTranscriptReply();
@@ -1719,19 +1725,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       return;
     }
 
-    // "None" / "zero" / "not yet" is a valid answer to the checklist
-    // question, but it changes no shared state, so the agent has nothing
-    // to call. Acknowledge it from the real board and show the build
-    // queue instead of sending a dead turn and reporting an agent error.
-    if (beatProgress(live).nextBeat === "checklist" && isNothingDoneAnswer(trimmed)) {
-      answerLocally(checklistNoopReply(live), trimmed, {
-        module: "checklist",
-        stageTab: "colony",
-        cue: "adjust",
-      });
-      return;
-    }
-
     // Querying the company name: answer locally with the fictional demo name instantly
     if (isCompanyNameQuestion(trimmed)) {
       answerLocally(companyNameReply(), trimmed, { cue: "adjust" });
@@ -1762,48 +1755,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       return;
     }
 
-    // Direct company name checklist step:
-    const isExplicitTick = /\b(?:tick(?:\s+off)?|mark|check)\s+(?:the\s+|a\s+)?(?:company\s+)?name\b/i.test(trimmed);
-    const isPickName =
-      /^(?:(?:pick|choose|set)\s+)?(?:the\s+|a\s+)?(?:company\s+)?name[.!?]*$/i.test(trimmed) ||
-      /\b(?:pick|choose|set)\s+(?:the\s+|a\s+)?company\s+name\b/i.test(trimmed) ||
-      /^(?:the\s+|a\s+)?(?:company\s+)?name[.!?]*$/i.test(trimmed);
-
-    if (isPickName && !isExplicitTick && !isCompanyNameQuestion(trimmed)) {
-      answerLocally(
-        beatProgress(live).nextBeat === "checklist"
-          ? "The prepared fictional name is Galactic Bagels Inc. (fictional). You'll approve it as its own step after the colony is 5/5. Keep building — say “Build the next structure”."
-          : "The prepared fictional name is Galactic Bagels Inc. (fictional). It becomes official at the name-approval step.",
-        trimmed,
-        { module: "checklist", stageTab: "colony", cue: "highlight" },
-      );
-      return;
-    }
-
-    if (isExplicitTick && !isCompanyNameQuestion(trimmed)) {
-      previewKeyRef.current = null;
-      pendingTurnRef.current = null;
-      setLivePreview(null);
-      setLiveTranscript(trimmed);
-      setLastTranscript(trimmed);
-      commit("checklist", (s) => applyChecklistItem(s, "check-name", true));
-      const current = withDefaults(stateRef.current);
-      const built = current.checklist.filter((i) => i.done).length;
-      const total = current.checklist.length;
-      const line = built >= total
-        ? nameApprovalLine(current)
-        : `Name prepared: Galactic Bagels Inc. (fictional). ${built} of ${total} structures online. Approval comes after 5/5.`;
-      setLocalHost(line);
-      setAck("");
-      setActiveModule(built >= total ? "name" : "checklist");
-      setStageTab("colony");
-      if (settingsRef.current.voiceOn && unlockedRef.current) {
-        lastSpokenRef.current = spokenHostText(line);
-        speakNative(line);
-      }
-      return;
-    }
-
     // Grounded s.85 lesson: paint the pack fact locally through the same
     // applier the agent uses. The card text is verbatim pack text and the
     // verifier checks it; no legal wording is ever invented here.
@@ -1825,6 +1776,74 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         speakNative(line);
       }
       return;
+    }
+
+    // Mission 3 is an interview: one structure, one explicit yes. A bulk
+    // "finish the build" or an unrelated sentence must never tick several
+    // structures or guess an answer. Undo stays an escape hatch.
+    if (!equityConfirmRef.current && beatProgress(live).nextBeat === "checklist") {
+      const nextItem = live.checklist.find((item) => !item.done);
+      const lower = trimmed.toLowerCase();
+      const undo = /^(?:actually[,\s]+)?(?:please\s+)?(?:undo|revert|take (?:that|it) back|scratch that)\b/.test(lower);
+      if (nextItem && !undo) {
+        const tellMore = /\b(?:tell me more|what is it|what does (?:that|it) mean|explain|more info|details)\b/.test(lower);
+        const bulk = /\b(?:finish the build|build all|all five|tick off all|complete the build|raise all)\b/.test(lower);
+        const negative = isChangeAnswer(trimmed);
+        const affirmative =
+          isConfirmationAnswer(trimmed) ||
+          /^(?:yes|yep|yeah|sure|ok|okay|raise|build|place|deploy|assemble|construct|do it|go ahead|put it up|go for it|proceed)\b/.test(lower);
+        if (tellMore) {
+          answerLocally(buildGuideLine(nextItem), trimmed, {
+            module: "checklist",
+            stageTab: "colony",
+            cue: "highlight",
+          });
+          return;
+        }
+        if (bulk) {
+          // Never bulk-complete the build. Ask the current question again.
+          answerLocally(buildQuestionLine(live), trimmed, {
+            module: "checklist",
+            stageTab: "colony",
+            cue: "highlight",
+          });
+          return;
+        }
+        if (affirmative) {
+          previewKeyRef.current = null;
+          pendingTurnRef.current = null;
+          setLivePreview(null);
+          setLiveTranscript(trimmed);
+          setLastTranscript(trimmed);
+          commit("checklist", (s) => applyChecklistItem(s, nextItem.id, true));
+          writeShared({ ...withDefaults(stateRef.current), transcript: trimmed });
+          const current = withDefaults(stateRef.current);
+          const line = buildRaisedLine(current, nextItem.label);
+          setLocalHost(line);
+          setAck("");
+          if (settingsRef.current.voiceOn && unlockedRef.current) {
+            lastSpokenRef.current = spokenHostText(line);
+            speakNative(line);
+          }
+          return;
+        }
+        if (negative) {
+          answerLocally(buildQuestionLine(live), trimmed, {
+            module: "checklist",
+            stageTab: "colony",
+            cue: "highlight",
+          });
+          return;
+        }
+        // Nothing recognisable as an answer: ask again. Do not let the
+        // agent invent a tick from an ordinary sentence.
+        answerLocally(buildQuestionLine(live), trimmed, {
+          module: "checklist",
+          stageTab: "colony",
+          cue: "highlight",
+        });
+        return;
+      }
     }
 
     const intent = parseLiveIntent(trimmed);

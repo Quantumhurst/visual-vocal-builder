@@ -71,6 +71,22 @@ export function sanitizeState(raw: unknown): SharedState {
       done: item?.done === true,
     }));
   }
+  // Older saves used the Corp Plan legal checklist ids ("check-*"). Those
+  // are not colony structures and must not be ticked by the guided build.
+  // Reset the build to the new five structures, unbuilt, so the interview
+  // asks each one instead of inheriting a stale 2/5.
+  if (state.checklist.some((item) => item.id.startsWith("check-"))) {
+    state.checklist = INITIAL_STATE.checklist.map((item) => ({ ...item, done: false }));
+    // A migrated build has to pass through the new interview and its
+    // downstream name/s.85/summary beats, even if the old run had already
+    // marked them. Home base and equity are kept.
+    state.currentBeat = "checklist";
+    state.companyName = "";
+    state.rolloverCard = null;
+    state.rolloverNote = "";
+    state.lawyerPackage = "";
+    state.lawyerNote = "";
+  }
   if (!BEATS.has(String(state.currentBeat))) state.currentBeat = "jurisdiction";
   state.companyName = typeof state.companyName === "string" ? state.companyName.trim() : "";
   state.selectedJurisdiction =

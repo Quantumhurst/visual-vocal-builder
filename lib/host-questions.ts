@@ -29,7 +29,7 @@ export function getHostQuestion(beat: Beat, founderNames: string[] = ["Nova", "O
         ? `${selected} locked in! Next up: how should ${who} ${verb} the 100% equity?`
         : `Home base pending. Next up: how should ${who} ${verb} the 100% equity?`;
     }
-    case "checklist": return "Build the colony. Say “Build the next structure” or “Finish the build” — every tick raises one structure.";
+    case "checklist": return "Build the colony one structure at a time. Say “yes” to raise the next one, or “tell me more”.";
     case "name": return "Colony complete — five of five. Approve the company name by saying “Approve Galactic Bagels”, or “Call it <your name>”.";
     case "rollover": return "Name approved. Say “Explain section 85” to bring up the grounded rollover fact.";
     case "filingsteps": return "That filing card is optional. Say “Build the colony” to keep the required walk moving.";

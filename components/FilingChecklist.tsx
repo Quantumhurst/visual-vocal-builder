@@ -10,9 +10,9 @@ type Props = {
   flags?: Record<string, string>;
 };
 
-// Catalog entry vvb-filing-checklist-v1 (lib/catalog.ts). Content is
-// guidance + grounded facts from the Corp Plan checklist pack only —
-// never an actual registry filing, and there is no submission path.
+// Catalog entry vvb-filing-checklist-v1 (lib/catalog.ts). Content is the
+// fictional colony build guide from lib/knowledge.ts. This is not a filing
+// and there is no submission path.
 export default function FilingChecklist({ items, onToggle, flags }: Props) {
   const doneCount = items.filter((item) => item.done).length;
   const percent = items.length > 0 ? Math.round((doneCount / items.length) * 100) : 0;

@@ -110,7 +110,7 @@ export default function ColonyView({ selected, checklist, founders, lawyerPackag
       (app.canvas as HTMLCanvasElement).style.objectFit = "contain";
       (app.canvas as HTMLCanvasElement).setAttribute(
         "aria-label",
-        "Colony board: structures appear as you complete the incorporation checklist. " +
+        "Colony board: structures appear as you approve each guided colony build step. " +
           "The crew quarters resize with the equity split, and the rocket launches when the lawyer summary is prepared.",
       );
 

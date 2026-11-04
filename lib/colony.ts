@@ -29,11 +29,11 @@ export type ColonyStructure = {
 // still get a slot (kind cycles) so a new pack item never breaks the
 // board — it just builds a generic structure under its own label.
 const STRUCTURE_KINDS: { checklistId: string; kind: StructureKind; label: string; x: number }[] = [
-  { checklistId: "check-choose-place", kind: "landingPad", label: "Landing pad", x: 0.1 },
-  { checklistId: "check-name", kind: "dome", label: "Habitat dome", x: 0.3 },
-  { checklistId: "check-equity", kind: "crewQuarters", label: "Crew quarters", x: 0.54 },
-  { checklistId: "check-articles", kind: "solarArray", label: "Solar array", x: 0.76 },
-  { checklistId: "check-rollover-question", kind: "bagelFactory", label: "Bagel factory", x: 0.9 },
+  { checklistId: "build-landing-pad", kind: "landingPad", label: "Landing pad", x: 0.1 },
+  { checklistId: "build-habitat-dome", kind: "dome", label: "Habitat dome", x: 0.3 },
+  { checklistId: "build-solar-array", kind: "solarArray", label: "Solar array", x: 0.54 },
+  { checklistId: "build-crew-quarters", kind: "crewQuarters", label: "Crew quarters", x: 0.76 },
+  { checklistId: "build-bagel-factory", kind: "bagelFactory", label: "Bagel factory", x: 0.9 },
 ];
 
 export function colonyStructures(checklist: ChecklistItem[]): ColonyStructure[] {

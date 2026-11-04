@@ -75,7 +75,7 @@ test("every step has one visible, sayable next cue", () => {
   const expected = [
     ["jurisdiction", /Pick Mars/],
     ["equity", /Make Orbit 70%/],
-    ["checklist", /Build the next structure|Finish the build/],
+    ["checklist", /^Yes$/],
     ["name", /Approve Galactic Bagels/],
     ["rollover", /Explain section 85/],
     ["summary", /Prepare the lawyer summary/],

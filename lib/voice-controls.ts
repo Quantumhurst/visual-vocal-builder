@@ -89,11 +89,13 @@ const norm = (text: string): string =>
     .trim();
 
 export function parseVoiceControl(text: string): VoiceControl | null {
-  const raw = (text ?? "").trim();
+  const raw = (text ?? "").replace(/<\|[^|]*\|>/g, " ").trim();
   if (!raw) return null;
   // ASR can duplicate a word across a turn boundary ("Savesave progress").
   // Collapse only immediate exact repeats of a 3+ letter word.
-  const t = norm(raw).replace(/\b(\w{3,})\1\b/g, "$1");
+  const t = norm(raw)
+    .replace(/\b(\w{3,})\1\b/g, "$1")
+    .replace(/\b(\w+)\s+\1\b/g, "$1");
   if (!t) return null;
 
   // Stop first: it must work even when the rest of the sentence is noise,

@@ -218,15 +218,17 @@ const TURNS = [
     text: "Yes, confirm the split",
     label: "split confirmation",
     expect: () => true,
-    host: /Build the colony|Build the next structure/i,
+    host: /confirmed.*Structure 1 of 5|Landing pad/i,
   },
-  {
-    id: "build",
-    text: "Build all five structures",
-    label: "5 of 5 structures",
-    expect: (s) => s.checklist.length > 0 && s.checklist.every((i) => i.done),
-    host: /All 5 structures|Approve the company name|Approve Galactic Bagels/i,
-  },
+  ...[1, 2, 3, 4, 5].map((n) => ({
+    id: `build-${n}`,
+    text: "Yes",
+    label: `structure ${n} of 5`,
+    expect: (s) => s.checklist.filter((i) => i.done).length === n,
+    host: n < 5
+      ? /raised|structures? up|Next:|tell me more/i
+      : /Colony complete|Approve the company name|Approve Galactic Bagels/i,
+  })),
   {
     id: "name",
     text: "Approve Galactic Bagels",
@@ -330,7 +332,7 @@ async function main() {
         // The confirm row checks the visible prompt; every other row
         // checks the actual shared state.
         if (turn.id === "confirm") {
-          return /Build the colony|Build the next structure/i.test(s.prompt) ? s : null;
+          return /Structure 1 of 5/i.test(s.prompt) ? s : null;
         }
         return turn.expect(s.state) ? s : null;
       }, 40000);

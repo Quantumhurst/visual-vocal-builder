@@ -47,11 +47,7 @@ export function describeChange(before: SharedState, after: SharedState): string 
   after.checklist.forEach((item, i) => {
     const was = before.checklist[i]?.done;
     if (item.done && !was) {
-      if (item.id === "check-name") {
-        ticked.push(`${item.label} (name prepared; approval is its own step after 5/5)`);
-      } else {
-        ticked.push(item.label);
-      }
+      ticked.push(item.label);
     }
     if (!item.done && was) unticked.push(item.label);
   });

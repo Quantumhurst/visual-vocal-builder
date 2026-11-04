@@ -49,9 +49,9 @@ export const CATALOG: CatalogEntry[] = [
     stateSlice: "checklist",
     drivenBy:
       "useCoAgent shared state; clicks and the agent actions setChecklistItem / advanceChecklist share one update path",
-    grounding: "corp-plan-incorporation-checklist-v1 in lib/knowledge.ts",
+    grounding: "orbital-foundry-colony-build-v1 in lib/knowledge.ts (fictional colony steps)",
     description:
-      "Incorporation walk-through checklist. Guidance and grounded facts only — never a registry filing, no submission path.",
+      "Guided colony build: five fictional structures, asked one at a time with an explicit spoken yes before each is raised.",
   },
   {
     catalogId: "vvb-company-name-approval-v1",
