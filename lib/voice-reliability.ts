@@ -39,11 +39,14 @@ export function hasRetryAudio(lastAudio: ArrayBuffer | null | undefined): boolea
 }
 
 // Timeouts & Guard Rails (Fixes 1–5):
-// Prevent any turn stage from hanging indefinitely.
-export const ASR_TIMEOUT_MS = 15_000;
+// Prevent any turn stage from hanging indefinitely, without cutting a
+// slow speaker off mid-thought. The utterance cap sits below the 60s
+// PCM upload limit; the no-speech window is a patient 12s of complete
+// silence before the first word, not a mid-sentence pause.
+export const ASR_TIMEOUT_MS = 30_000;
 export const AGENT_WATCHDOG_MS = 25_000;
-export const NO_SPEECH_TIMEOUT_MS = 8_000;
-export const MAX_UTTERANCE_MS = 15_000;
+export const NO_SPEECH_TIMEOUT_MS = 12_000;
+export const MAX_UTTERANCE_MS = 55_000;
 export const SPEECH_POLL_TIMEOUT_MS = 15_000;
 
 export function isEmptyTranscript(transcript: string | null | undefined): boolean {

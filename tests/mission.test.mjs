@@ -22,15 +22,16 @@ test("mission follows the next incomplete beat", () => {
   assert.equal(m1.step, 1);
   assert.equal(m1.total, 6);
   assert.equal(m1.voiceCue, "Pick Mars");
-  assert.ok(m1.chips.some((c) => /Mars/.test(c.command)));
+  assert.equal(m1.chips.length, 1);
+  assert.match(m1.chips[0].command, /Mars/);
   const s2 = applyEquity(applyJurisdiction(base(), "Mars"), 1, 70, "test");
   const m2 = missionFor(s2);
   assert.equal(m2.beat, "checklist");
   assert.equal(m2.voiceCue, "Yes");
-  assert.ok(m2.chips.length >= 1);
+  assert.equal(m2.chips.length, 1);
 });
 
-test("every mission has a sayable cue, a prompt, and at least one chip", () => {
+test("every mission has one sayable cue, one prompt, and exactly one chip", () => {
   for (const state of [
     base(),
     applyJurisdiction(base(), "Mars"),
@@ -47,9 +48,23 @@ test("every mission has a sayable cue, a prompt, and at least one chip", () => {
     assert.ok(m.prompt.length > 10);
     assert.ok(m.voiceCue.length >= 2);
     assert.equal(m.total, 6);
-    for (const chip of m.chips) {
-      assert.ok(chip.label && chip.command);
-    }
+    assert.equal(m.chips.length, 1, `${m.beat}: one next action, never a wall`);
+    assert.ok(m.chips[0].label && m.chips[0].command);
+  }
+});
+
+test("the primary prompt never offers a menu of alternatives", () => {
+  for (const state of [
+    base(),
+    applyJurisdiction(base(), "Mars"),
+    applyEquity(applyJurisdiction(base(), "Mars"), 0, 70, "test"),
+    applyCompanyName(base()),
+    applyRolloverFact(base(), "s85-what-it-is", "what is s.85?"),
+  ]) {
+    const m = missionFor(state);
+    assert.doesNotMatch(m.prompt, /\bor\b/i, `${m.beat} prompt`);
+    assert.doesNotMatch(m.prompt, /, or /i, `${m.beat} prompt`);
+    assert.doesNotMatch(m.prompt, /choose 1|1–5 options|options:/i, `${m.beat} prompt`);
   }
 });
 
@@ -69,8 +84,9 @@ test("a half-built colony stays on the build mission, not the next beat", () => 
   assert.equal(m.beat, "checklist");
   assert.match(m.title, /Build the colony/i);
   assert.match(m.prompt, /Structure 2 of 5: Habitat dome/);
-  assert.ok(m.chips.some((chip) => /Tell me more/i.test(chip.label)));
-  assert.ok(m.chips.some((chip) => /Yes, raise/i.test(chip.label)));
+  assert.equal(m.chips.length, 1);
+  assert.match(m.chips[0].label, /Raise the habitat dome/);
+  assert.equal(m.chips[0].command, "Yes");
   assert.doesNotMatch(m.title, /founded/i);
 });
 
@@ -81,6 +97,7 @@ test("a fully built and approved colony is called founded", () => {
   assert.match(m.title, /founded/i);
   assert.match(m.prompt, /nothing was filed/i);
   assert.match(m.voiceCue, /Show transcript/i);
+  assert.equal(m.chips.length, 1);
 });
 
 test("spoken text keeps Inc. and s.85 from being split as sentences", () => {

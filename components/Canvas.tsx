@@ -44,6 +44,27 @@ import { withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, app
 import { pushHistory, popHistory, statesEqual, type HistoryEntry } from "../lib/history";
 import { describeChange, currentStateSummary } from "../lib/describe-change";
 import { REQUIRED_BEATS, beatProgress } from "../lib/beat-progress";
+import {
+  captionPhase,
+  captionPhaseLabel,
+  heardCaption,
+  heardCaptionState,
+  hostCaption,
+} from "../lib/captions";
+import {
+  RECOVERY_REARM_MS,
+  RecoveryTracker,
+  recoveryNotice,
+  isListeningStall,
+  type RecoveryNotice,
+} from "../lib/recovery";
+import {
+  CONTINUATION_GRACE_MS,
+  looksUnfinishedTranscript,
+  mergeContinuation,
+} from "../lib/slow-speech";
+import CaptionConsole from "./CaptionConsole";
+import CaptionHistory from "./CaptionHistory";
 import { concatFloat32, toPcm16k } from "../lib/pcm";
 import {
   clearedVoiceErrors,
@@ -218,6 +239,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const liveTranscriptRef = useRef("");
   const confirmationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const peakLevelRef = useRef(0);
+  const listeningStallShownRef = useRef(false);
   const noSpeechAttemptsRef = useRef(0);
   const asrSocketRef = useRef<WebSocket | null>(null);
   const streamingReadyRef = useRef(false);
@@ -262,6 +284,20 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     logRef.current = log;
   }, [log]);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
+  // Recovery is visible state, never a console-only warning. The tracker
+  // counts consecutive recoveries so the copy can escalate while the mic
+  // keeps re-arming (a paused mic is a stall in a hands-free loop).
+  const [recovery, setRecovery] = useState<RecoveryNotice | null>(null);
+  const recoveryTrackerRef = useRef(new RecoveryTracker());
+  const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True during the short gap between a host line ending and the mic
+  // reopening. The caption says MIC RE-ARMING instead of pretending LIVE.
+  const [rearming, setRearming] = useState(false);
+  // A clearly unfinished final ("I would like to pick …") is held here
+  // and merged with the next final instead of being sent as a command.
+  const [continuation, setContinuation] = useState<{ text: string } | null>(null);
+  const heldUtteranceRef = useRef<{ text: string; at: number } | null>(null);
+  const continuationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [savedNotice, setSavedNotice] = useState("");
   useEffect(() => {
     settingsRef.current = settings;
@@ -282,6 +318,75 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       if (last && last.role === role && last.text === clean) return prev;
       return [...prev, { role, text: clean, at: Date.now() }].slice(-240);
     });
+  }
+
+  // Recovery is a visible part of the loop: a clear headline, the fact
+  // that nothing was changed, and one next step. The mic is re-armed by
+  // the app; the user never has to find a button to get back in.
+  function clearRecovery() {
+    recoveryTrackerRef.current.clear();
+    setRecovery(null);
+    if (recoveryTimerRef.current !== null) {
+      clearTimeout(recoveryTimerRef.current);
+      recoveryTimerRef.current = null;
+    }
+  }
+
+  function surfaceRecovery(kind: Parameters<typeof recoveryNotice>[0], detail = "") {
+    const decision = recoveryTrackerRef.current.record(kind, detail);
+    setRecovery(decision.notice);
+    if (decision.escalate) {
+      setNotice("Voice keeps dropping — the mic stays open. Say “help” if you want the control list.");
+    }
+    if (!decision.rearm || !convoRef.current) return;
+    setRearming(true);
+    if (recoveryTimerRef.current !== null) clearTimeout(recoveryTimerRef.current);
+    recoveryTimerRef.current = setTimeout(() => {
+      recoveryTimerRef.current = null;
+      setRearming(false);
+      if (!convoRef.current || recordingRef.current || busyRef.current || hostSpeakingRef.current) return;
+      void startRecording();
+    }, RECOVERY_REARM_MS);
+  }
+
+  // Slow speech can split one thought across two recognizer finals. Only
+  // a final that is visibly unfinished is held; commands, questions, and
+  // yes/no answers go straight through.
+  function clearHeldUtterance() {
+    heldUtteranceRef.current = null;
+    setContinuation(null);
+    if (continuationTimerRef.current !== null) {
+      clearTimeout(continuationTimerRef.current);
+      continuationTimerRef.current = null;
+    }
+  }
+
+  function holdContinuation(text: string) {
+    const clean = text.trim();
+    if (!clean) return;
+    heldUtteranceRef.current = { text: clean, at: performance.now() };
+    setContinuation({ text: clean });
+    setLiveTranscript(clean);
+    setLastTranscript(clean);
+    setNotice("");
+    if (continuationTimerRef.current !== null) clearTimeout(continuationTimerRef.current);
+    continuationTimerRef.current = setTimeout(() => {
+      continuationTimerRef.current = null;
+      if (!heldUtteranceRef.current) return;
+      // Never send half a thought as a command. Keep the mic open and
+      // say what is happening; the held words stay visible.
+      setNotice("I caught the start of that. Finish the thought — I’m still listening.");
+    }, CONTINUATION_GRACE_MS);
+    requestRearm();
+  }
+
+  function takeHeldTranscript(nextText: string): string {
+    const held = heldUtteranceRef.current;
+    if (!held) return nextText;
+    const withinGrace = performance.now() - held.at <= CONTINUATION_GRACE_MS;
+    clearHeldUtterance();
+    if (!withinGrace) return nextText;
+    return mergeContinuation(held.text, nextText);
   }
 
   // True while the host voice is actually speaking. The mic stays closed
@@ -510,7 +615,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       updateVoiceSettings({ voiceOn: true, volume: Math.max(0.25, settingsRef.current.volume) });
     }
     refreshCachedVoice();
-    speakNative("This is your host voice. Pick your home base — Mars, Europa, or Andromeda Galaxy?");
+    const line = "This is your host voice. Say “Pick Mars” when you hear me.";
+    setLocalHost(line);
+    speakNative(line);
   }
 
   function toggleControls() {
@@ -585,12 +692,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (busyRef.current || turnErrorRef.current) return;
     if (hostSpeakingRef.current || speechQueue.isSpeaking()) return;
     clearRearmTimer();
+    setRearming(true);
     rearmTimerRef.current = setTimeout(() => {
       rearmTimerRef.current = null;
-      if (!convoRef.current) return;
-      if (recordingRef.current) return;
-      if (busyRef.current || turnErrorRef.current) return;
-      if (hostSpeakingRef.current || speechQueue.isSpeaking()) return;
+      if (!convoRef.current) { setRearming(false); return; }
+      if (recordingRef.current) { setRearming(false); return; }
+      if (busyRef.current || turnErrorRef.current) { setRearming(false); return; }
+      if (hostSpeakingRef.current || speechQueue.isSpeaking()) { setRearming(false); return; }
+      setRearming(false);
       stampTiming("rearm");
       console.info(`[vvb-timing] rearm ${summarizeTimings(turnTimingRef.current)}`);
       void startRecording();
@@ -611,6 +720,24 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       clearTimeout(hostStartTimerRef.current);
       hostStartTimerRef.current = null;
     }
+  }
+
+  // Two animation frames is one painted screen. A hidden tab has no
+  // frames, so a timeout is the fallback; speech must never be lost to
+  // a throttled rAF.
+  function afterNextPaint(fn: () => void) {
+    if (typeof window === "undefined" || document.visibilityState === "hidden") {
+      fn();
+      return;
+    }
+    let ran = false;
+    const run = () => {
+      if (ran) return;
+      ran = true;
+      fn();
+    };
+    window.requestAnimationFrame(() => window.requestAnimationFrame(run));
+    window.setTimeout(run, 140);
   }
 
   function speakNative(
@@ -636,125 +763,165 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       onDone?.();
       return true;
     }
-    echoFilter.recordHostSpeech(spoken);
-    try {
-      // Chrome can leave speechSynthesis stuck with `speaking === true`
-      // after a cancelled landing prompt, which queues every later host
-      // line behind an utterance that never starts. If nothing of ours is
-      // active, clear that stale queue before enqueueing the new line.
-      const synth = window.speechSynthesis;
-      if (synth.speaking && !utteranceRef.current && !hostSpeakingRef.current) {
-        try {
-          synth.cancel();
-        } catch {
-          // ignore
-        }
-      }
-      refreshCachedVoice();
-      const voice = options.useDefaultVoice
-        ? null
-        : cachedVoiceRef.current ?? pickVoice(window.speechSynthesis.getVoices());
-      const attempt = ++hostAttemptSeqRef.current;
-      const base = prosodyFor(spoken);
-      const rate = Math.min(1.6, Math.max(0.5, base.rate * settingsRef.current.rate));
-      const pitch = base.pitch;
-      clearSpeechWatchdog();
-      clearHostStartTimer();
-      utterCancelledRef.current = false;
-      hostSpeakingRef.current = true;
-      setHostSpeaking(true);
-      let started = false;
 
-      const finishSpeech = () => {
-        if (attempt !== hostAttemptSeqRef.current) return;
+    // Paint first, then speak. Local callers do setLocalHost(...) right
+    // before this call; two frames guarantee the caption is already on
+    // screen when the first word is audible. The mic is gated from this
+    // moment, so the paint gap cannot capture a stray fragment.
+    utterCancelledRef.current = false;
+    hostSpeakingRef.current = true;
+    setHostSpeaking(true);
+    const attempt = ++hostAttemptSeqRef.current;
+
+    const speakAfterPaint = () => {
+      if (attempt !== hostAttemptSeqRef.current || utterCancelledRef.current) return;
+      echoFilter.recordHostSpeech(spoken);
+      try {
+        // Chrome can leave speechSynthesis stuck with `speaking === true`
+        // after a cancelled landing prompt, which queues every later host
+        // line behind an utterance that never starts. If nothing of ours is
+        // active, clear that stale queue before enqueueing the new line.
+        const synth = window.speechSynthesis;
+        if (synth.speaking && !utteranceRef.current) {
+          try {
+            synth.cancel();
+          } catch {
+            // ignore
+          }
+        }
+        // A new host line replaces the old one. Queueing it behind audio
+        // the caption no longer shows is exactly the mismatch this
+        // caption-first pass exists to remove.
+        if (utteranceRef.current) {
+          utteranceRef.current = null;
+          try {
+            synth.cancel();
+          } catch {
+            // ignore
+          }
+          speechQueue.hardFlushOnBargeIn();
+        }
+        refreshCachedVoice();
+        const voice = options.useDefaultVoice
+          ? null
+          : cachedVoiceRef.current ?? pickVoice(window.speechSynthesis.getVoices());
+        const base = prosodyFor(spoken);
+        const rate = Math.min(1.6, Math.max(0.5, base.rate * settingsRef.current.rate));
+        const pitch = base.pitch;
         clearSpeechWatchdog();
         clearHostStartTimer();
-        utteranceRef.current = null;
-        hostSpeakingRef.current = false;
-        setHostSpeaking(false);
-        // Keep the lexical guard only for the brief speaker tail. The mic
-        // is gated during playback, so holding host words for 1.2s after
-        // the line ends only drops the user's natural fast answer.
-        echoFilter.scheduleClear(200);
-        if (utterCancelledRef.current) return;
-        hostAudioRef.current.ended += 1;
-        onDone?.();
-        requestRearm();
-      };
+        let started = false;
 
-      const utter = speechQueue.enqueue(spoken, {
-        role: "CONTENT",
-        rate,
-        pitch,
-        volume: settingsRef.current.volume,
-        voice,
-        useDefaultVoice: options.useDefaultVoice,
-        onStart: () => {
+        const finishSpeech = () => {
           if (attempt !== hostAttemptSeqRef.current) return;
-          started = true;
+          clearSpeechWatchdog();
           clearHostStartTimer();
-          setHostSilent(false);
-          hostAudioRef.current.started += 1;
-          hostAudioRef.current.lastVoice = voice?.name ?? "(browser default)";
-          hostAudioRef.current.lastVolume = settingsRef.current.volume;
-          hostAudioRef.current.lastRate = rate;
-          hostAudioRef.current.lastStartedAt = Date.now();
-          logEvent(`host voice started ${voice?.name ?? "default"}`);
-          // The end watchdog starts only once audio really started.
-          speechWatchdogRef.current = setTimeout(() => {
-            speechWatchdogRef.current = null;
-            if (utteranceRef.current !== utter) return;
-            speechQueue.hardFlushOnBargeIn();
-            finishSpeech();
-          }, Math.min(12000, 3000 + spoken.length * 55));
-        },
-        onDone: () => {
-          if (attempt !== hostAttemptSeqRef.current) return;
-          stampTiming("speechEnd");
-          finishSpeech();
-        },
-        onError: (failed) => {
-          // speechSynthesis cancel() can also surface as an error. Only a
-          // failure of the current, non-cancelled utterance is a real
-          // host-voice failure. This was lost in 4972d2b; restore it without
-          // touching the echo/mic loop guards.
-          if (attempt !== hostAttemptSeqRef.current) return;
-          if (utteranceRef.current !== failed || utterCancelledRef.current) return;
-          hostAudioRef.current.errors += 1;
-          setNotice("Host voice could not play — retrying with the system default.");
-        },
-      });
-
-      if (utter) {
-        utteranceRef.current = utter;
-        hostStartTimerRef.current = setTimeout(() => {
-          hostStartTimerRef.current = null;
-          if (attempt !== hostAttemptSeqRef.current || started) return;
           utteranceRef.current = null;
-          utterCancelledRef.current = true;
-          speechQueue.hardFlushOnBargeIn();
           hostSpeakingRef.current = false;
           setHostSpeaking(false);
-          if (retry < 1) {
-            hostAudioRef.current.retries += 1;
-            logEvent("host voice did not start; retrying system default");
-            setNotice("Host voice did not start — switching to the system default voice.");
-            speakNative(text, onDone, { retry: 1, useDefaultVoice: true });
-          } else {
-            setHostSilent(true);
-            setNotice("Host voice is silent. Check the tab mute and the system output device, then say “test voice”.");
-            onDone?.();
-            requestRearm();
-          }
-        }, 1800);
+          // Keep the lexical guard only for the brief speaker tail. The mic
+          // is gated during playback, so holding host words for 1.2s after
+          // the line ends only drops the user's natural fast answer.
+          echoFilter.scheduleClear(200);
+          if (utterCancelledRef.current) return;
+          hostAudioRef.current.ended += 1;
+          onDone?.();
+          requestRearm();
+        };
+
+        const utter = speechQueue.enqueue(spoken, {
+          role: "CONTENT",
+          rate,
+          pitch,
+          volume: settingsRef.current.volume,
+          voice,
+          useDefaultVoice: options.useDefaultVoice,
+          onStart: () => {
+            if (attempt !== hostAttemptSeqRef.current) return;
+            started = true;
+            clearHostStartTimer();
+            setHostSilent(false);
+            // Audio is real again: the host-silent recovery has cleared.
+            setRecovery((current) => (current?.kind === "host-silent" ? null : current));
+            hostAudioRef.current.started += 1;
+            hostAudioRef.current.lastVoice = voice?.name ?? "(browser default)";
+            hostAudioRef.current.lastVolume = settingsRef.current.volume;
+            hostAudioRef.current.lastRate = rate;
+            hostAudioRef.current.lastStartedAt = Date.now();
+            logEvent(`host voice started ${voice?.name ?? "default"}`);
+            // The end watchdog starts only once audio really started.
+            speechWatchdogRef.current = setTimeout(() => {
+              speechWatchdogRef.current = null;
+              if (utteranceRef.current !== utter) return;
+              speechQueue.hardFlushOnBargeIn();
+              finishSpeech();
+            }, Math.min(12000, 3000 + spoken.length * 55));
+          },
+          onDone: () => {
+            if (attempt !== hostAttemptSeqRef.current) return;
+            stampTiming("speechEnd");
+            finishSpeech();
+          },
+          onError: (failed) => {
+            // speechSynthesis cancel() can also surface as an error. Only a
+            // failure of the current, non-cancelled utterance is a real
+            // host-voice failure. This was lost in 4972d2b; restore it without
+            // touching the echo/mic loop guards.
+            if (attempt !== hostAttemptSeqRef.current) return;
+            if (utteranceRef.current !== failed || utterCancelledRef.current) return;
+            hostAudioRef.current.errors += 1;
+            setNotice("Host voice could not play — retrying with the system default.");
+          },
+        });
+
+        if (utter) {
+          utteranceRef.current = utter;
+          hostStartTimerRef.current = setTimeout(() => {
+            hostStartTimerRef.current = null;
+            if (attempt !== hostAttemptSeqRef.current || started) return;
+            utteranceRef.current = null;
+            utterCancelledRef.current = true;
+            speechQueue.hardFlushOnBargeIn();
+            hostSpeakingRef.current = false;
+            setHostSpeaking(false);
+            if (retry < 1) {
+              hostAudioRef.current.retries += 1;
+              logEvent("host voice did not start; retrying system default");
+              setNotice("Host voice did not start — switching to the system default voice.");
+              speakNative(text, onDone, { retry: 1, useDefaultVoice: true });
+            } else {
+              setHostSilent(true);
+              // The recovery banner owns this message; a second notice
+              // would duplicate it above the captions.
+              setNotice("");
+              surfaceRecovery("host-silent");
+              onDone?.();
+              requestRearm();
+            }
+          }, 1800);
+        } else {
+          // The queue refused the line: never leave a stuck "speaking".
+          hostSpeakingRef.current = false;
+          setHostSpeaking(false);
+          onDone?.();
+          requestRearm();
+        }
+        return utter !== null;
+      } catch {
+        hostSpeakingRef.current = false;
+        setHostSpeaking(false);
+        echoFilter.clear();
+        setHostSilent(true);
+        setNotice("");
+        surfaceRecovery("host-silent");
+        onDone?.();
+        requestRearm();
+        return false;
       }
-      return utter !== null;
-    } catch {
-      hostSpeakingRef.current = false;
-      setHostSpeaking(false);
-      echoFilter.clear();
-      return false;
-    }
+    };
+
+    afterNextPaint(speakAfterPaint);
+    return true;
   }
 
   function speakHost(text: string) {
@@ -875,6 +1042,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     // exactly what changed. Never speak internal state-machine jargon.
     const line = `Undid the last change. ${summary}`;
     setLocalHost(line);
+    lastHostLineRef.current = spokenHostText(line);
+    appendLog("host", spokenHostText(line));
     return line;
   }
 
@@ -898,10 +1067,11 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     const clicked = before.checklist.find((item) => item.id === itemId);
     commit("click", (s) => applyChecklistItem(s, itemId, done));
     const current = withDefaults(stateRef.current);
-    if (done && clicked) {
-      setLocalHost(buildRaisedLine(current, clicked.label));
-    } else {
-      setLocalHost(buildQuestionLine(current));
+    const line = done && clicked ? buildRaisedLine(current, clicked.label) : buildQuestionLine(current);
+    setLocalHost(line);
+    if (voiceOn && unlockedRef.current && spokenHostText(line) !== lastSpokenRef.current) {
+      lastSpokenRef.current = spokenHostText(line);
+      speakNative(line);
     }
   }
 
@@ -1058,6 +1228,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   function handleLiveTranscript(text: string, isFinal = false) {
     const trimmed = stripAsrAnnotations(text);
     if (!trimmed) return;
+    // Real words mean the recovery banner has done its job; the tracker
+    // is reset only by a turn that actually completes.
+    setRecovery(null);
     liveTranscriptRef.current = trimmed;
     stampTiming("firstPartial");
     setLiveTranscript(trimmed);
@@ -1356,11 +1529,21 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (next !== "summary" && next !== "complete") {
       const line = `Not yet — ${nextObjectiveHostLine(current)}`;
       setLocalHost(line);
-      if (voiceOn && unlockedRef.current) speakNative(line);
+      if (voiceOn && unlockedRef.current && spokenHostText(line) !== lastSpokenRef.current) {
+        lastSpokenRef.current = spokenHostText(line);
+        speakNative(line);
+      }
       return;
     }
     commit("summary", (s) => applyLawyerSummary(s));
-    setLocalHost("Summary prepared — copy or download it. Mission complete: nothing was filed and nothing was sent.");
+    const line = "Summary prepared — copy or download it. Mission complete: nothing was filed and nothing was sent.";
+    setLocalHost(line);
+    // The direct button path must speak the same line it paints. The fast
+    // lane's own speak is de-duplicated by lastSpokenRef.
+    if (voiceOn && unlockedRef.current && spokenHostText(line) !== lastSpokenRef.current) {
+      lastSpokenRef.current = spokenHostText(line);
+      speakNative(line);
+    }
   }
 
   useCopilotAction({
@@ -1394,7 +1577,12 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
     clearTurnErrors();
     commit("click", (s) => ({ ...s, selectedJurisdiction: jurisdiction }));
-    setLocalHost(nextObjectiveHostLine(withDefaults(stateRef.current)));
+    const line = nextObjectiveHostLine(withDefaults(stateRef.current));
+    setLocalHost(line);
+    if (voiceOn && unlockedRef.current && spokenHostText(line) !== lastSpokenRef.current) {
+      lastSpokenRef.current = spokenHostText(line);
+      speakNative(line);
+    }
   }
 
   // The fast lane's spoken/visible line. It is derived from the state
@@ -1428,7 +1616,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         return `DEMO cheapest by number: ${cheapest.name} (${cheapest.fee}). ${currency}${question ? ` ${question}` : ""}`;
       }
       case "lawyer-summary":
-        return "Summary prepared — copy or download it. Mission complete: nothing was filed and nothing was sent.";
+        return state.lawyerPackage
+          ? "Summary prepared — copy or download it. Mission complete: nothing was filed and nothing was sent."
+          : `Not yet — ${nextObjectiveHostLine(state)}`;
       default:
         return "";
     }
@@ -1512,9 +1702,13 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         // Immediate silence. The mic stays available so "continue" is
         // understood; nothing is repeated and no new filler is spoken.
         cancelSpeech();
-        // Visible, not spoken: stop means stop. The mic comes back so the
-        // user can say "continue" without a pointer.
-        setLocalHost("Stopped. I'm still listening — say “continue” when you're ready.");
+        clearHeldUtterance();
+        // Visible, not spoken: stop means stop. The line is still part of
+        // the caption record and "repeat that" can replay it.
+        const line = "Stopped. I'm still listening — say “continue” when you're ready.";
+        setLocalHost(line);
+        lastHostLineRef.current = spokenHostText(line);
+        appendLog("host", spokenHostText(line));
         if (convoRef.current && !recordingRef.current) {
           setTimeout(() => {
             if (convoRef.current && !recordingRef.current) void startRecording();
@@ -1526,6 +1720,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         convoRef.current = true;
         setConvoActive(true);
         setNotice("");
+        clearHeldUtterance();
         const line = nextObjectiveHostLine(withDefaults(stateRef.current));
         setLocalHost(line);
         if (voiceOn) {
@@ -1539,14 +1734,16 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }
       case "show-transcript": {
         setTranscriptOpen(true);
-        setLocalHost("Transcript open — every line from both sides is listed.");
-        if (voiceOn) speakNative("Transcript open — every line from both sides is listed.");
+        const line = "Transcript open — every line from both sides is listed.";
+        setLocalHost(line);
+        if (voiceOn) speakNative(line);
         return true;
       }
       case "hide-transcript": {
         setTranscriptOpen(false);
-        setLocalHost("Transcript hidden. Say “show transcript” to open it again.");
-        if (voiceOn) speakNative("Transcript hidden.");
+        const line = "Transcript hidden. Say “show transcript” to open it again.";
+        setLocalHost(line);
+        if (voiceOn) speakNative(line);
         return true;
       }
       case "save": {
@@ -1570,7 +1767,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         if (!settingsRef.current.voiceOn || settingsRef.current.volume <= 0.01) {
           updateVoiceSettings({ voiceOn: true, volume: Math.max(0.25, settingsRef.current.volume) });
         }
-        const line = "This is the host voice. If you can hear this, say “help” to keep going or “start over” for a new colony.";
+        const line = "This is the host voice. If you can hear this, say “continue”.";
         setLocalHost(line);
         setNotice("");
         cancelSpeech();
@@ -1579,6 +1776,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }
       case "start-over": {
         clearSavedSession();
+        clearHeldUtterance();
         commit("start-over", (s) => applyStartOver(s));
         setTranscriptOpen(false);
         setEquityConfirm(false);
@@ -1613,7 +1811,15 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   }
 
   async function sendToAgent(text: string, fromVoice = false) {
-    const trimmed = stripAsrAnnotations(text);
+    let trimmed = stripAsrAnnotations(text);
+    // A slow speaker's held beginning is completed by this final. Merge
+    // before any parser runs, so "I would like to pick" + "Mars" is one
+    // command, not two dead turns. A typed command abandons the hold.
+    if (fromVoice && heldUtteranceRef.current) {
+      trimmed = stripAsrAnnotations(takeHeldTranscript(trimmed));
+    } else if (!fromVoice) {
+      clearHeldUtterance();
+    }
     if (!trimmed) {
       if (fromVoice) {
         const line = emptyTranscriptReply();
@@ -1625,6 +1831,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }
       return;
     }
+    // A real command or control clears the recovery banner and resets the
+    // consecutive-failure count. Errors raised by this turn start a new
+    // count, so one bad turn never poisons the rest of the session.
+    clearRecovery();
     // Always-available voice controls run before the busy gate and before
     // any journey handling, so help, repeat, stop, slower, and start over
     // are understood in every state.
@@ -1850,19 +2060,11 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     const fast = Boolean(intent && FAST_INTENT_KINDS.has(intent.kind));
     logEvent(`intent ${intent?.kind ?? "none"} fast=${fast}`);
 
-    // Immediate acknowledgment for the model path only. The fast lane
-    // below answers immediately with its full host line instead of "on it".
-    if (!fast && fromVoice && voiceOn) {
-      const ack =
-        intent?.kind === "jurisdiction"
-          ? `Picking ${intent.jurisdiction}.`
-          : intent?.kind === "equity"
-            ? "Adjusting the split."
-            : intent?.kind === "checklist-advance"
-              ? "Building that now."
-              : "On it.";
-      speakNative(ack);
-    }
+    // No spoken "On it." filler on the model path. A spoken
+    // acknowledgement would start before the reply arrives, so the caption
+    // would show one line while the ear heard another. The THINKING phase
+    // and the think cue carry that moment, and the reply is the first
+    // spoken line after the turn.
     // Paint instantly, confirm asynchronously. Authoritative commit for this turn:
     // reset keys so state appliers (e.g. jurisdiction pick) always execute.
     previewKeyRef.current = null;
@@ -1928,7 +2130,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         }),
       );
     } catch (error) {
-      setTurnError(`Agent error: ${error instanceof Error ? error.message : "the agent run failed"}. Nothing was changed by that turn — type the command again.`);
+      const detail = error instanceof Error ? error.message : "the agent run failed";
+      setTurnError(`Agent error: ${detail}. Nothing was changed by that turn — say the command again.`);
+      surfaceRecovery("agent-error", detail);
     } finally {
       activeVoiceTurnRef.current = false;
       setSending(false);
@@ -2026,9 +2230,15 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       };
 
       ws.onclose = () => {
+        const wasReady = streamingReadyRef.current;
         streamingReadyRef.current = false;
         asrSocketRef.current = null;
         logEvent("asr socket closed");
+        // A live socket that drops mid-turn is a recovery event, not a
+        // console line. The buffered fallback carries the audio.
+        if (wasReady && convoRef.current && recordingRef.current && !finishingRef.current) {
+          surfaceRecovery("stream-lost");
+        }
       };
 
       ws.onerror = (err) => {
@@ -2065,10 +2275,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     void (async () => {
       try {
         if (isEmptyTranscript(trimmed)) {
-          // No speech in this turn: stay quiet and keep the current host
-          // line. A silence-only final must never replace the question
-          // the user is about to answer.
+          // No speech in this turn: keep the current host line, but never
+          // go back to a silent LISTENING. Surface the gap and re-arm.
           if (!activityRef.current.hasSpoken) {
+            surfaceRecovery("empty-turn", "The turn ended without speech.");
             return;
           }
           // The user did speak but streaming lost the words; the buffered
@@ -2078,13 +2288,59 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
           const line = emptyTranscriptReply();
           setLocalHost(line);
           setNotice(line);
+          surfaceRecovery("empty-turn", "Streaming and the batch fallback both returned no words.");
           if (voiceOn && unlockedRef.current) {
             lastSpokenRef.current = spokenHostText(line);
             speakNative(line);
           }
           return;
         }
-        await sendToAgent(trimmed, true);
+
+        // --- Slow-speech continuation ----------------------------------
+        // A recognizer final is not always a complete thought. If the
+        // wording is visibly unfinished, hold it, keep the mic open, and
+        // merge the next final. Controls always win over a held fragment.
+        const held = heldUtteranceRef.current;
+        let finalText = trimmed;
+        if (held) {
+          // Controls, yes/no answers, name approvals, and questions are
+          // standalone turns. They abandon the held fragment instead of
+          // being glued onto it ("I want to … Stop").
+          const standalone =
+            Boolean(parseVoiceControl(trimmed)) ||
+            isConfirmationAnswer(trimmed) ||
+            isNameApproval(trimmed) ||
+            Boolean(parseSpokenCompanyName(trimmed)) ||
+            /\?\s*$/.test(trimmed) ||
+            /^(?:what|how|where|when|who|why|can|could|do|does|is|are|should|would)\b/i.test(trimmed);
+          if (standalone) {
+            clearHeldUtterance();
+          } else {
+            finalText = mergeContinuation(held.text, trimmed);
+            clearHeldUtterance();
+          }
+        }
+        const finalControl = parseVoiceControl(finalText);
+        const finalIntent = parseLiveIntent(finalText);
+        const finalAnswer =
+          isConfirmationAnswer(finalText) ||
+          isNameApproval(finalText) ||
+          Boolean(parseSpokenCompanyName(finalText));
+        const looksLikeQuestion = /\?\s*$/.test(finalText) ||
+          /^(?:what|how|where|when|who|why|can|could|do|does|is|are|should|would)\b/i.test(finalText);
+        if (
+          !finalControl &&
+          !finalIntent &&
+          !finalAnswer &&
+          !looksLikeQuestion &&
+          looksUnfinishedTranscript(finalText)
+        ) {
+          logEvent(`holding unfinished final ${JSON.stringify(finalText)}`);
+          holdContinuation(finalText);
+          return;
+        }
+
+        await sendToAgent(finalText, true);
       } finally {
         finishingRef.current = false;
       }
@@ -2222,6 +2478,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       clearSpeechWatchdog();
       clearRearmTimer();
       clearConfirmationTimer();
+      if (recoveryTimerRef.current !== null) clearTimeout(recoveryTimerRef.current);
+      if (continuationTimerRef.current !== null) clearTimeout(continuationTimerRef.current);
+      recoveryTimerRef.current = null;
+      continuationTimerRef.current = null;
       utteranceRef.current = null;
       if (travelFrameRef.current !== null) cancelAnimationFrame(travelFrameRef.current);
       try {
@@ -2246,6 +2506,29 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       clearInterval(clock);
     };
   }, [recording]);
+
+  // A long turn with audible speech but no transcript is a visible
+  // recovery, not an endless LISTENING screen. The mic is left open: a
+  // slow speaker may still be mid-thought.
+  useEffect(() => {
+    if (!recording) {
+      listeningStallShownRef.current = false;
+      return;
+    }
+    if (listeningStallShownRef.current) return;
+    if (
+      isListeningStall({
+        recording: true,
+        hasTranscript: Boolean(liveTranscript),
+        heardAudio: peakLevelRef.current > 0.02,
+        listenedMs: recordSeconds * 1000,
+      })
+    ) {
+      listeningStallShownRef.current = true;
+      surfaceRecovery("listening-stall");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording, recordSeconds, liveTranscript]);
 
   // Same existing transcribe path for a fresh recording and for Retry.
   async function transcribeAndSend(buf: ArrayBuffer) {
@@ -2404,21 +2687,19 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
     finishingRef.current = false;
 
-    if (noSpeechAttemptsRef.current === 0) {
-      noSpeechAttemptsRef.current = 1;
+    const attempts = noSpeechAttemptsRef.current;
+    noSpeechAttemptsRef.current = attempts + 1;
+    if (attempts === 0) {
       const line = noSpeechReply();
       setLocalHost(line);
-      setNotice(line);
       if (settingsRef.current.voiceOn && unlockedRef.current) {
         lastSpokenRef.current = spokenHostText(line);
         speakNative(line);
       }
-    } else {
-      convoRef.current = false;
-      setConvoActive(false);
-      noSpeechAttemptsRef.current = 0;
-      setNotice("Conversation paused (no speech detected) — press TALK to resume.");
     }
+    // The visible recovery banner carries the state; a second notice line
+    // would repeat it above the captions.
+    surfaceRecovery("no-speech", attempts === 0 ? "" : "The new turn heard no words; the mic is open again.");
   }
 
   // First TALK press only: consume the one-per-session marker. The
@@ -2609,6 +2890,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     bufferedFallbackTurnRef.current = null;
     logEvent(`startRecording streaming=${streamingReadyRef.current} socket=${asrSocketRef.current?.readyState ?? -1}`);
     clearRearmTimer();
+    setRearming(false);
     clearConfirmationTimer();
     liveTranscriptRef.current = "";
     activeTurnIdRef.current += 1;
@@ -2629,6 +2911,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     previewKeyRef.current = null;
     committedKeyRef.current = null;
     intentMatchedRef.current = false;
+    listeningStallShownRef.current = false;
     setLiveTranscript("");
     setLivePreview(null);
     setMicLevel(0);
@@ -2685,14 +2968,26 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const voiceAudiblyOn = settings.voiceOn && settings.volume > 0.01;
 
   // The visible host line is always the thing the transcript records and
-  // "repeat that" replays, whether VOX is on or off.
+  // "repeat that" replays. It uses the same spokenHostText cap as the TTS
+  // path, so the caption equals the audio.
+  //
+  // While an agent turn is in flight, the fallback question is provisional:
+  // the reply will replace it. Logging that provisional line would put a
+  // sentence in the caption history that was never said. Spoken lines are
+  // still logged by speakNative itself, before the mute check.
   useEffect(() => {
-    const text = hostPrompt.text.trim();
+    const text = hostCaption(hostPrompt.text);
     if (!text) return;
-    lastHostLineRef.current = spokenHostText(text);
-    const timer = setTimeout(() => appendLog("host", spokenHostText(text)), 0);
+    // With voice on, every line that is actually said is logged by
+    // speakNative. Logging the visible prompt here too would record the
+    // provisional fallback question an agent turn shows while thinking —
+    // words the ear never heard. With voice off, the screen is the only
+    // channel, so the visible line is the record.
+    if (voiceOn) return;
+    lastHostLineRef.current = text;
+    const timer = setTimeout(() => appendLog("host", text), 0);
     return () => clearTimeout(timer);
-  }, [hostPrompt.text]);
+  }, [hostPrompt.text, voiceOn]);
 
   // Autosave: a break never loses the run. The write is debounced so a
   // slider drag or a live tick does not hammer localStorage. Loading a
@@ -2788,17 +3083,20 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   }, [sending, isLoading]);
 
   // Conversation loop: when the agent has finished speaking, re-open
-  // the mic automatically so the talk never "just ends". Any error
-  // pauses the loop instead of retrying into a wall.
+  // the mic automatically so the talk never "just ends". An error is a
+  // visible recovery, not a silent pause: show it, then re-arm by itself.
   useEffect(() => {
     if (!convoActive || recording || transcribing || sending || isLoading || hostSpeaking) return;
     if (turnError || transcribeFailure) {
       const t = setTimeout(() => {
-        convoRef.current = false;
-        setConvoActive(false);
-        queuedTurnRef.current = null;
-        setNotice("Conversation paused after an error — press Speak (mic) to resume.");
-      }, 0);
+        if (!convoRef.current) return;
+        if (recordingRef.current || busyRef.current) return;
+        // Recover hands-free: the error banner has been visible for the
+        // recovery beat, so reopen the mic and let the user retry by
+        // voice. startRecording clears the stale error state.
+        setRearming(false);
+        void startRecording();
+      }, RECOVERY_REARM_MS);
       return () => clearTimeout(t);
     }
     // Re-arm on utterance onend/onerror and turn completion, not by polling speechSynthesis.speaking.
@@ -2839,8 +3137,11 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       setSending(false);
       setNotice("");
       setTurnError("Agent took too long, try again");
+      surfaceRecovery("agent-timeout");
     }, AGENT_WATCHDOG_MS);
     return () => clearTimeout(timer);
+    // surfaceRecovery is intentionally read through the live refs it uses.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoading, sending, stopGeneration]);
 
   // Hands-free testing & mock-voice simulation hook:
@@ -2867,6 +3168,22 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }),
       isListening: () => isTurnListeningRef.current,
       isTranscriptOpen: () => transcriptOpen,
+      getRecovery: () => recovery,
+      getContinuation: () => continuation,
+      getCaption: () => ({
+        host: hostCaption(hostPrompt.text),
+        heard: heardCaption(liveTranscript) || heardCaption(lastTranscript || view.transcript),
+        phase: captionPhase({
+          convoActive,
+          recording,
+          hasLiveWords: Boolean(liveTranscript),
+          hostSpeaking,
+          busy: transcribing || sending || isLoading,
+          recovering: Boolean(recovery) && !recording,
+          rearming,
+        }),
+        history: logRef.current.length,
+      }),
       feedVoice: async (text: string) => {
         handleLiveTranscript(text);
         setMicLevel(0.85);
@@ -2887,7 +3204,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       delete win.__vvbVoice;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recording, transcribing, sending, isLoading, hostSpeaking, transcriptOpen]);
+  }, [recording, transcribing, sending, isLoading, hostSpeaking, transcriptOpen, recovery, rearming, liveTranscript, continuation, lastTranscript]);
 
   // Beat completion celebrates on the mission banner, with a
   // zero-gravity stardust burst over the page (skipped entirely for
@@ -2967,20 +3284,55 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }, 500);
     return () => clearInterval(id);
   }, [busy]);
-  const flowStatus = recording
-    ? liveTranscript
-      ? "Listening — canvas is updating as you speak. Pause for a second and it sends itself."
-      : "Listening — say a command like “Pick Mars”. The canvas updates as you speak."
-    : transcribing
-      ? "Heard you — transcribing with Muse Voice…"
-      : busy
-        ? "Agent confirming — your live preview is already on the canvas."
-        : hostSpeaking
-          ? "Host is speaking — the mic opens when the line finishes."
-          : livePreview?.status === "confirmed"
-            ? "Done — painted and confirmed."
-            : "Talk or type a command — the canvas moves as you speak.";
+  const flowStatus = recovery
+    ? `${recovery.headline} — ${recovery.nextStep}`
+    : recording
+      ? liveTranscript
+        ? "Listening — canvas is updating as you speak. Pause for a second and it sends itself."
+        : "Listening — take your time. The canvas updates as you speak."
+      : transcribing
+        ? "Heard you — transcribing with Muse Voice…"
+        : busy
+          ? "Thinking — the canvas already shows the change; the mic re-opens next."
+          : rearming
+            ? "Mic re-arming — your turn opens by itself."
+            : hostSpeaking
+              ? "Host is speaking — the mic opens when the line finishes."
+              : livePreview?.status === "confirmed"
+                ? "Painted and confirmed — the host has the same line."
+                : "Talk or type a command — the canvas moves as you speak.";
   const shownTranscript = lastTranscript || view.transcript;
+  // Captions are the primary channel. The host text is the exact spoken
+  // line (same spokenHostText cap), and the heard text is the exact
+  // transcript after ASR annotations are stripped.
+  const heardState = heardCaptionState(liveTranscript, shownTranscript, recording);
+  const heardText = heardState === "live" ? heardCaption(liveTranscript) : heardCaption(shownTranscript);
+  const captionState = captionPhase({
+    convoActive,
+    recording,
+    hasLiveWords: Boolean(liveTranscript),
+    hostSpeaking,
+    busy,
+    // The banner already surfaces the recovery. While the mic is actually
+    // open, say LISTENING, not "the mic re-arms" — the screen must match
+    // the microphone.
+    recovering: Boolean(recovery) && !recording,
+    rearming,
+  });
+  // While the agent thinks, keep the last line it actually said on screen.
+  // The fallback question is a plan, not a spoken caption; showing it here
+  // would put words on screen the ear never heard.
+  const thinkingHostLine =
+    (sending || isLoading) && !localHost ? lastHostLineRef.current : "";
+  const hostDisplay = hostCaption(thinkingHostLine || hostPrompt.text);
+  const hostHealth = !voiceAudiblyOn
+    ? "VOICE OFF"
+    : hostSilent
+      ? "SILENT"
+      : hostSpeaking
+        ? "SPEAKING"
+        : "READY";
+  const showHold = Boolean(continuation) && !hostSpeaking;
   // The pending-turn check: a completed turn that changed nothing (and is
   // not a re-pick, which already acknowledged) surfaces a visible error.
   const pendingTurnRef = useRef<{ signature: string; text: string; beat: Beat } | null>(null);
@@ -3002,7 +3354,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         const sel = view.selectedJurisdiction;
         const mentioned = DEMO_JURISDICTIONS.map((r) => r.jurisdiction).find((n) => pending.text.toLowerCase().includes(n.toLowerCase()));
         if (!(sel && mentioned && mentioned.toLowerCase() === sel.toLowerCase())) {
-          setTurnError("Agent finished without changing anything — the turn may have hit a locked thread or an agent error. Nothing was changed; type the command again.");
+          setTurnError("Agent finished without changing anything — the turn may have hit a locked thread or an agent error. Nothing was changed; say the command again.");
+          surfaceRecovery("nothing-changed");
         }
       } else {
         setLivePreview((p) => (p ? { ...p, status: "confirmed" } : p));
@@ -3176,7 +3529,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
                 {view.founders.length} owner{view.founders.length === 1 ? "" : "s"} — {equityLabel}
               </h2>
               <p className="objective-prompt" data-testid="mission-prompt">
-                Does this split look right? Confirm to move on, or choose another owner count / drag a slider.
+                Does this split look right? One step: confirm it.
+              </p>
+              <p className="objective-say" data-testid="next-step">
+                <span>SAY</span> <q>Confirm</q>
               </p>
               <div className="confirm-actions" data-testid="equity-confirm">
                 <button
@@ -3196,7 +3552,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
                   KEEP EDITING
                 </button>
               </div>
-              <p className="objective-build-hint">Or say “confirm” / “change”.</p>
+              <p className="objective-build-hint">The split already totals 100%. KEEP EDITING is the only alternative.</p>
             </section>
           ) : (
           <section
@@ -3283,7 +3639,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
                       key={chip.label}
                       type="button"
                       className="chip-btn"
-                      data-testid={`mission-chip-${chip.label}`}
+                      data-testid="mission-chip"
+                      data-label={chip.label}
                       disabled={!canSend}
                       onClick={async () => {
                         await sendToAgent(chip.command);
@@ -3341,6 +3698,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
             </details>
           </section>
           )}
+          {/* Captions are a primary channel, not a modal. The full run
+              stays on screen in the left rail and auto-scrolls. */}
+          <CaptionHistory entries={log} />
         </aside>
 
         <section className="stage" aria-label="Ship viewport">
@@ -3716,26 +4076,24 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
         <div className="deck-status">
           <span data-testid="turn-phase" className={`deck-phase phase-${turnPhase}`}>
-            {turnPhase === "recording"
-              ? "Recording…"
-              : turnPhase === "transcribing"
-                ? "Transcribing…"
-                : turnPhase === "sending"
-                  ? "Sending…"
-                  : turnPhase === "agent-busy"
-                    ? `Agent working… ${elapsed}s`
-                    : "Ready"}
-          </span>
-          <span data-testid="convo-status" className="deck-convo">
-            {convoActive
-              ? recording
-                ? "CONVERSATION LIVE — LISTENING"
+            {recovery
+              ? "Recovering…"
+              : rearming
+                ? "Re-arming…"
                 : hostSpeaking
-                  ? "HOST SPEAKING — MIC WILL OPEN"
-                  : busy
-                    ? "CONVERSATION LIVE — AGENT ANSWERING"
-                    : "CONVERSATION LIVE — MIC STANDBY"
-              : "CONVERSATION OFF — PRESS TALK"}
+                  ? "Host speaking…"
+                  : turnPhase === "recording"
+                    ? "Recording…"
+                    : turnPhase === "transcribing"
+                      ? "Transcribing…"
+                      : turnPhase === "sending"
+                        ? "Sending…"
+                        : turnPhase === "agent-busy"
+                          ? `Agent working… ${elapsed}s`
+                          : "Ready"}
+          </span>
+          <span data-testid="convo-status" className="deck-convo" data-phase={captionState}>
+            {captionPhaseLabel(captionState).label}
           </span>
           <span data-testid="flow-status" className="deck-flow">
             {flowStatus}
@@ -3780,35 +4138,34 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
           {announcement?.text ?? ""}
         </p>
 
-        <div className="deck-host" data-testid="host-prompt" aria-label="Host prompt">
-          <span className="deck-host-label">HOST · LIVE</span>
-          <p data-testid="host-prompt-text" className="deck-host-text" title={hostPrompt.text}>
-            {hostPrompt.text}
-          </p>
-          {ack ? (
-            <p data-testid="host-ack" className="deck-host-ack">
-              {ack}
-            </p>
-          ) : null}
-          <span
-            className="deck-host-note"
-            title="Host speech is unverified conversation, not a grounded fact card."
+        {recovery ? (
+          <div
+            className="recovery-banner"
+            data-testid="recovery-banner"
+            data-kind={recovery.kind}
+            role="alert"
           >
-            unverified speech
-          </span>
-        </div>
+            <span className="recovery-kicker">RECOVERY</span>
+            <div className="recovery-copy">
+              <strong>{recovery.headline}</strong>
+              {recovery.detail ? <span className="recovery-detail">{recovery.detail}</span> : null}
+              <span className="recovery-next">{recovery.nextStep}</span>
+            </div>
+            {rearming ? <span className="recovery-rearm">MIC RE-ARMING</span> : null}
+          </div>
+        ) : null}
 
         {!voiceAudiblyOn ? (
           <p data-testid="host-audio-off" className="alert" role="alert">
             Host voice is off. Say “voice on” or “test voice” — I will turn it back on.
           </p>
-        ) : hostSilent ? (
+        ) : hostSilent && recovery?.kind !== "host-silent" ? (
           <p data-testid="host-audio-error" className="alert" role="alert">
             No host audio started. Check the tab mute and the system output device, then say “test
             voice” — I will retry with the system default voice.
           </p>
         ) : null}
-        {turnError ? (
+        {turnError && !recovery ? (
           <p data-testid="turn-error" className="alert" role="alert">
             {turnError}
           </p>
@@ -3878,23 +4235,19 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
           </button>
 
           <div className="deck-readout">
+            <CaptionConsole
+              hostText={hostDisplay}
+              heardText={heardText}
+              heardState={heardState}
+              phase={captionState}
+              hostHealth={hostHealth}
+              ack={ack}
+              holdText={showHold ? continuation?.text ?? null : null}
+            />
             <div className="deck-kicker">
               <span className="deck-mode">{convoActive ? "CONVERSATION" : "PUSH TO TALK"}</span>
               <span className="deck-hint">SPACE to talk · 1–6 systems</span>
             </div>
-            <p className="transcript-line" data-testid="live-transcript">
-              {recording && liveTranscript ? (
-                <>
-                  <span className="live-label">HEARD</span> <q>{liveTranscript}</q>
-                </>
-              ) : shownTranscript ? (
-                <>
-                  <span className="live-label">LAST</span> <q>{shownTranscript}</q>
-                </>
-              ) : (
-                <span className="is-dim">Say “Pick Mars” — the canvas moves as you speak.</span>
-              )}
-            </p>
 
             {recording || livePreview ? (
               <div data-testid="live-voice-panel" className="live-panel">

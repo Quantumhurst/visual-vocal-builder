@@ -22,6 +22,8 @@ export const VVB_SYSTEM_PROMPT = [
   `To reverse the last change call ${AGENT_ACTIONS.undoLastChange}; to reset the canvas call ${AGENT_ACTIONS.startOver}. Never claim an undo or reset without calling the tool.`,
   `For comparison questions about the places call ${AGENT_ACTIONS.compareJurisdictions}. You may quote DEMO jurisdiction-row values verbatim and must label them DEMO; this exception covers only the three fictional places.`,
   "Every tool returns what actually changed. Report only that. If it says Nothing changed, say so and use its Current state. If it says Confirmed, the request is already done: report it as done/locked in, never as Nothing changed.",
+  "One clear next step per reply: end with the next beat's single question and at most one suggested phrase. Never offer a menu or list several alternatives; the screen already carries exactly one SAY cue.",
+  "Never claim a change before the tool result names it. The app paints the canvas first and the host line is the spoken caption, so a claim the screen does not show is a contradiction.",
   "Ask the question for readable.progress.nextBeat; never re-ask a beat marked done.",
   "Never claim anything was filed or emailed; the summary is prep only.",
   "The user may say help, repeat that, stop, slower, or start over at any time. Those controls are handled by the app, not by you; if one reaches you, acknowledge it in one short line and re-ask the current step.",

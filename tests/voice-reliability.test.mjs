@@ -46,10 +46,13 @@ test("hasRetryAudio only when an in-memory buffer exists", () => {
 });
 
 test("voice reliability timeouts are bounded and non-hanging", () => {
-  assert.equal(ASR_TIMEOUT_MS, 15_000);
+  assert.equal(ASR_TIMEOUT_MS, 30_000);
   assert.equal(AGENT_WATCHDOG_MS, 25_000);
-  assert.equal(NO_SPEECH_TIMEOUT_MS, 8_000);
-  assert.equal(MAX_UTTERANCE_MS, 15_000);
+  assert.equal(NO_SPEECH_TIMEOUT_MS, 12_000);
+  // A slow speaker may think for a long time; the cap stays under the
+  // 60-second PCM upload limit, not at the old 15-second cut-off.
+  assert.equal(MAX_UTTERANCE_MS, 55_000);
+  assert.ok(MAX_UTTERANCE_MS <= 60_000);
   assert.equal(SPEECH_POLL_TIMEOUT_MS, 15_000);
 });
 
@@ -63,15 +66,16 @@ test("empty transcript detection and friendly reply helper", () => {
 });
 
 test("no-speech timeout and utterance cap guards", () => {
-  assert.equal(shouldTriggerNoSpeech(false, 7_000), false);
-  assert.equal(shouldTriggerNoSpeech(false, 8_000), true);
-  assert.equal(shouldTriggerNoSpeech(false, 10_000), true);
+  assert.equal(shouldTriggerNoSpeech(false, 11_000), false);
+  assert.equal(shouldTriggerNoSpeech(false, 12_000), true);
+  assert.equal(shouldTriggerNoSpeech(false, 10_000), false); // still composing
   assert.equal(shouldTriggerNoSpeech(true, 10_000), false); // spoke: no timeout
   assert.match(noSpeechReply(), /Didn't hear anything/i);
 
   assert.equal(shouldCapUtterance(14_000), false);
-  assert.equal(shouldCapUtterance(15_000), true);
-  assert.equal(shouldCapUtterance(20_000), true);
+  assert.equal(shouldCapUtterance(54_000), false);
+  assert.equal(shouldCapUtterance(55_000), true);
+  assert.equal(shouldCapUtterance(60_000), true);
 });
 
 test("speech synthesis re-arm force recovery", () => {

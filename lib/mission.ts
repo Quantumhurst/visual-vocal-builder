@@ -1,6 +1,8 @@
 // Mission guidance for the space-game layer — pure, unit-testable.
-// The banner always names the next required mission, the exact words to
-// say, and chips that send the same commands a spoken user would.
+// The banner always names the next required mission and exactly one SAY
+// cue. The glasses-agent rule: one clear next step per screen, never a
+// wall of options. Alternate commands stay available by voice and inside
+// the one collapsed plan disclosure, not in the primary prompt.
 //
 // Six required missions, in this order:
 //   home base -> crew split (confirmed) -> 5/5 colony -> approve name
@@ -20,6 +22,8 @@ export type Mission = {
   // The one phrase the screen asks the user to say. The host speaks the
   // same instruction, so screen and voice always agree.
   voiceCue: string;
+  // Exactly one fallback chip. The plan disclosure may hold it, but the
+  // primary card never presents a menu.
   chips: { label: string; command: string }[];
 };
 
@@ -47,18 +51,12 @@ export function missionFor(state: SharedState): Mission {
         ? "Mission complete — colony founded"
         : `Mission complete — colony ${built}/${structures}`,
       prompt: founded
-        ? "All six missions are done. The summary is prepared, nothing was filed, and nothing was sent. Say “Start over” for a new colony, or “Show transcript” to review the whole run."
-        : `All six missions are cleared, but the colony is only ${built}/${structures} built. Say “Yes” to raise the next structure, or “Start over”.`,
+        ? "All six missions are done. The summary is prepared, nothing was filed, and nothing was sent."
+        : `All six missions are cleared, but the colony is only ${built}/${structures} built.`,
       voiceCue: founded ? "Show transcript" : "Yes",
       chips: founded
-        ? [
-            { label: "Show transcript", command: "Show transcript" },
-            { label: "Start over", command: "Start over" },
-          ]
-        : [
-            { label: "Raise next structure", command: "Yes" },
-            { label: "Start over", command: "Start over" },
-          ],
+        ? [{ label: "Show transcript", command: "Show transcript" }]
+        : [{ label: "Raise next structure", command: "Yes" }],
     };
   }
   const step = ORDER.indexOf(nextBeat) + 1;
@@ -70,13 +68,9 @@ export function missionFor(state: SharedState): Mission {
         step,
         total,
         title: "Pick your home base",
-        prompt: "Say “Pick Mars”, “Pick Europa”, or ask “What's the cheapest place?”",
+        prompt: "Choose one fictional place. The host and the canvas follow whatever you say.",
         voiceCue: "Pick Mars",
-        chips: [
-          { label: "Pick Mars", command: "Pick Mars as our home base" },
-          { label: "Pick Europa", command: "Pick Europa as our home base" },
-          { label: "Cheapest place?", command: "What's the cheapest place to incorporate?" },
-        ],
+        chips: [{ label: "Pick Mars", command: "Pick Mars as our home base" }],
       };
     case "equity":
       return {
@@ -84,13 +78,9 @@ export function missionFor(state: SharedState): Mission {
         step,
         total,
         title: `Split the equity on ${place}`,
-        prompt: "Say “70/30”, “Make Orbit 70%”, choose 1–5 owners, or drag the sliders — the split always totals 100%. Then say “confirm”.",
+        prompt: "Set who owns what. The split always totals 100%, then you confirm it on the card.",
         voiceCue: "Make Orbit 70%",
-        chips: [
-          { label: "Make Orbit 70%", command: "Make Orbit 70%" },
-          { label: "Make Nova 70%", command: "Make Nova 70%" },
-          { label: "Even 50/50", command: "Make Nova 50%" },
-        ],
+        chips: [{ label: "Make Orbit 70%", command: "Make Orbit 70%" }],
       };
     case "checklist": {
       const built = state.checklist.filter((item) => item.done).length;
@@ -101,12 +91,13 @@ export function missionFor(state: SharedState): Mission {
         step,
         total,
         title: "Build the colony, one structure at a time",
-        prompt: `Structure ${built + 1} of ${structures}: ${next?.label ?? "next structure"} — ${built} of ${structures} are up. Say “Yes” to raise it, or “Tell me more”.`,
+        prompt: `Structure ${built + 1} of ${structures}: ${next?.label ?? "next structure"}. One yes raises exactly this one.`,
         voiceCue: "Yes",
         chips: [
-          { label: `Yes, raise the ${next?.label.toLowerCase() ?? "next structure"}`, command: "Yes" },
-          { label: "Tell me more", command: "Tell me more about this structure" },
-          { label: "Not yet", command: "Not yet" },
+          {
+            label: `Raise the ${next?.label.toLowerCase() ?? "next structure"}`,
+            command: "Yes",
+          },
         ],
       };
     }
@@ -116,12 +107,9 @@ export function missionFor(state: SharedState): Mission {
         step,
         total,
         title: "Approve the company name",
-        prompt: `The colony is 5/5. Approve the fictional name ${DEMO_COMPANY_NAME}, or say “Call it <your name>”.`,
+        prompt: `The colony is 5/5. Approve the fictional name ${DEMO_COMPANY_NAME}.`,
         voiceCue: "Approve Galactic Bagels",
-        chips: [
-          { label: "Approve Galactic Bagels", command: "Approve Galactic Bagels" },
-          { label: "Call it Cosmic Donuts", command: "Call it Cosmic Donuts" },
-        ],
+        chips: [{ label: "Approve Galactic Bagels", command: "Approve Galactic Bagels" }],
       };
     case "rollover":
       return {
@@ -129,12 +117,9 @@ export function missionFor(state: SharedState): Mission {
         step,
         total,
         title: "Learn the s.85 rollover",
-        prompt: "Say “Explain section 85” and I'll show the grounded rollover fact — pack id and fact id on the card. Never a guess.",
+        prompt: "Learn one grounded rollover fact. The card carries the verbatim pack text and its grounding.",
         voiceCue: "Explain section 85",
-        chips: [
-          { label: "Explain section 85", command: "Explain section 85" },
-          { label: "Eligible property?", command: "What property is eligible for a section 85 rollover?" },
-        ],
+        chips: [{ label: "Explain section 85", command: "Explain section 85" }],
       };
     case "summary":
       return {
@@ -142,11 +127,9 @@ export function missionFor(state: SharedState): Mission {
         step,
         total,
         title: "Launch the lawyer summary",
-        prompt: "Say “Prepare the lawyer summary” and watch the rocket launch. Prep only — nothing is sent, nothing is filed.",
+        prompt: "Prepare the lawyer summary. Prep only — nothing is sent and nothing is filed.",
         voiceCue: "Prepare the lawyer summary",
-        chips: [
-          { label: "Prepare lawyer summary", command: "Prepare the lawyer summary" },
-        ],
+        chips: [{ label: "Prepare lawyer summary", command: "Prepare the lawyer summary" }],
       };
   }
 }

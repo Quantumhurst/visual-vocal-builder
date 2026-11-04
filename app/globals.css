@@ -3929,3 +3929,318 @@ pre {
   font-weight: 700;
   animation: pipPulse 1.2s ease-in-out infinite;
 }
+
+/* =========================================================================
+   LIVE CAPTIONS — the primary channel.
+   A glasses agent keeps two lines in view at all times: what the host is
+   saying and what the wearer just said. The full run stays on screen in
+   the mission rail, not behind a transcript modal.
+   ========================================================================= */
+
+.caption-console {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.caption-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 9px;
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(5, 10, 24, 0.55);
+}
+
+.caption-row.is-host {
+  border-color: rgba(255, 209, 102, 0.44);
+  background:
+    linear-gradient(90deg, rgba(255, 209, 102, 0.12), transparent 62%),
+    rgba(5, 10, 24, 0.6);
+}
+
+.caption-row.is-heard {
+  border-color: rgba(127, 231, 255, 0.36);
+  background:
+    linear-gradient(90deg, rgba(127, 231, 255, 0.1), transparent 62%),
+    rgba(5, 10, 24, 0.6);
+}
+
+.caption-tag {
+  padding-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  color: var(--gold);
+  white-space: nowrap;
+}
+
+.caption-row.is-heard .caption-tag {
+  color: var(--cyan);
+}
+
+.caption-text {
+  min-width: 0;
+  margin: 0;
+  font-size: clamp(17px, 1.35vw, 21px);
+  line-height: 1.32;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  color: #ffffff;
+  text-wrap: pretty;
+}
+
+.caption-row.is-heard .caption-text {
+  color: #e8fbff;
+  font-weight: 500;
+}
+
+.caption-text[data-empty="true"] {
+  color: var(--muted);
+  font-weight: 400;
+  font-style: italic;
+}
+
+.caption-health {
+  padding-top: 5px;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+  color: var(--green);
+  white-space: nowrap;
+}
+
+.caption-health[data-speaking="true"] {
+  color: var(--cyan);
+}
+
+.caption-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 9px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.caption-phase-label {
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.caption-status[data-tone="live"] .caption-phase-label {
+  color: var(--green);
+}
+
+.caption-status[data-tone="host"] .caption-phase-label {
+  color: var(--cyan);
+}
+
+.caption-status[data-tone="wait"] .caption-phase-label {
+  color: var(--gold);
+}
+
+.caption-status[data-tone="warn"] .caption-phase-label {
+  color: var(--red);
+}
+
+.caption-phase-hint {
+  min-width: 0;
+  color: var(--muted);
+}
+
+.caption-hold {
+  padding: 5px 9px;
+  border: 1px solid rgba(255, 209, 102, 0.45);
+  border-radius: 8px;
+  background: rgba(255, 209, 102, 0.09);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: #ffe7b3;
+}
+
+.caption-ack {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--cyan);
+}
+
+.caption-history-panel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 150px;
+}
+
+.caption-history-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.caption-history-head h2 {
+  margin-top: 2px;
+  font-size: 16px;
+  line-height: 1.2;
+  color: #ffffff;
+}
+
+.caption-history-count {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  color: var(--gold);
+  white-space: nowrap;
+}
+
+.caption-history-list {
+  display: grid;
+  flex: 1 1 auto;
+  align-content: start;
+  gap: 4px;
+  min-height: 0;
+  margin: 0;
+  padding: 2px 2px 2px 0;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(127, 156, 255, 0.32) transparent;
+}
+
+.caption-history-line {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  gap: 7px;
+  padding: 5px 7px;
+  border-left: 2px solid rgba(255, 209, 102, 0.45);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.028);
+}
+
+.caption-history-line.is-you {
+  border-left-color: rgba(127, 231, 255, 0.55);
+  background: rgba(127, 231, 255, 0.055);
+}
+
+.caption-history-who {
+  padding-top: 1px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--gold);
+}
+
+.caption-history-line.is-you .caption-history-who {
+  color: var(--cyan);
+}
+
+.caption-history-line p {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #eaf0ff;
+  overflow-wrap: anywhere;
+}
+
+.caption-history-empty {
+  padding: 6px 2px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.caption-history-foot {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  color: var(--dim);
+}
+
+/* Recovery always looks like a recovery, not a quiet listening state. */
+.recovery-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 107, 122, 0.6);
+  border-radius: 9px;
+  background:
+    linear-gradient(90deg, rgba(255, 107, 122, 0.18), rgba(255, 209, 102, 0.06)),
+    rgba(20, 8, 14, 0.75);
+}
+
+.recovery-kicker {
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 107, 122, 0.6);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  color: #ffd7d7;
+  white-space: nowrap;
+}
+
+.recovery-copy {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #ffe9e9;
+}
+
+.recovery-copy strong {
+  color: #ffffff;
+  font-size: 13px;
+}
+
+.recovery-detail {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: #ffc7c7;
+}
+
+.recovery-next {
+  color: #ffe7b3;
+}
+
+.recovery-rearm {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+  color: var(--gold);
+  white-space: nowrap;
+  animation: pipPulse 1.2s ease-in-out infinite;
+}
+
+@media (max-width: 900px) {
+  .caption-text {
+    font-size: 16px;
+  }
+
+  .caption-history-panel {
+    min-height: 120px;
+  }
+
+  .caption-history-line p {
+    font-size: 12px;
+  }
+}

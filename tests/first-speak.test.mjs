@@ -22,13 +22,14 @@ function memoryStore() {
 }
 
 test("greeting is exactly the jurisdiction host question", () => {
-  assert.equal(FIRST_SPEAK_GREETING, "Pick your home base — Mars, Europa, or Andromeda Galaxy?");
+  assert.equal(FIRST_SPEAK_GREETING, "Pick your home base. Say “Pick Mars”.");
   assert.equal(FIRST_SPEAK_GREETING, getHostQuestion("jurisdiction"));
 });
 
-test("the greeting names only the three demo worlds", () => {
-  assert.match(FIRST_SPEAK_GREETING, /^Pick your home base — Mars, Europa, or Andromeda Galaxy\?$/);
-  assert.equal((FIRST_SPEAK_GREETING.match(/\?/g) ?? []).length, 1);
+test("the greeting names one next step, not a menu of worlds", () => {
+  assert.match(FIRST_SPEAK_GREETING, /^Pick your home base\. Say “Pick Mars”\.$/);
+  assert.equal((FIRST_SPEAK_GREETING.match(/\?/g) ?? []).length, 0);
+  assert.doesNotMatch(FIRST_SPEAK_GREETING, /Europa, or Andromeda/);
 });
 
 test("a fresh session has not greeted; marking is once and sticks", () => {

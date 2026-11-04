@@ -13,10 +13,13 @@ export function shortFounderNames(founders: readonly ({ name: string } | string)
   });
 }
 
+// One next step, one suggested phrase. The screen shows the same cue in
+// its SAY card; alternate phrasings stay understood by voice but are not
+// offered as a menu.
 export function getHostQuestion(beat: Beat, founderNames: string[] = ["Nova", "Orbit"], selected?: string | null): string {
   const [a = "Nova", b = "Orbit"] = founderNames;
   switch (beat) {
-    case "jurisdiction": return "Pick your home base — Mars, Europa, or Andromeda Galaxy?";
+    case "jurisdiction": return "Pick your home base. Say “Pick Mars”.";
     case "equity": {
       const names = founderNames.length ? founderNames : [a, b];
       const who = names.length === 1
@@ -24,16 +27,17 @@ export function getHostQuestion(beat: Beat, founderNames: string[] = ["Nova", "O
         : names.length === 2
           ? `${names[0]} and ${names[1]}`
           : `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
-      const verb = names.length === 1 ? "hold" : "split";
-      return selected
-        ? `${selected} locked in! Next up: how should ${who} ${verb} the 100% equity?`
-        : `Home base pending. Next up: how should ${who} ${verb} the 100% equity?`;
+      const home = selected ? `${selected} is home. ` : "";
+      const verb = names.length === 1 ? "holds" : "split";
+      // One sentence with the suggested phrase, so the two-sentence spoken
+      // cap cannot drop the cue the screen shows.
+      return `${home}${who} ${verb} the 100% equity — say “Make Orbit 70%”.`;
     }
-    case "checklist": return "Build the colony one structure at a time. Say “yes” to raise the next one, or “tell me more”.";
-    case "name": return "Colony complete — five of five. Approve the company name by saying “Approve Galactic Bagels”, or “Call it <your name>”.";
-    case "rollover": return "Name approved. Say “Explain section 85” to bring up the grounded rollover fact.";
-    case "filingsteps": return "That filing card is optional. Say “Build the colony” to keep the required walk moving.";
-    case "summary": return "Everything's lined up — say “Prepare the lawyer summary”. Prep only; nothing is filed or sent.";
+    case "checklist": return "Build the colony one structure at a time. Say “yes” to raise the next one.";
+    case "name": return "Colony complete — five of five. Say “Approve Galactic Bagels”.";
+    case "rollover": return "Name approved. Say “Explain section 85” for the grounded rollover fact.";
+    case "filingsteps": return "That filing card is optional. No action needed — say “continue” to keep the required walk moving.";
+    case "summary": return "Everything is lined up. Say “Prepare the lawyer summary”. Prep only; nothing is filed or sent.";
   }
 }
 

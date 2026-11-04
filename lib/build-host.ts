@@ -26,7 +26,7 @@ export function buildQuestionLine(state: SharedState): string {
   if (!next) {
     return getHostQuestion("name", shortFounderNames(state.founders), state.selectedJurisdiction);
   }
-  return `Structure ${built + 1} of ${total}: ${next.label} — ${built} of ${total} are up. Say “yes” to raise it, or “tell me more”.`;
+  return `Structure ${built + 1} of ${total}: ${next.label} — ${built} of ${total} are up. Say “yes” to raise it.`;
 }
 
 export function buildRaisedLine(state: SharedState, raisedLabel: string): string {
@@ -36,11 +36,11 @@ export function buildRaisedLine(state: SharedState, raisedLabel: string): string
   if (!next) {
     return getHostQuestion("name", shortFounderNames(state.founders), state.selectedJurisdiction);
   }
-  return `${raisedLabel} raised — ${built} of ${total} structures up. Next: ${next.label}, structure ${built + 1} of ${total} — say “yes” to raise it.`;
+  return `${raisedLabel} raised — ${built} of ${total} structures up. Next: ${next.label}, structure ${built + 1} of ${total} — say “yes”.`;
 }
 
 export function buildGuideLine(item: { label: string; guidance: string }): string {
-  return `${firstSentence(item.guidance)} Should I raise the ${item.label}? Say “yes” or “not yet”.`;
+  return `${firstSentence(item.guidance)} Say “yes” when you are ready to raise the ${item.label}.`;
 }
 
 // Build clicks use the same guided question as voice. At 5/5 the next
@@ -74,13 +74,9 @@ export function equityConfirmationLine(state: SharedState): string {
   const owners = state.founders.length;
   const split = state.founders.map((founder) => `${founder.percent}%`).join(" / ");
   const noun = owners === 1 ? "owner" : "owners";
-  // Keep the spoken line free of the exact confirmation/cancel commands
-  // ("confirm", "split", "change"). The echo filter compares the user's
-  // transcript to what the host just said; if the host says "confirm this
-  // split", a genuine "confirm split" is 2/2 host words and gets tombstoned
-  // as speaker bleed. The visible confirmation card still shows the exact
-  // "confirm"/"change" words. This keeps the 4972d2b echo guard strict.
-  return `${owners} ${noun} — ${split}. Does this ownership look right? Say the percentages you want, pick a different owner count, or drag a slider.`;
+  // One question. The card owns the SAY cue ("Confirm") and the secondary
+  // KEEP EDITING action, so the spoken line never becomes a menu.
+  return `${owners} ${noun} — ${split}. Does this ownership look right?`;
 }
 
 // The host reads one grounded sentence from the s.85 pack; the card

@@ -47,15 +47,17 @@ test("the guided build asks for exactly one yes before raising one structure", (
   const question = buildQuestionLine(state);
   assert.match(question, /^Structure 1 of 5: Landing pad —/);
   assert.match(question, /Say “yes” to raise it/);
-  assert.doesNotMatch(question, /all five|finish the build/i);
+  assert.doesNotMatch(question, /all five|finish the build|tell me more/i);
   const raised = buildRaisedLine(
     applyChecklistItem(state, CHECKLIST_PACK.facts[0].factId, true),
     "Landing pad",
   );
   assert.match(raised, /^Landing pad raised — 1 of 5 structures up\./);
   assert.match(raised, /Next: Habitat dome/);
+  assert.doesNotMatch(raised, /or /);
   const guide = buildGuideLine(base().checklist[0]);
-  assert.match(guide, /Should I raise the Landing pad\?/);
+  assert.match(guide, /Say “yes” when you are ready to raise the Landing pad/);
+  assert.doesNotMatch(guide, /not yet/);
 });
 
 test("the fifth structure hands off to the company-name approval", () => {
@@ -79,7 +81,7 @@ test("the explicit name-approval line is the same question the banner shows", ()
   }
   assert.match(nameApprovalLine(state), /Colony complete — five of five/);
   assert.match(nameApprovalLine(state), /Approve Galactic Bagels/);
-  assert.match(nameApprovalLine(state), /Call it/);
+  assert.doesNotMatch(nameApprovalLine(state), /Call it/);
 });
 
 test("the rollover lesson speaks the grounded pack sentence verbatim", () => {
@@ -116,11 +118,12 @@ test("equity confirmation reports the normalized split and owner count", () => {
   state = applyEquity(state, 0, 70, "test");
   assert.equal(
     equityConfirmationLine(state),
-    "2 owners — 70% / 30%. Does this ownership look right? Say the percentages you want, pick a different owner count, or drag a slider.",
+    "2 owners — 70% / 30%. Does this ownership look right?",
   );
   state = applyOwnerCount(state, 3);
   assert.match(equityConfirmationLine(state), /^3 owners — \d+% \/ \d+% \/ \d+%\./);
   assert.match(equityConfirmationLine(state), /Does this ownership look right\?/);
+  assert.doesNotMatch(equityConfirmationLine(state), /say the percentages|drag a slider/i);
   // The line is built from the normalized state, so it always totals 100.
   const percents = state.founders.map((founder) => founder.percent);
   assert.equal(percents.reduce((a, b) => a + b, 0), 100);

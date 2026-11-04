@@ -39,7 +39,7 @@ test("LexicalEchoFilter: a genuine short confirmation is not eaten by the host p
   assert.equal(filter.checkAndTombstone(201, "confirm split"), false);
   assert.equal(filter.checkAndTombstone(202, "yes"), false);
   // A true tail of the host line is still caught.
-  assert.equal(filter.checkAndTombstone(203, "pick a different owner count"), true);
+  assert.equal(filter.checkAndTombstone(203, "does this ownership look right"), true);
 });
 
 test("LexicalEchoFilter: clears tokens after speech finishes", async () => {
