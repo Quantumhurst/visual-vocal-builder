@@ -34,10 +34,10 @@ export function getHostQuestion(beat: Beat, founderNames: string[] = ["Nova", "O
       return `${home}${who} ${verb} the 100% equity — say “Make Orbit 70%”.`;
     }
     case "checklist": return "Build the colony one structure at a time. Say “yes” to raise the next one.";
-    case "name": return "Colony complete — five of five. Say “Approve Galactic Bagels”.";
-    case "rollover": return "Name approved. Say “Explain section 85” for the grounded rollover fact.";
+    case "name": return "Name the fictional company. Say “Approve Galactic Bagels”.";
+    case "rollover": return "That lesson is not part of this run. Say “continue” to keep the mission moving.";
     case "filingsteps": return "That filing card is optional. No action needed — say “continue” to keep the required walk moving.";
-    case "summary": return "Everything is lined up. Say “Prepare the lawyer summary”. Prep only; nothing is filed or sent.";
+    case "summary": return "Everything is lined up. Say “Prepare the lawyer summary” — prep only; nothing is filed or sent.";
   }
 }
 

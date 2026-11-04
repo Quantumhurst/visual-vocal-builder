@@ -29,9 +29,6 @@ export function buildLawyerSummary(
     "Checklist state:",
     checklistLines || "- (no checklist items yet)",
     "",
-    view.rolloverCard
-      ? `Rollover fact reviewed: ${view.rolloverCard.packId} / ${view.rolloverCard.factId}`
-      : "Rollover fact reviewed: (none)",
     view.filingStepsCard
       ? `Filing steps/fees reviewed: ${view.filingStepsCard.packId} / ${view.filingStepsCard.facts.map((fact) => fact.factId).join(", ")}`
       : "Filing steps/fees reviewed: (none)",
@@ -54,9 +51,6 @@ export function lawyerPackageFingerprint(view: SharedState): string {
     founders: view.founders.map((founder) => [founder.name, founder.percent]),
     checklist: view.checklist.map((item) => [item.id, item.label, item.done]),
     equityNote: view.equityNote,
-    rollover: view.rolloverCard
-      ? [view.rolloverCard.packId, view.rolloverCard.factId]
-      : null,
     filingSteps: view.filingStepsCard
       ? [
           view.filingStepsCard.packId,

@@ -1,7 +1,7 @@
 // The whole required journey, as pure state transitions. This is the
-// contract the voice walk exercises: Enter -> home base -> owners/equity
-// -> confirm -> 5/5 colony -> approve name -> grounded s.85 -> lawyer
-// summary. Nothing files, nothing sends.
+// contract the voice walk exercises: Enter -> home base -> company name
+// -> owners/equity -> confirm -> 5/5 colony -> lawyer summary.
+// Nothing files, nothing sends, and the retired s.85 lesson is absent.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -12,14 +12,12 @@ import {
   applyJurisdiction,
   applyLawyerSummary,
   applyOwnerCount,
-  applyRolloverFact,
   applyStartOver,
   withDefaults,
 } from "../lib/state-updates.ts";
 import { beatProgress } from "../lib/beat-progress.ts";
 import { missionFor } from "../lib/mission.ts";
 import { verifyPaintedCards } from "../lib/verifier.ts";
-import { S85_PACK } from "../lib/knowledge.ts";
 
 function walk() {
   const steps = [];
@@ -38,18 +36,15 @@ function walk() {
   state = applyJurisdiction(state, "Mars");
   snap("home base");
 
+  state = applyCompanyName(state);
+  snap("name");
+
   state = applyOwnerCount(state, 4);
   state = applyEquity(state, 0, 40, "voice");
   snap("equity");
 
   state = applyChecklistCount(state, "all");
   snap("5/5");
-
-  state = applyCompanyName(state, "Galactic Bagels Inc. (fictional)");
-  snap("name");
-
-  state = applyRolloverFact(state, "s85-what-it-is", "What is a section 85 rollover?");
-  snap("s85");
 
   state = applyLawyerSummary(state);
   snap("summary");
@@ -61,61 +56,67 @@ test("the journey advances in the required order, one beat at a time", () => {
   const { state, steps } = walk();
   assert.deepEqual(
     steps.map((step) => step.nextBeat),
-    ["jurisdiction", "equity", "checklist", "name", "rollover", "summary", "complete"],
+    ["jurisdiction", "name", "equity", "checklist", "summary", "complete"],
   );
   assert.equal(state.founders.length, 4);
   assert.equal(state.founders.reduce((sum, founder) => sum + founder.percent, 0), 100);
   assert.equal(state.checklist.filter((item) => item.done).length, 5);
   assert.match(state.companyName, /Galactic Bagels/);
-  assert.equal(state.rolloverCard?.factId, "s85-what-it-is");
+  assert.equal(state.rolloverCard, null);
   assert.ok(state.lawyerPackage.length > 0);
 });
 
 test("every step has one visible, sayable next cue", () => {
   const expected = [
     ["jurisdiction", /Pick Mars/],
+    ["name", /Approve Galactic Bagels/],
     ["equity", /Make Orbit 70%/],
     ["checklist", /^Yes$/],
-    ["name", /Approve Galactic Bagels/],
-    ["rollover", /Explain section 85/],
     ["summary", /Prepare the lawyer summary/],
   ];
   let state = withDefaults(null);
   for (const [beat, pattern] of expected) {
     assert.equal(beatProgress(state).nextBeat, beat);
     assert.match(missionFor(state).voiceCue, pattern);
+    assert.equal(missionFor(state).chips.length, 1);
     if (beat === "jurisdiction") state = applyJurisdiction(state, "Mars");
+    if (beat === "name") state = applyCompanyName(state);
     if (beat === "equity") state = applyEquity(state, 0, 70, "voice");
     if (beat === "checklist") state = applyChecklistCount(state, "all");
-    if (beat === "name") state = applyCompanyName(state);
-    if (beat === "rollover") state = applyRolloverFact(state, "s85-what-it-is", "s85?");
     if (beat === "summary") state = applyLawyerSummary(state);
   }
   assert.equal(beatProgress(state).nextBeat, "complete");
 });
 
-test("the grounded s.85 card is verbatim pack text and verifies clean", () => {
-  const { state } = walk();
-  const packFact = S85_PACK.facts.find((fact) => fact.factId === "s85-what-it-is");
-  assert.ok(packFact);
-  assert.equal(state.rolloverCard.answer, packFact.text);
-  assert.equal(state.rolloverCard.packId, S85_PACK.packId);
-  const verified = verifyPaintedCards(state);
-  assert.equal(verified.counts.flagged, 0);
-  assert.ok(verified.counts.grounded >= state.checklist.length + 1);
+test("the company name is approved before equity, not after the build", () => {
+  let state = applyJurisdiction(withDefaults(null), "Mars");
+  assert.equal(beatProgress(state).nextBeat, "name");
+  assert.equal(missionFor(state).beat, "name");
+  state = applyCompanyName(state);
+  assert.equal(beatProgress(state).nextBeat, "equity");
+  assert.equal(missionFor(state).beat, "equity");
 });
 
-test("the lawyer summary carries the approved name, the split, 5/5, and the grounding", () => {
+test("the grounded cards that remain verify clean and the s.85 lesson is gone", () => {
+  const { state } = walk();
+  assert.equal(state.rolloverCard, null);
+  const verified = verifyPaintedCards(state);
+  assert.equal(verified.counts.flagged, 0);
+  assert.ok(verified.counts.grounded >= state.checklist.length);
+  assert.equal(verified.verdicts.filter((v) => v.cardKind === "rollover").length, 0);
+});
+
+test("the lawyer summary carries the approved name, the split, 5/5, and no s.85 claim", () => {
   const { state } = walk();
   const pkg = state.lawyerPackage;
   assert.match(pkg, /Galactic Bagels/);
   assert.match(pkg, /Mars/);
   assert.match(pkg, /40%/);
   assert.match(pkg, /\[x\]/);
-  assert.match(pkg, /s85-what-it-is|s85-eligible|s85-elected|s85-share|s85-filing/);
   assert.match(pkg, /not legal advice, not a filing, and nothing here is submitted/i);
   assert.match(pkg, /does not send email/i);
   assert.doesNotMatch(pkg, /filed successfully|submitted to the registry/i);
+  assert.doesNotMatch(pkg, /s\.?\s?85|rollover/i);
 });
 
 test("start over clears the company name and the whole walk", () => {

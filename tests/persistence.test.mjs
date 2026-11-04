@@ -16,7 +16,6 @@ import {
   applyCompanyName,
   applyEquity,
   applyJurisdiction,
-  applyRolloverFact,
   applyLawyerSummary,
   withDefaults,
 } from "../lib/state-updates.ts";
@@ -34,7 +33,7 @@ function memoryStore() {
 }
 
 function halfRun() {
-  let s = applyJurisdiction(withDefaults(null), "Mars");
+  let s = applyCompanyName(applyJurisdiction(withDefaults(null), "Mars"));
   s = applyEquity(s, 0, 70, "test");
   s = applyChecklistItem(s, CHECKLIST_PACK.facts[0].factId, true);
   return s;
@@ -83,15 +82,13 @@ test("a fresh state is not offered as a resume, a real run is", () => {
 
 test("progress summary names the actual next step", () => {
   const start = withDefaults(null);
-  assert.match(progressSummary(start), /Step 1 of 6/);
+  assert.match(progressSummary(start), /Step 1 of 5/);
   const half = halfRun();
-  assert.match(progressSummary(half), /Step 3 of 6/);
+  assert.match(progressSummary(half), /Step 4 of 5/);
   assert.match(progressSummary(half), /colony build 1\/5/);
-  let done = applyJurisdiction(withDefaults(null), "Mars");
+  let done = applyCompanyName(applyJurisdiction(withDefaults(null), "Mars"));
   done = applyEquity(done, 0, 70, "test");
   for (const fact of CHECKLIST_PACK.facts) done = applyChecklistItem(done, fact.factId, true);
-  done = applyCompanyName(done);
-  done = applyRolloverFact(done, "s85-what-it-is", "what is s.85?");
   done = applyLawyerSummary(done);
   assert.match(progressSummary(done), /Mission complete/);
   assert.match(progressSummary(done), /lawyer summary ready/);

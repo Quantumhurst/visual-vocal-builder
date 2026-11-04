@@ -9,9 +9,10 @@
 // invariant (equity totals 100, grounded cards only from packs) still
 // holds, and the agent turn that follows confirms or corrects it.
 //
-// Only unambiguous commands become intents. Questions (rollover /
-// filing) never fabricate a card here — they only surface a "heard you"
-// state; the grounded card still comes from the agent + knowledge pack.
+// Only unambiguous commands become intents. Filing questions never
+// fabricate a card here — they only surface a "heard you" state; the
+// grounded card still comes from the agent + knowledge pack. Section 85
+// is not part of this run and has no intent.
 
 export type ChecklistAdvanceCount = number | "all";
 
@@ -25,7 +26,6 @@ export type LiveIntent =
   | { kind: "undo"; key: string; label: string }
   | { kind: "start-over"; key: string; label: string }
   | { kind: "lawyer-summary"; key: string; label: string }
-  | { kind: "rollover-question"; key: string; label: string }
   | { kind: "filing-question"; key: string; label: string };
 
 const COUNT_WORDS: Record<string, number> = {
@@ -139,10 +139,7 @@ export function parseLiveIntent(text: string): LiveIntent | null {
     };
   }
 
-  // Grounded questions — heard, but no card is invented locally.
-  if (/section 85|s\.?\s?85|rollover|roll over/.test(lower)) {
-    return { kind: "rollover-question", key: "rollover-question", label: "Heard: s.85 rollover question — asking the agent for the grounded fact card…" };
-  }
+  // Grounded filing question — heard, but no card is invented locally.
   if (/filing steps|filing fees|steps and fees|what are the (filing )?fees|how (do i|to) file/.test(lower)) {
     return { kind: "filing-question", key: "filing-question", label: "Heard: filing steps & fees — asking the agent for the grounded card…" };
   }

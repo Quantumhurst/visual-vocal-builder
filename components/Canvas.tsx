@@ -19,7 +19,6 @@ const ColonyView = dynamic(() => import("./ColonyView"), { ssr: false });
 import EquitySlider from "./EquitySlider";
 import FilingChecklist from "./FilingChecklist";
 import FilingSteps from "./FilingSteps";
-import RolloverFactCard from "./RolloverFactCard";
 import LawyerSummary from "./LawyerSummary";
 import HostVoicePicker from "./HostVoicePicker";
 import BuildQueuePanel from "./BuildQueuePanel";
@@ -27,20 +26,19 @@ import {
   DEMO_COMPANY_NAME,
   DEMO_JURISDICTIONS,
 } from "../lib/demo-data";
-import { FILING_STEPS_PACK, S85_PACK } from "../lib/knowledge";
+import { FILING_STEPS_PACK } from "../lib/knowledge";
 import type { SharedState } from "../lib/state";
 import TrustStrip from "./TrustStrip";
 import { verifyPaintedCards } from "../lib/verifier";
 import { getHostQuestion, resolveHostPrompt, shortFounderNames, shouldSpeakFallbackQuestion, type Beat } from "../lib/host-questions";
-import { buildGuideLine, buildQuestionLine, buildRaisedLine, equityConfirmationLine, nextObjectiveHostLine, rolloverLearnLine } from "../lib/build-host";
+import { buildGuideLine, buildQuestionLine, buildRaisedLine, equityConfirmationLine, nameApprovedLine, nextObjectiveHostLine } from "../lib/build-host";
 import { isChangeAnswer, isConfirmationAnswer } from "../lib/confirmation";
 import { FILING_GUARD_REPLY, isFilingGuardQuestion } from "../lib/filing-guard";
-import { rolloverFactIdFor } from "../lib/knowledge";
 import { DEFAULT_VOICE_SETTINGS, applyVoiceControl, normalizeVoiceSettings, parseVoiceControl, settingsSummary, type VoiceControl, type VoiceSettings } from "../lib/voice-controls";
 import { clearSavedSession, progressSummary, saveSession, type TranscriptEntry } from "../lib/persistence";
 import { FIRST_SPEAK_GREETING, hasFirstSpeakGreeting, markFirstSpeakGreeting } from "../lib/first-speak";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
-import { withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount, applyCompanyName, parseSpokenCompanyName } from "../lib/state-updates";
+import { withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount, applyCompanyName, parseSpokenCompanyName } from "../lib/state-updates";
 import { pushHistory, popHistory, statesEqual, type HistoryEntry } from "../lib/history";
 import { describeChange, currentStateSummary } from "../lib/describe-change";
 import { REQUIRED_BEATS, beatProgress } from "../lib/beat-progress";
@@ -108,8 +106,8 @@ import { echoFilter } from "../lib/voice/echo-filter";
 // the agent uses), then the agent turn confirms or corrects it.
 const EXAMPLE_COMMANDS = [
   { label: "Pick Mars", command: "Pick Mars as our home base" },
+  { label: "Approve Galactic Bagels", command: "Approve Galactic Bagels" },
   { label: "Make Orbit 70%", command: "Make Orbit 70%" },
-  { label: "s.85 rollover?", command: "What is a section 85 rollover?" },
   { label: "Filing steps & fees", command: "What are the filing steps and fees?" },
   { label: "Prepare lawyer summary", command: "Prepare the lawyer summary" },
 ] as const;
@@ -180,9 +178,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // Day 5: separate verifier over the painted cards (pure, on state
   // change, outside the voice turn path — it never blocks a turn).
   const verification = verifyPaintedCards(view);
-  const rolloverFlag = verification.verdicts.find(
-    (v) => v.cardKind === "rollover" && v.status === "flagged",
-  );
   const filingFlag = verification.verdicts.find(
     (v) => v.cardKind === "filingSteps" && v.status === "flagged",
   );
@@ -320,6 +315,17 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     });
   }
 
+  // The primary HEARD line follows the latest captured turn, including
+  // controls and the early name approval. Without this, the log would
+  // advance while the big caption stayed on the previous command.
+  function recordHeardTurn(text: string) {
+    const clean = (text ?? "").trim();
+    if (!clean) return;
+    setLiveTranscript(clean);
+    setLastTranscript(clean);
+    writeShared({ ...withDefaults(stateRef.current), transcript: clean });
+  }
+
   // Recovery is a visible part of the loop: a clear headline, the fact
   // that nothing was changed, and one next step. The mic is re-armed by
   // the app; the user never has to find a button to get back in.
@@ -408,7 +414,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // still comes from the same shared state and appliers.
   const [activeModule, setActiveModule] = useState<SharedState["currentBeat"]>(() => {
     const beat = missionFor(bootState).beat;
-    return beat === "complete" ? bootState.currentBeat : beat;
+    // A completed saved run opens its launch package. This also keeps a
+    // legacy saved beat (the retired s.85 lesson) from selecting a module
+    // that is no longer in the nav.
+    return beat === "complete" ? "summary" : beat;
   });
   const [stageTab, setStageTab] = useState<"galaxy" | "colony">(
     bootState.selectedJurisdiction ? "colony" : "galaxy",
@@ -417,8 +426,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // the one invariant path, but the cockpit does not advance to BUILD
   // until the user confirms the visible split.
   const [equityConfirm, setEquityConfirm] = useState(false);
-  // Optional archive (s.85 / fees) is collapsed by default; opening an
-  // optional system or clicking one of its tabs reveals it.
+  // Optional filing archive is collapsed by default; opening it reveals
+  // the fees reference, which never blocks the required walk.
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [missionClock, setMissionClock] = useState(0);
   // A short cinematic for a new home base: the state change is immediate,
@@ -952,6 +961,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     const before = withDefaults(stateRef.current);
     const after = fn(before);
     const changed = !statesEqual(before, after);
+    // An equity change paints a confirmation line. A voice/agent change
+    // must also speak that exact line; the slider path stays silent so a
+    // drag does not chatter.
+    let equitySpeechLine = "";
     logEvent(`commit ${label} changed=${changed} sel=${String(after.selectedJurisdiction)} name=${JSON.stringify(after.companyName)}`);
     if (changed) {
       historyRef.current = pushHistory(historyRef.current, before, label, performance.now());
@@ -985,19 +998,17 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         setEquityConfirm(true);
         setActiveModule("equity");
         setStageTab("colony");
-        setLocalHost(equityConfirmationLine(after));
+        equitySpeechLine = equityConfirmationLine(after);
+        setLocalHost(equitySpeechLine);
       } else {
         if (after.currentBeat !== "equity" && equityChanged) setEquityConfirm(false);
         // Required-task handoff: when a change completes the current
-        // required beat, open the next one in the same handler. 5/5
-        // moves to LAUNCH; equity waits for confirmation above.
+        // required beat, open the next one in the same handler. The name
+        // moves to CREW, 5/5 moves to LAUNCH; equity waits for the split
+        // confirmation above.
         if (afterNext !== "complete" && afterNext !== beforeNext) {
-          // Keep the grounded s.85 card on screen when it is painted: the
-          // next step is visible in the mission banner, not by hiding the
-          // fact the user just asked to learn.
-          const openModule = after.currentBeat === "rollover" ? "rollover" : afterNext;
-          setActiveModule(openModule);
-          setStageTab(openModule === "jurisdiction" ? "galaxy" : "colony");
+          setActiveModule(afterNext);
+          setStageTab(afterNext === "jurisdiction" ? "galaxy" : "colony");
         }
       }
       if (selectionChanged && after.selectedJurisdiction) {
@@ -1023,6 +1034,16 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     stampTiming("firstPaint");
     const cue = cueForChange(before, after);
     if (cue) playCue(cue);
+    if (
+      equitySpeechLine &&
+      label !== "slider" &&
+      voiceOn &&
+      unlockedRef.current &&
+      spokenHostText(equitySpeechLine) !== lastSpokenRef.current
+    ) {
+      lastSpokenRef.current = spokenHostText(equitySpeechLine);
+      speakNative(equitySpeechLine);
+    }
     return describeChange(before, after);
   }
   function undoLast(): string {
@@ -1143,12 +1164,12 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Grounding for the agent: fictional company/places, current equity
-  // and checklist state, and the s.85 pack's fact ids + topics. The
-  // agent picks a factId; the card text itself comes from the pack.
+  // Grounding for the agent: fictional company/places, current equity and
+  // checklist state, and the optional filing pack's fact ids + topics.
+  // Section 85 is not part of this run, so it is not a readable source.
   useCopilotReadable({
     description:
-      "Fictional demo company, places, equity split, checklist state, and s.85 knowledge-pack fact index for the incorporation demo",
+      "Fictional demo company, places, equity split, checklist state, and optional filing knowledge-pack fact index for the incorporation demo",
     value: {
       company: DEMO_COMPANY_NAME,
       places: DEMO_JURISDICTIONS.map((row) => row.jurisdiction),
@@ -1161,11 +1182,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         id: item.id,
         label: item.label,
         done: item.done,
-      })),
-      s85PackId: S85_PACK.packId,
-      s85Facts: S85_PACK.facts.map((fact) => ({
-        factId: fact.factId,
-        topic: fact.topic,
       })),
       filingStepsPackId: FILING_STEPS_PACK.packId,
       filingStepsFacts: FILING_STEPS_PACK.facts.map((fact) => ({
@@ -1290,7 +1306,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     const intent = applyLiveIntent(trimmed, "live");
     // Adaptive endpointing: a recognised command shortens the stop pause
     // to 600 ms. Questions keep 1100 ms — a slow ask needs its full pause.
-    if (intent && intent.kind !== "rollover-question" && intent.kind !== "filing-question") {
+    if (intent && intent.kind !== "filing-question") {
       intentMatchedRef.current = true;
       if (isFinal) {
         setTimeout(() => {
@@ -1464,24 +1480,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     },
   });
 
-  // Beat 4: grounded s.85 fact card. The handler looks the fact up in
-  // the knowledge pack — the card text is the pack text verbatim and
-  // shows pack/fact grounding. An unknown factId renders NO card.
-  useCopilotAction({
-    render: renderNothing,
-    name: AGENT_ACTIONS.showRolloverFact,
-    description:
-      "Show a grounded s.85 rollover fact card. Call with a factId from the readable s85Facts index when the user asks a rollover / section 85 question. Never invent rollover content; only pack facts become cards.",
-    parameters: [
-      { name: "factId", type: "string", description: "Fact id from the s85Facts index.", required: true },
-      { name: "question", type: "string", description: "The user's rollover question.", required: false },
-    ],
-    handler: async ({ factId, question }) => {
-      logToolCall();
-      return commit("rollover", (s) => applyRolloverFact(s, factId ?? "", question));
-    },
-  });
-
   // Day 3: grounded filing-steps/fees card. The handler looks every
   // fact up in the filing-steps pack — card text is pack text verbatim
   // with pack/fact grounding. Any unknown factId renders NO card.
@@ -1512,10 +1510,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   function approveCompanyName(rawName?: string) {
     commit("name", (s) => applyCompanyName(s, rawName));
     const current = withDefaults(stateRef.current);
-    const line = `Company name approved as ${current.companyName}. Say “Explain section 85” to see the grounded rollover fact.`;
+    const line = nameApprovedLine(current);
     setLocalHost(line);
     setAck("");
-    setActiveModule("rollover");
+    setActiveModule("equity");
     setStageTab("colony");
     if (voiceOn && unlockedRef.current) {
       lastSpokenRef.current = spokenHostText(line);
@@ -1844,6 +1842,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       logEvent(`control ${control.kind}`);
       announceHeard(trimmed, fromVoice);
       appendLog("you", trimmed);
+      recordHeardTurn(trimmed);
       handleVoiceControl(control);
       return;
     }
@@ -1941,17 +1940,19 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       return;
     }
 
-    // Mission 4: the company name has its own approval beat after 5/5.
-    // Handled locally so the exact approval can never stall on a model.
+    // Mission 2: the company name has its own approval beat immediately
+    // after the home base and before equity. Handled locally so the exact
+    // approval can never stall on a model.
     if (beatProgress(live).nextBeat === "name") {
       const proposed = parseSpokenCompanyName(trimmed);
       if (isNameApproval(trimmed) || proposed) {
+        recordHeardTurn(trimmed);
         approveCompanyName(proposed ?? DEMO_COMPANY_NAME);
         return;
       }
       if (isNameCancel(trimmed)) {
         answerLocally(
-          `No problem — the community is built. Say “Approve Galactic Bagels” or “Call it <your name>” when you're ready.`,
+          `No problem — the name can wait. Say “Approve Galactic Bagels” or “Call it <your name>” when you're ready.`,
           trimmed,
           { module: "name", stageTab: "colony", cue: "highlight" },
         );
@@ -1965,30 +1966,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       return;
     }
 
-    // Grounded s.85 lesson: paint the pack fact locally through the same
-    // applier the agent uses. The card text is verbatim pack text and the
-    // verifier checks it; no legal wording is ever invented here.
-    if (/\b(?:section 85|s\.?\s?85|rollover|roll over)\b/i.test(trimmed)) {
-      const factId = rolloverFactIdFor(trimmed);
-      commit("rollover", (s) => applyRolloverFact(s, factId, trimmed));
-      const current = withDefaults(stateRef.current);
-      const line = rolloverLearnLine(current);
-      setLiveTranscript(trimmed);
-      setLastTranscript(trimmed);
-      writeShared({ ...withDefaults(stateRef.current), transcript: trimmed });
-      setLocalHost(line);
-      setAck("");
-      setActiveModule("rollover");
-      setStageTab("colony");
-      pendingTurnRef.current = null;
-      if (line && voiceOn && unlockedRef.current) {
-        lastSpokenRef.current = spokenHostText(line);
-        speakNative(line);
-      }
-      return;
-    }
-
-    // Mission 3 is an interview: one structure, one explicit yes. A bulk
+    // Mission 4 is an interview: one structure, one explicit yes. A bulk
     // "finish the build" or an unrelated sentence must never tick several
     // structures or guess an answer. Undo stays an escape hatch.
     if (!equityConfirmRef.current && beatProgress(live).nextBeat === "checklist") {
@@ -3436,8 +3414,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
   const structures = colonyProgress(view.checklist);
   const flight = flightPlan(view, activeModule);
-  // The six required missions stay in the open; the one optional
-  // archive system and the detailed plan stay tucked away.
+  // The five required missions stay in the open; the one optional
+  // filing archive and the detailed plan stay tucked away.
   const requiredFlight = flight.filter((step) => !step.optional);
   const archiveFlight = flight.filter((step) => step.optional);
   const requiredModules = MODULES.filter((module) => !module.optional);
@@ -3523,7 +3501,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
             >
               <div className="objective-head">
                 <span className="eyebrow">CONFIRM CREW SPLIT</span>
-                <span className="objective-step">2/4</span>
+                <span className="objective-step">3/5</span>
               </div>
               <h2>
                 {view.founders.length} owner{view.founders.length === 1 ? "" : "s"} — {equityLabel}
@@ -3599,8 +3577,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
                 <span className="eyebrow">PROPOSED COMPANY NAME</span>
                 <strong className="name-approval-name">{DEMO_COMPANY_NAME}</strong>
                 <p className="name-approval-why">
-                  The colony is 5/5. This is the one spoken approval that names the company; it feeds
-                  the lawyer summary. Fictional demo only.
+                  This is the one spoken approval that names the company, before equity and the
+                  build. It feeds the lawyer summary. Fictional demo only.
                 </p>
                 <div className="confirm-actions">
                   <button
@@ -3622,7 +3600,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
               </p>
             ) : null}
 
-            {/* The four required missions are the only steps in the open.
+            {/* The five required missions are the only steps in the open.
                 The detailed flight plan, its optional archive rows, and the
                 mission chips live behind one disclosure. */}
             <details className="objective-more">
@@ -3650,7 +3628,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
                     </button>
                   ))}
                 </div>
-                <ol className="flight-list flight-list-compact" aria-label="Four-mission flight plan">
+                <ol className="flight-list flight-list-compact" aria-label="Required mission flight plan">
                   {requiredFlight.map((step) => (
                     <li key={step.id} className={`flight-item is-${step.status}`}>
                       <button
@@ -3671,7 +3649,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
                 </ol>
                 <details className="plan-archive">
                   <summary>
-                    <span className="eyebrow">ARCHIVE · S.85 / FEES</span>
+                    <span className="eyebrow">ARCHIVE · FILING FEES</span>
                     <span className="panel-note">OPTIONAL</span>
                   </summary>
                   <ol className="flight-list flight-list-compact" aria-label="Optional archive">
@@ -3843,7 +3821,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
             >
               <summary>
                 <span className="archive-title">ARCHIVE</span>
-                <span className="archive-note">S.85 · FEES · OPTIONAL</span>
+                <span className="archive-note">FILING FEES · OPTIONAL</span>
                 <span className="integrity-chevron" aria-hidden="true">
                   ⌄
                 </span>
@@ -3917,7 +3895,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
                 <p className="module-card-copy">
                   {view.companyName
                     ? "Approved by voice. This name appears in the lawyer summary."
-                    : "Say “Approve Galactic Bagels”, or “Call it” and a fictional name. The name is approved after the colony reaches 5/5."}
+                    : "Say “Approve Galactic Bagels”, or “Call it” and a fictional name. The name is approved right after the home base, before equity."}
                 </p>
                 {!view.companyName ? (
                   <button
@@ -3934,14 +3912,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
                   </p>
                 )}
               </section>
-            </div>
-
-            <div data-beat="rollover" hidden={activeModule !== "rollover"}>
-              <RolloverFactCard
-                card={view.rolloverCard}
-                rolloverNote={view.rolloverNote}
-                flagReason={rolloverFlag ? `${rolloverFlag.reason}: ${rolloverFlag.detail}` : null}
-              />
             </div>
 
             <div data-beat="filingsteps" hidden={activeModule !== "filingsteps"}>

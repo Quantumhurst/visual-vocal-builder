@@ -4,19 +4,20 @@
 // wall of options. Alternate commands stay available by voice and inside
 // the one collapsed plan disclosure, not in the primary prompt.
 //
-// Six required missions, in this order:
-//   home base -> crew split (confirmed) -> 5/5 colony -> approve name
-//   -> learn the grounded s.85 fact -> launch the lawyer summary.
+// Five required missions, in this order:
+//   home base -> company name -> crew split (confirmed) -> 5/5 colony
+//   -> launch the lawyer summary.
+// The company name is approved immediately after the home base, before
+// equity and the build. The s.85 lesson is not part of this run.
 // The filing-steps/fees card is the only optional archive system.
 
 import { beatProgress, type Beat, type RequiredBeat } from "./beat-progress.ts";
-import { DEMO_COMPANY_NAME } from "./demo-data.ts";
 import type { SharedState } from "./state.ts";
 
 export type Mission = {
   beat: Beat | "complete";
   step: number;
-  total: 6;
+  total: 5;
   title: string;
   prompt: string;
   // The one phrase the screen asks the user to say. The host speaks the
@@ -29,30 +30,29 @@ export type Mission = {
 
 const ORDER: RequiredBeat[] = [
   "jurisdiction",
+  "name",
   "equity",
   "checklist",
-  "name",
-  "rollover",
   "summary",
 ];
 
 export function missionFor(state: SharedState): Mission {
   const { nextBeat } = beatProgress(state);
-  const total = 6 as const;
+  const total = 5 as const;
   if (nextBeat === "complete") {
     const built = state.checklist.filter((item) => item.done).length;
     const structures = state.checklist.length;
     const founded = structures > 0 && built === structures;
     return {
       beat: "complete",
-      step: 6,
+      step: 5,
       total,
       title: founded
         ? "Mission complete — colony founded"
         : `Mission complete — colony ${built}/${structures}`,
       prompt: founded
-        ? "All six missions are done. The summary is prepared, nothing was filed, and nothing was sent."
-        : `All six missions are cleared, but the colony is only ${built}/${structures} built.`,
+        ? "All five missions are done. The summary is prepared, nothing was filed, and nothing was sent."
+        : `All five missions are cleared, but the colony is only ${built}/${structures} built.`,
       voiceCue: founded ? "Show transcript" : "Yes",
       chips: founded
         ? [{ label: "Show transcript", command: "Show transcript" }]
@@ -71,6 +71,16 @@ export function missionFor(state: SharedState): Mission {
         prompt: "Choose one fictional place. The host and the canvas follow whatever you say.",
         voiceCue: "Pick Mars",
         chips: [{ label: "Pick Mars", command: "Pick Mars as our home base" }],
+      };
+    case "name":
+      return {
+        beat: nextBeat,
+        step,
+        total,
+        title: "Name the company",
+        prompt: "What should the fictional company be called? Say the prepared name.",
+        voiceCue: "Approve Galactic Bagels",
+        chips: [{ label: "Approve Galactic Bagels", command: "Approve Galactic Bagels" }],
       };
     case "equity":
       return {
@@ -101,26 +111,6 @@ export function missionFor(state: SharedState): Mission {
         ],
       };
     }
-    case "name":
-      return {
-        beat: nextBeat,
-        step,
-        total,
-        title: "Approve the company name",
-        prompt: `The colony is 5/5. Approve the fictional name ${DEMO_COMPANY_NAME}.`,
-        voiceCue: "Approve Galactic Bagels",
-        chips: [{ label: "Approve Galactic Bagels", command: "Approve Galactic Bagels" }],
-      };
-    case "rollover":
-      return {
-        beat: nextBeat,
-        step,
-        total,
-        title: "Learn the s.85 rollover",
-        prompt: "Learn one grounded rollover fact. The card carries the verbatim pack text and its grounding.",
-        voiceCue: "Explain section 85",
-        chips: [{ label: "Explain section 85", command: "Explain section 85" }],
-      };
     case "summary":
       return {
         beat: nextBeat,

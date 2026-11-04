@@ -192,12 +192,12 @@ export function cheapestByNumber(rows: JurisdictionRow[]): {
   };
 }
 
-// Company-name approval is its own required beat, after the colony is
-// 5/5. The user may keep the fictional demo name or name their own
-// fictional company. Custom names are cleaned and forced to carry the
-// "(fictional)" marker so a demo name can never be mistaken for a real
-// company. Never throws; an empty/whitespace name falls back to the
-// prepared demo name.
+// Company-name approval is its own required beat, immediately after the
+// home base and before equity. The user may keep the fictional demo name
+// or name their own fictional company. Custom names are cleaned and forced
+// to carry the "(fictional)" marker so a demo name can never be mistaken
+// for a real company. Never throws; an empty/whitespace name falls back to
+// the prepared demo name.
 export function normalizeCompanyName(raw?: string | null): string {
   const clean = String(raw ?? "")
     .replace(/\s+/g, " ")

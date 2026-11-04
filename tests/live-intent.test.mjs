@@ -51,12 +51,11 @@ test("bare two-way splits are local intents; named founders still win", () => {
   assert.equal(parseLiveIntent("2 owners").kind, "owner-count");
 });
 
-test("checklist, lawyer and grounded-question intents", () => {
+test("checklist, lawyer and filing intents", () => {
   assert.equal(parseLiveIntent("next step please").kind, "checklist-advance");
   assert.equal(parseLiveIntent("mark that done").kind, "checklist-advance");
   assert.equal(parseLiveIntent("yes"), null); // bare yes never moves state
   assert.equal(parseLiveIntent("prepare the lawyer summary").kind, "lawyer-summary");
-  assert.equal(parseLiveIntent("what is a section 85 rollover?").kind, "rollover-question");
   assert.equal(parseLiveIntent("what are the filing steps and fees?").kind, "filing-question");
 });
 
@@ -106,7 +105,7 @@ test("meta model config: best-fit models + ASR biasing handshake", () => {
   assert.equal(hs.mode, "ENDPOINTING");
   assert.equal(hs.partialMode, "CUMULATIVE");
   assert.equal(hs.authorization.accessToken, "Bearer KEY");
-  for (const w of ["Mars", "Europa", "Andromeda Galaxy", "section 85"]) assert.ok(hs.keywords.includes(w), w);
+  for (const w of ["Mars", "Europa", "Andromeda Galaxy", "Galactic Bagels"]) assert.ok(hs.keywords.includes(w), w);
   for (const w of ["three owners", "five people", "founders", "Vega", "confirm", "tick next step", "zero"]) {
     assert.ok(hs.keywords.includes(w), w);
   }

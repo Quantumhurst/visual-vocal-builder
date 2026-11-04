@@ -258,11 +258,6 @@ test("trust strip is wired live into Canvas and flags show on cards", () => {
   assert.match(strip, /data-testid="trust-strip"/);
   assert.match(strip, /FLAGGED/);
   assert.match(strip, /DEMO/);
-  const rollover = readFileSync(
-    new URL("../components/RolloverFactCard.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(rollover, /rollover-flag/);
   const steps = readFileSync(
     new URL("../components/FilingSteps.tsx", import.meta.url),
     "utf8",

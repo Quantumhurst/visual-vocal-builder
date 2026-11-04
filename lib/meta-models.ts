@@ -10,7 +10,7 @@
 // - Speech: muse-voice-transcribe-1.0 is Meta's only STT model. It was
 //   already in use, but without the vocabulary/language biasing the
 //   model offers — the handshake below fixes that so demo words like
-//   "Europa" and "s.85" are recognised instead of guessed at.
+//   "Europa" and "Galactic Bagels" are recognised instead of guessed at.
 // - Muse Image / SAM 3.1 / Glimmer / Spark Open: no image-generation,
 //   segmentation, or self-hosting need in this app; not adopted.
 
@@ -56,8 +56,6 @@ export const ASR_KEYWORDS = [
   "start over",
   "undo",
   "cheapest",
-  "section 85",
-  "rollover",
   "filing steps",
   "lawyer summary",
 ] as const;

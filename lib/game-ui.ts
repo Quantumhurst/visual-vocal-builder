@@ -18,16 +18,16 @@ export type ModuleMeta = {
   optional: boolean; // archive system, never required for launch
 };
 
-// Display order follows the six-beat walk. The filing card is the only
-// optional archive system; every other system is required for launch.
+// Display order follows the five-beat walk: home base, the company name,
+// equity, the build, then the launch package. The filing card is the only
+// optional archive system. The old s.85 lesson is not a module.
 export const MODULES: ModuleMeta[] = [
   { id: "jurisdiction", code: "01", label: "Home base", short: "HOME", glyph: "◎", blurb: "Pick a world", optional: false },
-  { id: "equity", code: "02", label: "Crew manifest", short: "CREW", glyph: "◐", blurb: "Split the equity", optional: false },
-  { id: "checklist", code: "03", label: "Build queue", short: "BUILD", glyph: "▤", blurb: "Raise five structures", optional: false },
-  { id: "name", code: "04", label: "Company name", short: "NAME", glyph: "✦", blurb: "Approve the callsign", optional: false },
-  { id: "rollover", code: "05", label: "Rollover lesson", short: "S.85", glyph: "◇", blurb: "Grounded rollover fact", optional: false },
+  { id: "name", code: "02", label: "Company name", short: "NAME", glyph: "✦", blurb: "Approve the callsign", optional: false },
+  { id: "equity", code: "03", label: "Crew manifest", short: "CREW", glyph: "◐", blurb: "Split the equity", optional: false },
+  { id: "checklist", code: "04", label: "Build queue", short: "BUILD", glyph: "▤", blurb: "Raise five structures", optional: false },
+  { id: "summary", code: "05", label: "Launch package", short: "LAUNCH", glyph: "▲", blurb: "Lawyer summary", optional: false },
   { id: "filingsteps", code: "06", label: "Filing intel", short: "FEES", glyph: "▥", blurb: "Optional steps & fees", optional: true },
-  { id: "summary", code: "07", label: "Launch package", short: "LAUNCH", glyph: "▲", blurb: "Lawyer summary", optional: false },
 ];
 
 export function moduleFor(id: Beat): ModuleMeta {
@@ -80,10 +80,13 @@ export function flightPlan(state: SharedState, active: Beat): FlightStep[] {
       status = "pending";
     }
 
-    let detail: string;
+    let detail = "";
     switch (module.id) {
       case "jurisdiction":
         detail = state.selectedJurisdiction ?? "unclaimed";
+        break;
+      case "name":
+        detail = state.companyName || "not approved";
         break;
       case "equity":
         detail = state.founders.map((founder) => `${founder.percent}%`).join(" / ") || "no crew";
@@ -91,18 +94,14 @@ export function flightPlan(state: SharedState, active: Beat): FlightStep[] {
       case "checklist":
         detail = `${built}/${total} built`;
         break;
-      case "name":
-        detail = state.companyName || "not approved";
-        break;
-      case "rollover":
-        detail = state.rolloverCard ? "fact online" : "lesson pending";
-        break;
       case "filingsteps":
         detail = state.filingStepsCard ? `${facts} fact${facts === 1 ? "" : "s"} online` : "no facts yet";
         break;
       case "summary":
         detail = state.lawyerPackage ? "package ready" : "not prepared";
         break;
+      default:
+        detail = "not part of this run";
     }
 
     return { ...module, index, status, detail };
@@ -125,8 +124,8 @@ export function flightStatusLabel(status: FlightStatus): string {
 }
 
 // The ship/company name appears only after the founder explicitly
-// approves the name beat. Building the "pick a name" structure does not
-// name the company; approval does.
+// approves the name beat. Building the colony does not name the company;
+// approval does, and it happens before equity in this journey.
 export function shipLabel(state: SharedState): string {
   return state.companyName.trim() !== ""
     ? state.companyName

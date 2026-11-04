@@ -1,5 +1,6 @@
 // Local-path host copy: the visible line must follow the required task
 // after a click or slider change, not stay on the previous task.
+// Order: home base -> name -> equity -> build -> summary.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -10,23 +11,26 @@ import {
   checklistHostLine,
   equityConfirmationLine,
   nameApprovalLine,
+  nameApprovedLine,
   nextObjectiveHostLine,
-  rolloverLearnLine,
 } from "../lib/build-host.ts";
-import { applyOwnerCount, applyRolloverFact } from "../lib/state-updates.ts";
+import { spokenHostText } from "../lib/spoken-text.ts";
+import { applyOwnerCount } from "../lib/state-updates.ts";
 import { CHECKLIST_PACK } from "../lib/knowledge.ts";
 import {
   applyChecklistItem,
   applyCompanyName,
   applyEquity,
   applyJurisdiction,
+  applyLawyerSummary,
   withDefaults,
 } from "../lib/state-updates.ts";
 
 const base = () => withDefaults(null);
+const named = () => applyCompanyName(applyJurisdiction(base(), "Mars"));
 
 test("after the equity split, the host line hands off to the build queue", () => {
-  let state = applyJurisdiction(base(), "Mars");
+  let state = named();
   state = applyEquity(state, 0, 70, "test");
   const line = nextObjectiveHostLine(state);
   assert.match(line, /^Structure 1 of 5: Landing pad —/);
@@ -34,7 +38,7 @@ test("after the equity split, the host line hands off to the build queue", () =>
 });
 
 test("a checklist click reports the real count and names the next step", () => {
-  let state = applyJurisdiction(base(), "Mars");
+  let state = named();
   state = applyEquity(state, 0, 70, "test");
   state = applyChecklistItem(state, CHECKLIST_PACK.facts[0].factId, true);
   const line = checklistHostLine(state);
@@ -43,7 +47,7 @@ test("a checklist click reports the real count and names the next step", () => {
 });
 
 test("the guided build asks for exactly one yes before raising one structure", () => {
-  const state = applyEquity(applyJurisdiction(base(), "Mars"), 0, 70, "test");
+  const state = applyEquity(named(), 0, 70, "test");
   const question = buildQuestionLine(state);
   assert.match(question, /^Structure 1 of 5: Landing pad —/);
   assert.match(question, /Say “yes” to raise it/);
@@ -60,40 +64,38 @@ test("the guided build asks for exactly one yes before raising one structure", (
   assert.doesNotMatch(guide, /not yet/);
 });
 
-test("the fifth structure hands off to the company-name approval", () => {
-  let state = applyJurisdiction(base(), "Mars");
-  state = applyEquity(state, 0, 70, "test");
+test("the fifth structure hands off to the lawyer summary", () => {
+  let state = applyEquity(named(), 0, 70, "test");
   for (const fact of CHECKLIST_PACK.facts) {
     state = applyChecklistItem(state, fact.factId, true);
   }
   const line = checklistHostLine(state);
-  assert.match(line, /Colony complete — five of five/);
-  assert.match(line, /Approve Galactic Bagels/);
+  assert.match(line, /Everything is lined up/);
+  assert.match(line, /Prepare the lawyer summary/);
+  assert.doesNotMatch(line, /Approve Galactic Bagels|s\.85|rollover/i);
   // Two sentences, so the spoken-text cap never drops the question.
   assert.ok((line.match(/[.!?](?:\s|$)/g) ?? []).length <= 2);
 });
 
 test("the explicit name-approval line is the same question the banner shows", () => {
-  let state = applyJurisdiction(base(), "Mars");
-  state = applyEquity(state, 0, 70, "test");
-  for (const fact of CHECKLIST_PACK.facts) {
-    state = applyChecklistItem(state, fact.factId, true);
-  }
-  assert.match(nameApprovalLine(state), /Colony complete — five of five/);
+  const state = named();
+  assert.match(nameApprovalLine(state), /Name the fictional company/);
   assert.match(nameApprovalLine(state), /Approve Galactic Bagels/);
-  assert.doesNotMatch(nameApprovalLine(state), /Call it/);
+  assert.doesNotMatch(nameApprovalLine(state), /5\/5|colony complete|Call it/i);
 });
 
-test("the rollover lesson speaks the grounded pack sentence verbatim", () => {
-  const state = applyRolloverFact(base(), "s85-what-it-is", "what is a section 85 rollover?");
-  const line = rolloverLearnLine(state);
-  assert.match(line, /^Under s\.85\(1\) of the Canada Income Tax Act/);
-  assert.ok(line.length <= 283);
+test("name approval speaks the equity cue within the two-sentence cap", () => {
+  const line = nameApprovedLine(named());
+  assert.match(line, /Company name approved as Galactic Bagels/);
+  // spokenHostText keeps "Inc." as part of the first sentence and retains
+  // the equity cue; no truncation.
+  assert.equal(spokenHostText(line), line);
+  assert.match(spokenHostText(line), /Make Orbit 70%/);
+  assert.doesNotMatch(line, /Mars is home/);
 });
 
 test("unticking reports the reduced count and the reopened step", () => {
-  let state = applyJurisdiction(base(), "Mars");
-  state = applyEquity(state, 0, 70, "test");
+  let state = applyEquity(named(), 0, 70, "test");
   state = applyChecklistItem(state, CHECKLIST_PACK.facts[0].factId, true);
   state = applyChecklistItem(state, CHECKLIST_PACK.facts[0].factId, false);
   const line = checklistHostLine(state);
@@ -102,19 +104,16 @@ test("unticking reports the reduced count and the reopened step", () => {
 });
 
 test("all required work complete uses a complete line, not a stale question", () => {
-  let state = applyJurisdiction(base(), "Mars");
-  state = applyEquity(state, 0, 70, "test");
+  let state = applyEquity(named(), 0, 70, "test");
   for (const fact of CHECKLIST_PACK.facts) {
     state = applyChecklistItem(state, fact.factId, true);
   }
-  state = applyCompanyName(state);
-  state = applyRolloverFact(state, "s85-what-it-is", "what is s.85?");
-  state = { ...state, lawyerPackage: "package" };
+  state = applyLawyerSummary(state);
   assert.equal(nextObjectiveHostLine(state), "Mission complete — colony founded.");
 });
 
 test("equity confirmation reports the normalized split and owner count", () => {
-  let state = applyJurisdiction(base(), "Mars");
+  let state = named();
   state = applyEquity(state, 0, 70, "test");
   assert.equal(
     equityConfirmationLine(state),

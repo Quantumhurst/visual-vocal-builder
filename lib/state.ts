@@ -42,8 +42,9 @@ export type SharedState = {
   transcript: string; // last transcript, shown on canvas
   jurisdictions: JurisdictionRow[];
   selectedJurisdiction: string | null; // set by voice (agent) OR by row click
-  // The company name is approved by voice as its own beat, after the
-  // colony is 5/5. "" until the founder approves the fictional demo name.
+  // The company name is approved by voice as its own beat, immediately
+  // after the home base and before equity. "" until the founder approves
+  // the fictional demo name.
   companyName: string;
   founders: FounderShare[]; // DEMO founders; percents always total 100
   equityNote: string; // agent's note about the last equity adjustment

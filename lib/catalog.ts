@@ -62,7 +62,7 @@ export const CATALOG: CatalogEntry[] = [
       "useCoAgent shared state; the voice approval and the agent action approveCompanyName share applyCompanyName()",
     grounding: "fictional demo name in lib/demo-data.ts; custom names are forced to carry '(fictional)'",
     description:
-      "Company-name approval after the colony reaches 5/5. The screen asks for the exact spoken approval; the approved name feeds the lawyer summary.",
+      "Company-name approval immediately after the home base, before equity and the build. The screen asks for the exact spoken approval; the approved name feeds the lawyer summary.",
   },
   {
     catalogId: "vvb-filing-steps-v1",
@@ -85,16 +85,5 @@ export const CATALOG: CatalogEntry[] = [
     grounding: "shared session state (jurisdiction choice, equity split, checklist state)",
     description:
       "Lawyer-summary package display: beat 5's prepared package rendered on the canvas from shared state. Prep only — no send path.",
-  },
-  {
-    catalogId: "vvb-rollover-fact-card-v1",
-    component: "RolloverFactCard",
-    beat: "rollover",
-    stateSlice: "rolloverCard",
-    drivenBy:
-      "useCoAgent shared state; agent action showRolloverFact looks the fact up in the knowledge pack — unknown ids show no card",
-    grounding: "corp-plan-ca-s85-rollover-v1 in lib/knowledge.ts",
-    description:
-      "Grounded s.85 rollover fact card. Shows its pack id and fact id on the card; an ungrounded answer is never rendered as a card.",
   },
 ];

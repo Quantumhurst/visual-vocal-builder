@@ -8,7 +8,6 @@ import {
   applyEquity,
   applyJurisdiction,
   applyLawyerSummary,
-  applyRolloverFact,
   withDefaults,
 } from "../lib/state-updates.ts";
 import { CHECKLIST_PACK } from "../lib/knowledge.ts";
@@ -16,38 +15,41 @@ import { CHECKLIST_PACK } from "../lib/knowledge.ts";
 const base = () => withDefaults(null);
 const allChecklist = () => CHECKLIST_PACK.facts.map((fact) => fact.factId);
 
-test("mission follows the next incomplete beat", () => {
+test("mission follows the new five-beat order", () => {
   const m1 = missionFor(base());
   assert.equal(m1.beat, "jurisdiction");
   assert.equal(m1.step, 1);
-  assert.equal(m1.total, 6);
+  assert.equal(m1.total, 5);
   assert.equal(m1.voiceCue, "Pick Mars");
   assert.equal(m1.chips.length, 1);
-  assert.match(m1.chips[0].command, /Mars/);
-  const s2 = applyEquity(applyJurisdiction(base(), "Mars"), 1, 70, "test");
-  const m2 = missionFor(s2);
-  assert.equal(m2.beat, "checklist");
-  assert.equal(m2.voiceCue, "Yes");
-  assert.equal(m2.chips.length, 1);
+
+  const m2 = missionFor(applyJurisdiction(base(), "Mars"));
+  assert.equal(m2.beat, "name");
+  assert.equal(m2.step, 2);
+  assert.equal(m2.voiceCue, "Approve Galactic Bagels");
+
+  const m3 = missionFor(applyCompanyName(applyJurisdiction(base(), "Mars")));
+  assert.equal(m3.beat, "equity");
+  assert.equal(m3.step, 3);
+  assert.equal(m3.voiceCue, "Make Orbit 70%");
 });
 
 test("every mission has one sayable cue, one prompt, and exactly one chip", () => {
   for (const state of [
     base(),
     applyJurisdiction(base(), "Mars"),
-    applyEquity(applyJurisdiction(base(), "Mars"), 0, 70, "test"),
+    applyCompanyName(applyJurisdiction(base(), "Mars")),
+    applyEquity(applyCompanyName(applyJurisdiction(base(), "Mars")), 0, 70, "test"),
     (() => {
-      let s = applyEquity(applyJurisdiction(base(), "Mars"), 0, 70, "test");
+      let s = applyEquity(applyCompanyName(applyJurisdiction(base(), "Mars")), 0, 70, "test");
       for (const id of allChecklist()) s = applyChecklistItem(s, id, true);
       return s;
     })(),
-    applyCompanyName(base()),
-    applyRolloverFact(base(), "s85-what-it-is", "what is s.85?"),
   ]) {
     const m = missionFor(state);
     assert.ok(m.prompt.length > 10);
     assert.ok(m.voiceCue.length >= 2);
-    assert.equal(m.total, 6);
+    assert.equal(m.total, 5);
     assert.equal(m.chips.length, 1, `${m.beat}: one next action, never a wall`);
     assert.ok(m.chips[0].label && m.chips[0].command);
   }
@@ -57,9 +59,8 @@ test("the primary prompt never offers a menu of alternatives", () => {
   for (const state of [
     base(),
     applyJurisdiction(base(), "Mars"),
-    applyEquity(applyJurisdiction(base(), "Mars"), 0, 70, "test"),
-    applyCompanyName(base()),
-    applyRolloverFact(base(), "s85-what-it-is", "what is s.85?"),
+    applyCompanyName(applyJurisdiction(base(), "Mars")),
+    applyEquity(applyCompanyName(applyJurisdiction(base(), "Mars")), 0, 70, "test"),
   ]) {
     const m = missionFor(state);
     assert.doesNotMatch(m.prompt, /\bor\b/i, `${m.beat} prompt`);
@@ -70,10 +71,9 @@ test("the primary prompt never offers a menu of alternatives", () => {
 
 function completeChain(checklistIds) {
   let s = applyJurisdiction(base(), "Mars");
+  s = applyCompanyName(s);
   s = applyEquity(s, 0, 70, "test");
   for (const id of checklistIds) s = applyChecklistItem(s, id, true);
-  s = applyCompanyName(s);
-  s = applyRolloverFact(s, "s85-what-it-is", "what is s.85?");
   s = applyLawyerSummary(s);
   return s;
 }
@@ -100,12 +100,18 @@ test("a fully built and approved colony is called founded", () => {
   assert.equal(m.chips.length, 1);
 });
 
-test("spoken text keeps Inc. and s.85 from being split as sentences", () => {
-  const nameLine = "Company name approved as Galactic Bagels Inc. (fictional). Say “Explain section 85” to see the grounded rollover fact.";
-  assert.match(spokenHostText(nameLine), /Explain section 85/);
-  const fact = "Under s.85(1) of the Canada Income Tax Act, a taxpayer and a taxable Canadian corporation can jointly elect to transfer eligible property to the corporation on a tax-deferred (rollover) basis, so tax on the accrued gain is deferred rather than triggered on the transfer.";
-  assert.match(spokenHostText(fact), /^Under s\.85\(1\)/);
-  assert.match(spokenHostText(fact), /on the transfer\.$/);
+test("the name beat does not require the colony to be built", () => {
+  const s = applyJurisdiction(base(), "Mars");
+  const m = missionFor(s);
+  assert.equal(m.beat, "name");
+  assert.doesNotMatch(m.prompt, /5\/5|colony is complete|after the colony/i);
+  assert.match(m.prompt, /fictional company/i);
+});
+
+test("spoken text keeps Inc. from being split as a sentence", () => {
+  const nameLine = "Company name approved as Galactic Bagels Inc. (fictional). Say “Make Orbit 70%”.";
+  assert.match(spokenHostText(nameLine), /Make Orbit 70%/);
+  assert.match(spokenHostText(nameLine), /^Company name approved as Galactic Bagels Inc\./);
 });
 
 test("spoken text is capped to two short sentences", () => {
@@ -114,16 +120,4 @@ test("spoken text is capped to two short sentences", () => {
   assert.equal(spokenHostText(""), "");
   assert.equal(spokenHostText("One only."), "One only.");
   assert.ok(spokenHostText("x".repeat(400)).length <= 283);
-});
-
-test("the grounded s.85 lesson is a required beat, not an archive", () => {
-  let state = applyJurisdiction(base(), "Mars");
-  state = applyEquity(state, 0, 70, "test");
-  for (const fact of CHECKLIST_PACK.facts) {
-    state = applyChecklistItem(state, fact.factId, true);
-  }
-  state = applyCompanyName(state);
-  assert.equal(missionFor(state).beat, "rollover");
-  assert.match(missionFor(state).voiceCue, /Explain section 85/);
-  assert.equal(missionFor(state).total, 6);
 });

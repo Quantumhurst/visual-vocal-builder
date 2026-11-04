@@ -148,18 +148,16 @@ async function snapshot(page) {
       recovery: voice?.getRecovery?.() ?? null,
       caption: voice?.getCaption?.() ?? null,
       nextBeat: state ? (() => {
-        const list = ["jurisdiction", "equity", "checklist", "name", "rollover", "summary"];
+        const list = ["jurisdiction", "name", "equity", "checklist", "summary"];
         const done = {
           jurisdiction: Boolean(state.selectedJurisdiction),
-          equity: state.founders.some((f, i) => (i === 0 ? false : false)) || state.equityNote !== "",
-          checklist: state.checklist.length > 0 && state.checklist.every((i) => i.done),
           name: Boolean(state.companyName),
-          rollover: Boolean(state.rolloverCard),
+          equity: state.equityNote !== "",
+          checklist: state.checklist.length > 0 && state.checklist.every((i) => i.done),
           summary: Boolean(state.lawyerPackage),
         };
-        // Equity is "done" once the split changed from the prepared 60/40
-        // or an owner count was chosen. The app's beatProgress is the
-        // authority; this is only a display fallback.
+        // The app's beatProgress is the authority; this is only a display
+        // fallback for the proof report.
         return list.find((b) => !done[b]) ?? "complete";
       })() : null,
     };
@@ -249,7 +247,16 @@ const TURNS = [
       { id: "slow-b", text: "Mars as our home base" },
     ],
     expect: (s) => s.selectedJurisdiction === "Mars",
-    host: /Mars/,
+    // The new order asks for the company name immediately after the
+    // home base, before equity.
+    host: /Name the fictional company|Approve Galactic Bagels/i,
+  },
+  {
+    id: "name",
+    text: "Approve Galactic Bagels",
+    label: "company name approval",
+    expect: (s) => /Galactic Bagels/.test(s.companyName ?? ""),
+    host: /approved as.*Make Orbit|company name approved/i,
   },
   {
     id: "owners",
@@ -279,22 +286,8 @@ const TURNS = [
     expect: (s) => s.checklist.filter((i) => i.done).length === n,
     host: n < 5
       ? /raised|structures? up|Next:|tell me more/i
-      : /Colony complete|Approve the company name|Approve Galactic Bagels/i,
+      : /Everything is lined up|Prepare the lawyer summary/i,
   })),
-  {
-    id: "name",
-    text: "Approve Galactic Bagels",
-    label: "company name approval",
-    expect: (s) => /Galactic Bagels/.test(s.companyName ?? ""),
-    host: /approved as.*Explain section 85/i,
-  },
-  {
-    id: "s85",
-    text: "What is a section 85 rollover?",
-    label: "grounded s.85 lesson",
-    expect: (s) => s.rolloverCard?.factId === "s85-what-it-is",
-    host: /Under s\.\s?85\(1\)/i,
-  },
   {
     id: "summary",
     text: "Prepare the lawyer summary",
@@ -445,18 +438,22 @@ async function main() {
       const oneChip = snap.chipCount <= 1;
       const historyVisible = snap.historyVisible && snap.historyCount >= 2;
       const noRecovery = snap.recoveryKind === "";
+      const lastUser = await page.evaluate(() => {
+        const log = window.__vvbVoice?.getLog?.() ?? [];
+        const you = log.filter((entry) => entry.role === "you");
+        return you[you.length - 1]?.text ?? "";
+      });
+      // The big HEARD caption must be the latest captured turn, not the
+      // previous command while the history log has moved on.
+      const heardAgrees = captionKey(snap.heard) === captionKey(lastUser);
       const slowMerged = turn.slow
-        ? await page.evaluate(() => {
-            const log = window.__vvbVoice?.getLog?.() ?? [];
-            const you = log.filter((entry) => entry.role === "you");
-            const last = you[you.length - 1]?.text ?? "";
-            return /want/i.test(last) && /mars/i.test(last);
-          })
+        ? /want/i.test(lastUser) && /mars/i.test(lastUser)
         : null;
       const passed =
         Boolean(state) &&
         Boolean(snap.recording) &&
         agrees &&
+        heardAgrees &&
         oneSay &&
         oneChip &&
         historyVisible &&
@@ -466,20 +463,31 @@ async function main() {
       console.log(`  Heard: "${snap.heard}"`);
       console.log(`  Screen: ${snap.mission} · ${visible.slice(0, 110)}`);
       console.log(
-        `  Captions agree: ${agrees} · SAY ${snap.sayCount} · chips ${snap.chipCount} · history ${snap.historyCount}` +
+        `  Captions agree: ${agrees} · heard ${heardAgrees} · SAY ${snap.sayCount} · chips ${snap.chipCount} · history ${snap.historyCount}` +
         (turn.slow ? ` · held ${holdSeen} · merged ${slowMerged}` : ""),
       );
       console.log(`  ${passed ? "PASS" : "FAIL"} · mic re-armed · clicks so far ${snap.clicks}`);
-      if (!agrees) captionFailures.push({ step: turn.id, host: snap.host, spoken: snap.lastSpoken });
+      if (!agrees || !heardAgrees) {
+        captionFailures.push({
+          step: turn.id,
+          kind: !agrees ? "host" : "heard",
+          host: snap.host,
+          spoken: snap.lastSpoken,
+          heard: snap.heard,
+          lastUser,
+        });
+      }
       results.push({
         step: turn.id,
         heard: turn.text,
         host: snap.lastSpoken,
         heardCaption: snap.heard,
+        lastUser,
         screen: visible,
         nextStep: snap.mission,
         passed,
         captionsAgree: agrees,
+        heardAgrees,
         oneSay,
         oneChip,
         historyCount: snap.historyCount,
@@ -502,12 +510,17 @@ async function main() {
       split: s.founders.reduce((sum, f) => sum + f.percent, 0) === 100,
       structures: s.checklist.filter((i) => i.done).length === 5,
       nameApproved: /Galactic Bagels/.test(s.companyName ?? ""),
-      groundedS85: s.rolloverCard?.factId === "s85-what-it-is",
+      nameBeforeEquity:
+        results.findIndex((row) => row.step === "name") >= 0 &&
+        results.findIndex((row) => row.step === "name") <
+          results.findIndex((row) => row.step === "equity"),
+      noRollover: s.rolloverCard === null,
       summary: (s.lawyerPackage ?? "").length > 0,
       noClicks: final.clicks === 0,
       wasListening: final.allSpoken.length > 0,
       noFilingClaim: !/filed successfully|submitted to the registry/i.test(s.lawyerPackage ?? ""),
-      captionsAgreeEveryTurn: captionFailures.length === 0,
+      captionsAgreeEveryTurn: captionFailures.filter((row) => row.kind === "host").length === 0,
+      heardCaptionsAgreeEveryTurn: captionFailures.filter((row) => row.kind === "heard").length === 0,
       oneSayEveryTurn: results.every((row) => row.oneSay !== false),
       oneChipEveryTurn: results.every((row) => row.oneChip !== false),
       captionHistoryGrew: final.historyCount >= 20,

@@ -3,17 +3,18 @@ import type { SharedState } from "./state.ts";
 
 export type Beat = SharedState["currentBeat"];
 
-// The six missions that actually form the company, in the order a
+// The five missions that actually form the company, in the order a
 // founder walks them by voice:
-//   home base -> equity (confirmed) -> 5/5 colony -> approve the name
-//   -> learn the grounded s.85 fact -> prepare the lawyer summary.
-// The filing-steps/fees card remains an optional reference system.
+//   home base -> name -> equity (confirmed) -> 5/5 colony
+//   -> prepare the lawyer summary.
+// The company name comes immediately after the home base, before equity
+// and the build. The filing-steps/fees card remains an optional reference
+// system. The old s.85 rollover lesson is not part of this journey.
 export const REQUIRED_BEATS = [
   "jurisdiction",
+  "name",
   "equity",
   "checklist",
-  "name",
-  "rollover",
   "summary",
 ] as const;
 export const OPTIONAL_BEATS = ["filingsteps"] as const;
