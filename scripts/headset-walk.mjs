@@ -397,6 +397,7 @@ async function main() {
       ["download-summary", "Download summary"],
       ["download-transcript", "Download transcript"],
       ["download-package", "Download package"],
+      ["yes-package", "Yes"],
       ["close", "Close"],
       ["test-voice", "Test voice"],
       ["start-over", "Start over"],
@@ -708,11 +709,11 @@ async function main() {
     downloadChecks.summaryConfirmation = /Downloaded/i.test(summaryConfirmation.lastSpoken || summaryConfirmation.host);
     console.log(`  Saved ${summaryDownload.name} · confirmation "${summaryConfirmation.lastSpoken}"`);
 
-    console.log("\n[download] Download package by voice");
+    console.log("\n[download] Voice approval for demo package");
     await waitMicReady(page, 30000);
     clearDownloads();
     downloadHostBefore = await hostCount(page);
-    await say(page, audio["download-package"]);
+    await say(page, audio["yes-package"]);
     const packageConfirmation = await waitNewHost(
       page,
       downloadHostBefore,

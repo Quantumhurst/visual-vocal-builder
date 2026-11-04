@@ -51,11 +51,11 @@ export function missionFor(state: SharedState): Mission {
         ? "Mission complete — colony founded"
         : `Mission complete — colony ${built}/${structures}`,
       prompt: founded
-        ? "All five missions are done. The summary is prepared, nothing was filed, and nothing was sent."
+        ? "All five missions are done. Say yes to download the demo package; nothing was filed or sent."
         : `All five missions are cleared, but the colony is only ${built}/${structures} built.`,
-      voiceCue: founded ? "Show transcript" : "Yes",
+      voiceCue: "Yes",
       chips: founded
-        ? [{ label: "Show transcript", command: "Show transcript" }]
+        ? [{ label: "Download package", command: "Download package" }]
         : [{ label: "Raise next structure", command: "Yes" }],
     };
   }

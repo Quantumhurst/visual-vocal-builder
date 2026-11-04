@@ -7,6 +7,7 @@ import { isConfirmationAnswer, isChangeAnswer } from "../lib/confirmation.ts";
 test("short yes/confirm answers are confirmations", () => {
   for (const text of [
     "yes",
+    "Yes,",
     "Yeah!",
     "yep",
     "confirm",
@@ -39,7 +40,7 @@ test("short yes/confirm answers are confirmations", () => {
 });
 
 test("change/no answers keep the card open", () => {
-  for (const text of ["no", "nope", "change", "edit it", "not right", "wait", "go back"]) {
+  for (const text of ["no", "No,", "nope", "change", "edit it", "not right", "wait", "go back"]) {
     assert.equal(isChangeAnswer(text), true, text);
   }
 });

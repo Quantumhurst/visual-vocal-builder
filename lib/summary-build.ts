@@ -6,11 +6,11 @@
 // completion when the package lands.
 
 export const SUMMARY_PROGRESS_STEPS = [25, 50, 75, 100] as const;
-export const SUMMARY_STEP_MS = 420;
+export const SUMMARY_STEP_MS = 300;
 
-export const SUMMARY_START_LINE = "Building your summary — one moment.";
+export const SUMMARY_START_LINE = "Building your summary.";
 export const SUMMARY_READY_LINE =
-  "Summary prepared — copy or download it. Mission complete: nothing was filed and nothing was sent.";
+  "Summary prepared. Would you like the demo package — nothing was filed or sent?";
 
 export function clampSummaryProgress(pct: number): number {
   if (!Number.isFinite(pct)) return 0;

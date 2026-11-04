@@ -96,7 +96,7 @@ test("a fully built and approved colony is called founded", () => {
   assert.equal(m.beat, "complete");
   assert.match(m.title, /founded/i);
   assert.match(m.prompt, /nothing was filed/i);
-  assert.match(m.voiceCue, /Show transcript/i);
+  assert.match(m.voiceCue, /^Yes$/i);
   assert.equal(m.chips.length, 1);
 });
 

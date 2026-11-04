@@ -1843,7 +1843,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     const current = withDefaults(stateRef.current);
     const mission = missionFor(current);
     if (mission.beat === "complete") {
-      return "Mission complete — the summary is ready and nothing was filed. Say “Show transcript”, “Save progress”, or “Start over”.";
+      return "Mission complete — the summary is ready and nothing was filed. Say “yes” to download the package, or say “show transcript”.";
     }
     return `Step ${mission.step} of ${mission.total}: ${mission.title}. Say “${mission.voiceCue}”.`;
   }
@@ -2144,6 +2144,30 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         setEquityConfirm(false);
         setLocalHost("");
       }
+    }
+
+    // The summary has landed and the host asked for a spoken yes/no.
+    // Answer locally: yes downloads the one-command package, no leaves
+    // the summary on screen. No model turn and no extra prompt.
+    const completedSummary =
+      beatProgress(live).nextBeat === "complete" && live.lawyerPackage.trim().length > 0;
+    if (completedSummary && isConfirmationAnswer(trimmed)) {
+      recordHeardTurn(trimmed);
+      previewKeyRef.current = null;
+      pendingTurnRef.current = null;
+      setLivePreview(null);
+      setAck("");
+      downloadPackageNow();
+      return;
+    }
+    if (completedSummary && isChangeAnswer(trimmed)) {
+      recordHeardTurn(trimmed);
+      previewKeyRef.current = null;
+      pendingTurnRef.current = null;
+      setLivePreview(null);
+      setAck("");
+      hostFeedback("No download. The summary is still on screen — nothing was filed or sent.");
+      return;
     }
 
     // This answer is fixed safety copy, not a fact lookup and not a

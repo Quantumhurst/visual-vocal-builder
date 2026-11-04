@@ -70,7 +70,7 @@ test("the fifth structure hands off to the lawyer summary", () => {
     state = applyChecklistItem(state, fact.factId, true);
   }
   const line = checklistHostLine(state);
-  assert.match(line, /Everything is lined up/);
+  assert.match(line, /Prepare the lawyer summary/);
   assert.match(line, /Prepare the lawyer summary/);
   assert.doesNotMatch(line, /Approve Galactic Bagels|rollover/i);
   // Two sentences, so the spoken-text cap never drops the question.
