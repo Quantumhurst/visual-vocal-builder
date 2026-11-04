@@ -36,6 +36,7 @@ import { isChangeAnswer, isConfirmationAnswer } from "../lib/confirmation";
 import { FILING_GUARD_REPLY, isFilingGuardQuestion } from "../lib/filing-guard";
 import { DEFAULT_VOICE_SETTINGS, applyVoiceControl, normalizeVoiceSettings, parseVoiceControl, settingsSummary, type VoiceControl, type VoiceSettings } from "../lib/voice-controls";
 import { clearSavedSession, progressSummary, saveSession, type TranscriptEntry } from "../lib/persistence";
+import { resumeSummary } from "../lib/resume";
 import { FIRST_SPEAK_GREETING, hasFirstSpeakGreeting, markFirstSpeakGreeting } from "../lib/first-speak";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
 import { withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount, applyCompanyName, parseSpokenCompanyName } from "../lib/state-updates";
@@ -61,6 +62,12 @@ import {
   looksUnfinishedTranscript,
   mergeContinuation,
 } from "../lib/slow-speech";
+import {
+  SUMMARY_READY_LINE,
+  SUMMARY_START_LINE,
+  SUMMARY_STEP_MS,
+  nextSummaryProgress,
+} from "../lib/summary-build";
 import CaptionConsole from "./CaptionConsole";
 import CaptionHistory from "./CaptionHistory";
 import { concatFloat32, toPcm16k } from "../lib/pcm";
@@ -92,6 +99,7 @@ import { MODULES, flightPlan, flightStatusLabel, formatClock, moduleFor, shipLab
 import { spokenHostText } from "../lib/spoken-text";
 import { stripAsrAnnotations } from "../lib/transcript";
 import { HOST_VOICE_STORAGE_KEY, defaultHostVoice, isSelectableVoice, pickVoice, prosodyFor, resolveVoiceSelection } from "../lib/voice-select";
+import { TOOL_TIMEOUT_MS, ToolTimeoutError, toolTimeoutLine, withToolTimeout } from "../lib/tool-timeout";
 import { summarizeTimings, type TurnTimings } from "../lib/turn-timing";
 import { HybridEndpointer } from "../lib/voice/hybrid-endpointer";
 import { speechQueue } from "../lib/voice/surviving-speech-queue";
@@ -205,7 +213,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // not the generic "prepare the summary" fallback for a summary that is
   // already prepared.
   const [localHost, setLocalHost] = useState(() =>
-    resumed ? `Welcome back. ${progressSummary(bootState)}. Say “Show transcript” or “Start over”.` : "",
+    resumed ? resumeSummary(bootState) : "",
   );
   const [turnError, setTurnError] = useState("");
   const [transcribeFailure, setTranscribeFailure] = useState<TranscribeFailure | null>(null);
@@ -293,6 +301,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const [continuation, setContinuation] = useState<{ text: string } | null>(null);
   const heldUtteranceRef = useRef<{ text: string; at: number } | null>(null);
   const continuationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Async summary build: the package is prepared in short timer slices so
+  // the voice loop and mic stay responsive. The caption shows progress;
+  // the start and the finished package are both spoken.
+  const [summaryBuild, setSummaryBuild] = useState<{ pct: number; ready: boolean } | null>(null);
+  const summaryBuildRef = useRef<{ token: number; timer: ReturnType<typeof setTimeout> | null } | null>(null);
+  const summaryBuildTokenRef = useRef(0);
+  const summarySpeakTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const summaryDeliverAttemptsRef = useRef(0);
   const [savedNotice, setSavedNotice] = useState("");
   useEffect(() => {
     settingsRef.current = settings;
@@ -455,6 +471,27 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   }, [equityConfirm]);
   function logToolCall() {
     stampTiming("firstToolCall");
+  }
+
+  // Every agent tool runs through this timeout. A stalled tool surfaces
+  // the same visible RECOVERY banner as any other dropped turn and returns
+  // a plain result so the model can finish instead of hanging the loop.
+  async function runTool(
+    name: string,
+    work: () => Promise<unknown> | unknown,
+  ): Promise<unknown> {
+    logToolCall();
+    try {
+      return await withToolTimeout(name, work);
+    } catch (error) {
+      if (error instanceof ToolTimeoutError) {
+        const line = toolTimeoutLine(name, error.timeoutMs);
+        setTurnError(line);
+        surfaceRecovery("tool-timeout", line);
+        return line;
+      }
+      throw error;
+    }
   }
 
   // The conversation loop re-arms the mic only once the host has
@@ -1047,6 +1084,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     return describeChange(before, after);
   }
   function undoLast(): string {
+    cancelSummaryBuild();
     const { stack, entry } = popHistory(historyRef.current);
     const current = withDefaults(stateRef.current);
     if (!entry) return `Nothing to undo. Current state: ${currentStateSummary(current)}.`;
@@ -1333,10 +1371,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         required: false,
       },
     ],
-    handler: async ({ jurisdiction }) => {
-      logToolCall();
-      return commit("jurisdiction", (s) => applyJurisdiction(s, jurisdiction ?? null));
-    },
+    handler: async ({ jurisdiction }) =>
+      runTool("showJurisdictionComparison", () =>
+        commit("jurisdiction", (s) => applyJurisdiction(s, jurisdiction ?? null)),
+      ),
   });
 
   // Beat 2 voice path: "make me 70%" -> same updateEquity() the slider
@@ -1360,15 +1398,15 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         required: true,
       },
     ],
-    handler: async ({ founder, percent }) => {
-      logToolCall();
-      const base = withDefaults(stateRef.current);
-      const index = resolveFounderIndex(base.founders, founder ?? "");
-      if (index < 0) {
-        return `Nothing changed: no founder matched "${founder}". Founders are ${base.founders.map((f) => f.name).join(", ")}. Nothing was edited; please ask again with one of those names. Current state: ${currentStateSummary(base)}.`;
-      }
-      return commit("equity", (s) => applyEquity(s, index, Number(percent), "voice"));
-    },
+    handler: async ({ founder, percent }) =>
+      runTool("setFounderEquity", () => {
+        const base = withDefaults(stateRef.current);
+        const index = resolveFounderIndex(base.founders, founder ?? "");
+        if (index < 0) {
+          return `Nothing changed: no founder matched "${founder}". Founders are ${base.founders.map((f) => f.name).join(", ")}. Nothing was edited; please ask again with one of those names. Current state: ${currentStateSummary(base)}.`;
+        }
+        return commit("equity", (s) => applyEquity(s, index, Number(percent), "voice"));
+      }),
   });
 
   useCopilotAction({
@@ -1383,10 +1421,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         required: true,
       },
     ],
-    handler: async ({ count }) => {
-      logToolCall();
-      return commit("owners", (s) => applyOwnerCount(s, Number(count)));
-    },
+    handler: async ({ count }) =>
+      runTool("setOwnerCount", () => commit("owners", (s) => applyOwnerCount(s, Number(count)))),
   });
 
   // Beat 3 voice paths: check/uncheck one item, or advance the walk.
@@ -1399,10 +1435,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       { name: "itemId", type: "string", description: "Checklist item id.", required: true },
       { name: "done", type: "boolean", description: "True to check, false to uncheck.", required: true },
     ],
-    handler: async ({ itemId, done }) => {
-      logToolCall();
-      return commit("checklist", (s) => applyChecklistItem(s, itemId, Boolean(done)));
-    },
+    handler: async ({ itemId, done }) =>
+      runTool("setChecklistItem", () =>
+        commit("checklist", (s) => applyChecklistItem(s, itemId, Boolean(done))),
+      ),
   });
 
   useCopilotAction({
@@ -1414,11 +1450,11 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       { name: "itemIds", type: "string[]", description: "Checklist item ids.", required: true },
       { name: "done", type: "boolean", description: "True to check, false to uncheck.", required: true },
     ],
-    handler: async ({ itemIds, done }) => {
-      logToolCall();
-      const ids = Array.isArray(itemIds) ? itemIds.map(String) : [];
-      return commit("checklist", (s) => applyChecklistItems(s, ids, Boolean(done)));
-    },
+    handler: async ({ itemIds, done }) =>
+      runTool("setChecklistItems", () => {
+        const ids = Array.isArray(itemIds) ? itemIds.map(String) : [];
+        return commit("checklist", (s) => applyChecklistItems(s, ids, Boolean(done)));
+      }),
   });
 
   useCopilotAction({
@@ -1427,10 +1463,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     description:
       "Reverse the last canvas change (voice, slider, or click). Call when the user says undo that, revert, or go back. Never claim an undo without calling this.",
     parameters: [],
-    handler: async () => {
-      logToolCall();
-      return undoLast();
-    },
+    handler: async () => runTool("undoLastChange", () => undoLast()),
   });
 
   useCopilotAction({
@@ -1439,10 +1472,11 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     description:
       "Reset the canvas only (selection, equity, checklist, cards, lawyer package) and keep the chat history. Call when the user says start over or fresh start. Never claim a reset without calling this.",
     parameters: [],
-    handler: async () => {
-      logToolCall();
-      return commit("start-over", (s) => applyStartOver(s));
-    },
+    handler: async () =>
+      runTool("startOver", () => {
+        cancelSummaryBuild();
+        return commit("start-over", (s) => applyStartOver(s));
+      }),
   });
 
   useCopilotAction({
@@ -1454,18 +1488,18 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       { name: "question", type: "string", description: "The user's comparison question.", required: false },
       { name: "focus", type: "string", description: "Fictional place to DEMO-highlight, if one fits; otherwise omit.", required: false },
     ],
-    handler: async ({ question, focus }) => {
-      logToolCall();
-      const cheapest = cheapestByNumber(DEMO_JURISDICTIONS);
-      const focusName = focus ?? cheapest.name;
-      const result = commit("compare", (s) =>
-        applyFocusJurisdiction(s, focusName, question ?? "comparison"),
-      );
-      const rowsText = DEMO_JURISDICTIONS.map(
-        (r) => `${r.jurisdiction} — ${r.filingFee}, ${r.timeline}`,
-      ).join("; ");
-      return `DEMO jurisdictions: ${rowsText}. DEMO cheapest by number: ${cheapest.name} (${cheapest.fee}). Currencies are fictional and don't convert (sameCurrency: ${cheapest.sameCurrency}), so there's no true cheapest. ${result}`;
-    },
+    handler: async ({ question, focus }) =>
+      runTool("compareJurisdictions", () => {
+        const cheapest = cheapestByNumber(DEMO_JURISDICTIONS);
+        const focusName = focus ?? cheapest.name;
+        const result = commit("compare", (s) =>
+          applyFocusJurisdiction(s, focusName, question ?? "comparison"),
+        );
+        const rowsText = DEMO_JURISDICTIONS.map(
+          (r) => `${r.jurisdiction} — ${r.filingFee}, ${r.timeline}`,
+        ).join("; ");
+        return `DEMO jurisdictions: ${rowsText}. DEMO cheapest by number: ${cheapest.name} (${cheapest.fee}). Currencies are fictional and don't convert (sameCurrency: ${cheapest.sameCurrency}), so there's no true cheapest. ${result}`;
+      }),
   });
 
   useCopilotAction({
@@ -1474,10 +1508,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     description:
       "Mark the first not-yet-done filing-checklist item done and move the walk forward. Use as the user answers each checklist step.",
     parameters: [],
-    handler: async () => {
-      logToolCall();
-      return commit("checklist", (s) => applyAdvanceChecklist(s));
-    },
+    handler: async () =>
+      runTool("advanceChecklist", () => commit("checklist", (s) => applyAdvanceChecklist(s))),
   });
 
   // Day 3: grounded filing-steps/fees card. The handler looks every
@@ -1497,11 +1529,11 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       },
       { name: "question", type: "string", description: "The user's question.", required: false },
     ],
-    handler: async ({ factIds, question }) => {
-      logToolCall();
-      const ids = Array.isArray(factIds) ? factIds.map(String) : [];
-      return commit("filingsteps", (s) => applyFilingSteps(s, ids, question));
-    },
+    handler: async ({ factIds, question }) =>
+      runTool("showFilingSteps", () => {
+        const ids = Array.isArray(factIds) ? factIds.map(String) : [];
+        return commit("filingsteps", (s) => applyFilingSteps(s, ids, question));
+      }),
   });
 
   // Day 3: lawyer-summary package display. The Prepare button and this
@@ -1521,7 +1553,58 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
   }
 
-  function prepareLawyerPackage() {
+  function cancelSummaryBuild() {
+    summaryBuildTokenRef.current += 1;
+    if (summaryBuildRef.current?.timer) clearTimeout(summaryBuildRef.current.timer);
+    summaryBuildRef.current = null;
+    if (summarySpeakTimerRef.current !== null) clearTimeout(summarySpeakTimerRef.current);
+    summarySpeakTimerRef.current = null;
+    summaryDeliverAttemptsRef.current = 0;
+    setSummaryBuild(null);
+  }
+
+  function speakSummaryWhenFree(token: number) {
+    if (token !== summaryBuildTokenRef.current) return;
+    const busyNow =
+      recordingRef.current ||
+      busyRef.current ||
+      hostSpeakingRef.current ||
+      speechQueue.isSpeaking();
+    if (busyNow) {
+      summaryDeliverAttemptsRef.current += 1;
+      if (summaryDeliverAttemptsRef.current < 40) {
+        summarySpeakTimerRef.current = setTimeout(() => speakSummaryWhenFree(token), 500);
+        return;
+      }
+    }
+    summarySpeakTimerRef.current = null;
+    setSummaryBuild(null);
+    setLocalHost(SUMMARY_READY_LINE);
+    lastSpokenRef.current = spokenHostText(SUMMARY_READY_LINE);
+    if (voiceOn && unlockedRef.current) speakNative(SUMMARY_READY_LINE);
+  }
+
+  function finishSummaryBuild(token: number) {
+    if (token !== summaryBuildTokenRef.current) return;
+    summaryBuildRef.current = null;
+    const current = withDefaults(stateRef.current);
+    const next = beatProgress(current).nextBeat;
+    if (next !== "summary" && next !== "complete") {
+      setSummaryBuild(null);
+      const line = `Not yet — ${nextObjectiveHostLine(current)}`;
+      setLocalHost(line);
+      if (voiceOn && unlockedRef.current) {
+        lastSpokenRef.current = spokenHostText(line);
+        speakNative(line);
+      }
+      return;
+    }
+    setSummaryBuild({ pct: 100, ready: true });
+    commit("summary", (s) => applyLawyerSummary(s));
+    speakSummaryWhenFree(token);
+  }
+
+  function prepareLawyerPackage(force = false) {
     const current = withDefaults(stateRef.current);
     const next = beatProgress(current).nextBeat;
     if (next !== "summary" && next !== "complete") {
@@ -1533,15 +1616,36 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }
       return;
     }
-    commit("summary", (s) => applyLawyerSummary(s));
-    const line = "Summary prepared — copy or download it. Mission complete: nothing was filed and nothing was sent.";
-    setLocalHost(line);
-    // The direct button path must speak the same line it paints. The fast
-    // lane's own speak is de-duplicated by lastSpokenRef.
-    if (voiceOn && unlockedRef.current && spokenHostText(line) !== lastSpokenRef.current) {
-      lastSpokenRef.current = spokenHostText(line);
-      speakNative(line);
+    if (summaryBuildRef.current) return; // already building
+    if (!force && current.lawyerPackage) {
+      setLocalHost(SUMMARY_READY_LINE);
+      if (voiceOn && unlockedRef.current && spokenHostText(SUMMARY_READY_LINE) !== lastSpokenRef.current) {
+        lastSpokenRef.current = spokenHostText(SUMMARY_READY_LINE);
+        speakNative(SUMMARY_READY_LINE);
+      }
+      return;
     }
+
+    cancelSummaryBuild();
+    const token = summaryBuildTokenRef.current;
+    summaryDeliverAttemptsRef.current = 0;
+    setSummaryBuild({ pct: 0, ready: false });
+    setLocalHost(SUMMARY_START_LINE);
+    lastSpokenRef.current = spokenHostText(SUMMARY_START_LINE);
+    if (voiceOn && unlockedRef.current) speakNative(SUMMARY_START_LINE);
+
+    let pct = 0;
+    const step = () => {
+      if (token !== summaryBuildTokenRef.current) return;
+      pct = nextSummaryProgress(pct);
+      if (pct >= 100) {
+        finishSummaryBuild(token);
+        return;
+      }
+      setSummaryBuild({ pct, ready: false });
+      summaryBuildRef.current = { token, timer: setTimeout(step, SUMMARY_STEP_MS) };
+    };
+    summaryBuildRef.current = { token, timer: setTimeout(step, SUMMARY_STEP_MS) };
   }
 
   useCopilotAction({
@@ -1550,10 +1654,11 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     description:
       "Prepare the lawyer-summary package (jurisdiction choice, equity split, checklist state) and display it on the canvas. Use when the user asks to prepare, show, or send-to-lawyer the summary. This only prepares the package for the user to forward; it never sends email.",
     parameters: [],
-    handler: async () => {
-      logToolCall();
-      return commit("summary", (s) => applyLawyerSummary(s));
-    },
+    handler: async () =>
+      runTool("prepareLawyerSummary", () => {
+        prepareLawyerPackage(true);
+        return "Building the lawyer summary — one moment.";
+      }),
   });
 
   // Every new turn starts with no displayed error. Last transcript and
@@ -1614,9 +1719,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         return `DEMO cheapest by number: ${cheapest.name} (${cheapest.fee}). ${currency}${question ? ` ${question}` : ""}`;
       }
       case "lawyer-summary":
-        return state.lawyerPackage
-          ? "Summary prepared — copy or download it. Mission complete: nothing was filed and nothing was sent."
-          : `Not yet — ${nextObjectiveHostLine(state)}`;
+        // The async builder owns the spoken start and completion lines.
+        // Never speak "summary prepared" before the package has landed.
+        return state.lawyerPackage ? SUMMARY_READY_LINE : "";
       default:
         return "";
     }
@@ -1700,6 +1805,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         // Immediate silence. The mic stays available so "continue" is
         // understood; nothing is repeated and no new filler is spoken.
         cancelSpeech();
+        cancelSummaryBuild();
         clearHeldUtterance();
         // Visible, not spoken: stop means stop. The line is still part of
         // the caption record and "repeat that" can replay it.
@@ -1774,6 +1880,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }
       case "start-over": {
         clearSavedSession();
+        cancelSummaryBuild();
         clearHeldUtterance();
         commit("start-over", (s) => applyStartOver(s));
         setTranscriptOpen(false);
@@ -2458,8 +2565,13 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       clearConfirmationTimer();
       if (recoveryTimerRef.current !== null) clearTimeout(recoveryTimerRef.current);
       if (continuationTimerRef.current !== null) clearTimeout(continuationTimerRef.current);
+      if (summaryBuildRef.current?.timer) clearTimeout(summaryBuildRef.current.timer);
+      if (summarySpeakTimerRef.current !== null) clearTimeout(summarySpeakTimerRef.current);
       recoveryTimerRef.current = null;
       continuationTimerRef.current = null;
+      summaryBuildRef.current = null;
+      summarySpeakTimerRef.current = null;
+      summaryBuildTokenRef.current += 1;
       utteranceRef.current = null;
       if (travelFrameRef.current !== null) cancelAnimationFrame(travelFrameRef.current);
       try {
@@ -2641,6 +2753,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
   async function handleNoSpeechTimeout() {
     clearConfirmationTimer();
+    // Silence while the app is actively building or speaking is not a
+    // stalled turn. The no-speech guard must not cut into the async
+    // summary start/completion.
+    if (summaryBuildRef.current || summarySpeakTimerRef.current || hostSpeakingRef.current) return;
     if (finishingRef.current) return;
     finishingRef.current = true;
     recordingRef.current = false;
@@ -2995,7 +3111,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       setConvoActive(true);
       const current = withDefaults(stateRef.current);
       const line = resumed
-        ? `Welcome back. ${progressSummary(current)}. Picking up where you left off.`
+        ? resumeSummary(current)
         : FIRST_SPEAK_GREETING;
       setLocalHost(line);
       const begin = () => {
@@ -3148,6 +3264,13 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       isTranscriptOpen: () => transcriptOpen,
       getRecovery: () => recovery,
       getContinuation: () => continuation,
+      getSummaryBuild: () => summaryBuild,
+      simulateToolTimeout: () => {
+        const line = toolTimeoutLine("demo", TOOL_TIMEOUT_MS);
+        setTurnError(line);
+        surfaceRecovery("tool-timeout", line);
+        return line;
+      },
       getCaption: () => ({
         host: hostCaption(hostPrompt.text),
         heard: heardCaption(liveTranscript) || heardCaption(lastTranscript || view.transcript),
@@ -3182,7 +3305,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       delete win.__vvbVoice;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recording, transcribing, sending, isLoading, hostSpeaking, transcriptOpen, recovery, rearming, liveTranscript, continuation, lastTranscript]);
+  }, [recording, transcribing, sending, isLoading, hostSpeaking, transcriptOpen, recovery, rearming, liveTranscript, continuation, lastTranscript, summaryBuild]);
 
   // Beat completion celebrates on the mission banner, with a
   // zero-gravity stardust burst over the page (skipped entirely for
@@ -3928,7 +4051,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
                 companyName={DEMO_COMPANY_NAME}
                 lawyerPackage={view.lawyerPackage}
                 lawyerNote={view.lawyerNote}
-                onPrepare={prepareLawyerPackage}
+                onPrepare={() => prepareLawyerPackage(true)}
               />
             </div>
           </div>
@@ -4213,6 +4336,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
               hostHealth={hostHealth}
               ack={ack}
               holdText={showHold ? continuation?.text ?? null : null}
+              summaryBuild={summaryBuild}
             />
             <div className="deck-kicker">
               <span className="deck-mode">{convoActive ? "CONVERSATION" : "PUSH TO TALK"}</span>

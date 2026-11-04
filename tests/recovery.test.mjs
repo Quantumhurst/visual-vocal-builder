@@ -15,6 +15,7 @@ test("every recovery has a visible headline and exactly one next step", () => {
     "transcribe-failed",
     "agent-error",
     "agent-timeout",
+    "tool-timeout",
     "host-silent",
     "stream-lost",
     "no-speech",

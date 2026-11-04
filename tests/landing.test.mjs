@@ -38,7 +38,7 @@ test("crossing the bridge auto-starts the cockpit conversation", () => {
   assert.match(canvas, /function Canvas\(\{ autoStart/);
   assert.match(canvas, /Voice-first boot: the cockpit opens the conversation/);
   assert.match(canvas, /void startRecording\(\)/);
-  assert.match(canvas, /Welcome back/);
+  assert.match(canvas, /resumeSummary\(/);
 });
 
 test("the landing orb has a contained spin ring, not a full-page overlay", () => {

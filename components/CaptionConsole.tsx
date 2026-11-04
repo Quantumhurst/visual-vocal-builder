@@ -12,6 +12,7 @@ import {
   type CaptionPhase,
   type HeardCaptionState,
 } from "../lib/captions";
+import { summaryBuildCaption, summaryBuildHint } from "../lib/summary-build";
 
 type CaptionConsoleProps = {
   hostText: string;
@@ -21,6 +22,7 @@ type CaptionConsoleProps = {
   hostHealth: string;
   ack?: string;
   holdText?: string | null;
+  summaryBuild?: { pct: number; ready: boolean } | null;
 };
 
 export default function CaptionConsole({
@@ -31,6 +33,7 @@ export default function CaptionConsole({
   hostHealth,
   ack = "",
   holdText = null,
+  summaryBuild = null,
 }: CaptionConsoleProps) {
   const meta = captionPhaseLabel(phase);
   return (
@@ -49,6 +52,30 @@ export default function CaptionConsole({
           {hostHealth}
         </span>
       </div>
+      {summaryBuild ? (
+        <div
+          className="summary-build"
+          data-testid="summary-build"
+          data-pct={summaryBuild.pct}
+          data-ready={summaryBuild.ready ? "true" : "false"}
+        >
+          <div className="summary-build-head">
+            <span className="summary-build-label">{summaryBuildCaption(summaryBuild.pct)}</span>
+            <span className="summary-build-state">{summaryBuild.ready ? "READY" : "WORKING"}</span>
+          </div>
+          <div
+            className="summary-build-bar"
+            role="progressbar"
+            aria-label="Building the lawyer summary"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={summaryBuild.pct}
+          >
+            <span style={{ width: `${summaryBuild.pct}%` }} />
+          </div>
+          <p className="summary-build-hint">{summaryBuildHint(summaryBuild.pct)}</p>
+        </div>
+      ) : null}
       <div className={`caption-row is-heard is-${heardState}`}>
         <span className="caption-tag">{heardCaptionLabel(heardState)}</span>
         <p className="caption-text" data-testid="captions-heard">

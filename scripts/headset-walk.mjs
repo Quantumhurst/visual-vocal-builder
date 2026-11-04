@@ -142,6 +142,16 @@ async function snapshot(page) {
       chipCount: document.querySelectorAll('[data-testid="mission-chip"]').length,
       historyCount: document.querySelectorAll('[data-testid="caption-history"] li').length,
       historyVisible: Boolean(document.querySelector('[data-testid="caption-history-panel"]')),
+      following: document.querySelector('[data-testid="caption-history-panel"]')?.getAttribute("data-following") ?? "",
+      resumeVisible: Boolean(document.querySelector('[data-testid="caption-resume"]')),
+      summaryBuild: (() => {
+        const el = document.querySelector('[data-testid="summary-build"]');
+        if (!el) return null;
+        return {
+          pct: Number(el.getAttribute("data-pct") ?? 0),
+          ready: el.getAttribute("data-ready") === "true",
+        };
+      })(),
       hostFont: fontOf('[data-testid="host-prompt-text"]'),
       heardFont: fontOf('[data-testid="captions-heard"]'),
       historyFont: fontOf('[data-testid="caption-history"] li p'),
@@ -339,6 +349,7 @@ async function main() {
       ["transcript", "Show transcript"],
       ["hide-transcript", "Hide transcript"],
       ["save", "Save progress"],
+      ["status", "Status"],
       ["test-voice", "Test voice"],
       ["start-over", "Start over"],
     ]) {
@@ -395,6 +406,14 @@ async function main() {
       await waitMicReady(page, 40000);
       await sleep(320);
       console.log(`\n[${current}/${TURNS.length}] ${turn.label} — saying: "${turn.text}"`);
+      // The async summary must show a progress caption while it builds.
+      const summaryWatch = turn.id === "summary"
+        ? waitForOrNull("summary build progress", async () => {
+            const s = await snapshot(page);
+            if (!s.summaryBuild) return null;
+            return s.summaryBuild.pct > 0 || s.summaryBuild.ready ? s.summaryBuild : null;
+          }, 20000)
+        : null;
       let holdSeen = false;
       if (turn.slow) {
         // Speak the first half, give the recognizer time to finish a turn,
@@ -437,7 +456,12 @@ async function main() {
       const oneSay = snap.sayCount === 1;
       const oneChip = snap.chipCount <= 1;
       const historyVisible = snap.historyVisible && snap.historyCount >= 2;
-      const noRecovery = snap.recoveryKind === "";
+      // The summary is a long async turn; if the user stays silent after
+      // it lands, the normal 12s no-speech recovery is correct, not a
+      // failed summary. Other turns must stay recovery-free.
+      const noRecovery =
+        snap.recoveryKind === "" ||
+        (turn.id === "summary" && snap.recoveryKind === "no-speech");
       const lastUser = await page.evaluate(() => {
         const log = window.__vvbVoice?.getLog?.() ?? [];
         const you = log.filter((entry) => entry.role === "you");
@@ -449,6 +473,7 @@ async function main() {
       const slowMerged = turn.slow
         ? /want/i.test(lastUser) && /mars/i.test(lastUser)
         : null;
+      const summaryBuildSeen = summaryWatch ? await summaryWatch : null;
       const passed =
         Boolean(state) &&
         Boolean(snap.recording) &&
@@ -458,13 +483,15 @@ async function main() {
         oneChip &&
         historyVisible &&
         noRecovery &&
+        (turn.id !== "summary" || Boolean(summaryBuildSeen)) &&
         (slowMerged === null || slowMerged === true);
       console.log(`  Host: "${snap.lastSpoken}"`);
       console.log(`  Heard: "${snap.heard}"`);
       console.log(`  Screen: ${snap.mission} · ${visible.slice(0, 110)}`);
       console.log(
         `  Captions agree: ${agrees} · heard ${heardAgrees} · SAY ${snap.sayCount} · chips ${snap.chipCount} · history ${snap.historyCount}` +
-        (turn.slow ? ` · held ${holdSeen} · merged ${slowMerged}` : ""),
+        (turn.slow ? ` · held ${holdSeen} · merged ${slowMerged}` : "") +
+        (turn.id === "summary" ? ` · build ${summaryBuildSeen ? `${summaryBuildSeen.pct}%` : "not seen"}` : ""),
       );
       console.log(`  ${passed ? "PASS" : "FAIL"} · mic re-armed · clicks so far ${snap.clicks}`);
       if (!agrees || !heardAgrees) {
@@ -493,12 +520,46 @@ async function main() {
         historyCount: snap.historyCount,
         holdSeen,
         slowMerged,
+        summaryBuildSeen,
         clicks: snap.clicks,
         screenshot: await screenshot(page, `${String(current).padStart(2, "0")}-${turn.id}`),
       });
       if (!passed) throw new Error(`Step failed: ${turn.label}`);
       await sleep(PACE_MS);
     }
+
+    // --- Scroll lock ---------------------------------------------------
+    // Scroll back into history: auto-follow stops and the resume control
+    // appears. A new conversational turn releases the lock.
+    console.log("\n[scroll] history scroll lock");
+    await waitMicReady(page, 30000);
+    await page.evaluate(() => {
+      const list = document.querySelector('[data-testid="caption-history"]');
+      if (!list) return;
+      list.scrollTop = 0;
+      list.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await sleep(500);
+    const parked = await snapshot(page);
+    console.log(`  Parked: following ${parked.following} · resume button ${parked.resumeVisible}`);
+    const hostBeforeScroll = await hostCount(page);
+    await say(page, audio.status);
+    await waitNewHost(page, hostBeforeScroll, (text) => /Mission complete|Step|status|next/i.test(text), "status answered", 30000);
+    await waitMicReady(page, 30000);
+    await sleep(500);
+    const released = await snapshot(page);
+    const scrollChecks = {
+      scrollParked: parked.following === "false" && parked.resumeVisible,
+      newTurnReleased: released.following === "true" && !released.resumeVisible,
+    };
+    console.log(`  New turn: following ${released.following} · resume button ${released.resumeVisible}`);
+    results.push({
+      step: "scroll-lock",
+      parked: scrollChecks.scrollParked,
+      released: scrollChecks.newTurnReleased,
+      clicks: released.clicks,
+      screenshot: await screenshot(page, "10-scroll-lock"),
+    });
 
     // Final state and disclaimer checks.
     const final = await snapshot(page);
@@ -525,6 +586,9 @@ async function main() {
       oneChipEveryTurn: results.every((row) => row.oneChip !== false),
       captionHistoryGrew: final.historyCount >= 20,
       slowSpeechMerged: results.find((row) => row.step === "home-slow")?.slowMerged === true,
+      summaryBuildVisible: Boolean(results.find((row) => row.step === "summary")?.summaryBuildSeen),
+      scrollLockParked: scrollChecks.scrollParked,
+      scrollLockReleasedByNewTurn: scrollChecks.newTurnReleased,
     };
     console.log("\nFINAL CHECKS");
     for (const [name, ok] of Object.entries(checks)) console.log(`  ${ok ? "✓" : "✗"} ${name}`);
@@ -633,6 +697,18 @@ async function main() {
     console.log(`  Visible after ${Math.round((Date.now() - silenceStart) / 1000)}s; re-arming.`);
     await screenshot(page, "14-no-speech");
     const noSpeechRearmed = await waitFor("mic re-armed after no speech", () => waitMicReady(page, 30000));
+
+    // A stalled tool must surface the same recovery banner and re-arm.
+    console.log("\n[recovery] Tool timeout");
+    await waitMicReady(page, 30000);
+    await page.evaluate(() => window.__vvbVoice.simulateToolTimeout());
+    const toolTimeoutRecovery = await waitFor("tool-timeout recovery banner", async () => {
+      const snap = await snapshot(page);
+      return snap.recoveryKind === "tool-timeout" ? snap : null;
+    }, 10000);
+    await screenshot(page, "15-tool-timeout");
+    const toolTimeoutRearmed = await waitFor("mic re-armed after tool timeout", () => waitMicReady(page, 30000));
+
     const recoveryChecks = {
       hostSilentVisible: silentRecovery.recoveryKind === "host-silent",
       hostSilentLineKept: Boolean(silentRecovery.host) && captionsMatch(silentRecovery),
@@ -640,6 +716,8 @@ async function main() {
       hostAudioRecovered: recoveredAudio.hostAudio === "HOST AUDIO READY",
       noSpeechVisible: noSpeechRecovery.recoveryKind === "no-speech",
       noSpeechRearmed: Boolean(noSpeechRearmed.recording && noSpeechRearmed.listening),
+      toolTimeoutVisible: toolTimeoutRecovery.recoveryKind === "tool-timeout",
+      toolTimeoutRearmed: Boolean(toolTimeoutRearmed.recording && toolTimeoutRearmed.listening),
     };
     console.log("\nRECOVERY CHECKS");
     for (const [name, ok] of Object.entries(recoveryChecks)) console.log(`  ${ok ? "✓" : "✗"} ${name}`);
@@ -665,7 +743,24 @@ async function main() {
       const s = await snapshot(page);
       return s.state?.lawyerPackage ? s : null;
     }, 30000);
-    console.log(`  Resumed with summary intact. Host: "${resumed.lastSpoken || resumed.host}"`);
+    const resumeLine = await waitFor("short resume line", async () => {
+      const s = await snapshot(page);
+      const line = s.lastSpoken || s.host;
+      return /Welcome back/.test(line) && /Home base Mars/.test(line) ? s : null;
+    }, 20000);
+    const resumeText = resumeLine.lastSpoken || resumeLine.host;
+    const resumeChecks = {
+      resumeWelcome: /Welcome back/.test(resumeText),
+      resumeHomeBase: /Home base Mars/.test(resumeText),
+      resumeCompanyName: /Galactic Bagels/.test(resumeText),
+      resumeSplit: /40%\/20%\/20%\/20%/.test(resumeText),
+      resumeBuildCount: /colony 5\/5 built/.test(resumeText),
+      resumeShort: resumeText.length < 220,
+      resumeNoTranscriptReplay: !/Pick Mars/.test(resumeText),
+    };
+    console.log(`  Resumed with summary intact. Host: "${resumeText}"`);
+    console.log("\nRESUME CHECKS");
+    for (const [name, ok] of Object.entries(resumeChecks)) console.log(`  ${ok ? "✓" : "✗"} ${name}`);
     await screenshot(page, "12-resumed");
 
     // Start over by voice, fresh walk reset.
@@ -680,6 +775,7 @@ async function main() {
     results.push({
       step: "resume-and-reset",
       resumed: Boolean(resumed.state?.lawyerPackage),
+      resumeLine: resumeText,
       reset: !reset.state.selectedJurisdiction && !reset.state.companyName,
       clicks: reset.clicks,
     });
@@ -692,6 +788,7 @@ async function main() {
       clicks: final.clicks,
       checks,
       recoveryChecks,
+      resumeChecks,
       results,
       console: consoleLines.slice(-40),
     };
@@ -701,6 +798,9 @@ async function main() {
     }
     if (!Object.values(recoveryChecks).every(Boolean)) {
       throw new Error(`Recovery checks failed: ${JSON.stringify(recoveryChecks)}`);
+    }
+    if (!Object.values(resumeChecks).every(Boolean)) {
+      throw new Error(`Resume checks failed: ${JSON.stringify(resumeChecks)}`);
     }
     console.log(`\nWALK PASSED · ${results.length} voice turns · ${final.clicks} clicks · shots in ${SHOTS}\n`);
   } catch (err) {

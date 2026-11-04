@@ -11,6 +11,7 @@ export type RecoveryKind =
   | "transcribe-failed"
   | "agent-error"
   | "agent-timeout"
+  | "tool-timeout"
   | "host-silent"
   | "stream-lost"
   | "no-speech"
@@ -55,6 +56,11 @@ const COPY: Record<RecoveryKind, Omit<RecoveryNotice, "kind" | "detail">> = {
   "agent-timeout": {
     tone: "warn",
     headline: "The agent took too long",
+    nextStep: "Nothing was changed. Say the command again — the mic is re-arming.",
+  },
+  "tool-timeout": {
+    tone: "warn",
+    headline: "A tool timed out",
     nextStep: "Nothing was changed. Say the command again — the mic is re-arming.",
   },
   "host-silent": {

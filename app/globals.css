@@ -4244,3 +4244,88 @@ pre {
     font-size: 12px;
   }
 }
+
+/* Async summary build — visible progress, never a silent wait. */
+.summary-build {
+  display: grid;
+  gap: 4px;
+  padding: 6px 9px;
+  border: 1px solid rgba(167, 139, 250, 0.45);
+  border-radius: 9px;
+  background:
+    linear-gradient(90deg, rgba(167, 139, 250, 0.12), transparent 70%),
+    rgba(5, 10, 24, 0.6);
+}
+
+.summary-build-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.summary-build-label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #d8ccff;
+}
+
+.summary-build-state {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  color: var(--violet);
+}
+
+.summary-build[data-ready="true"] .summary-build-state {
+  color: var(--green);
+}
+
+.summary-build-bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(167, 139, 250, 0.18);
+}
+
+.summary-build-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--violet), var(--cyan));
+  box-shadow: 0 0 10px rgba(167, 139, 250, 0.5);
+  transition: width 220ms ease;
+}
+
+.summary-build-hint {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+/* Scroll lock: the history may be read without being yanked to the end. */
+.caption-history-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.caption-resume {
+  min-height: 24px;
+  padding: 2px 7px;
+  border-color: rgba(127, 231, 255, 0.45);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  color: var(--cyan);
+  white-space: nowrap;
+}
+
+.caption-resume:hover {
+  border-color: var(--cyan);
+  background: rgba(127, 231, 255, 0.1);
+}
