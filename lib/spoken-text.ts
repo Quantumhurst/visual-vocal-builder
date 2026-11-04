@@ -3,11 +3,11 @@
 // it is capped so a reply cannot ramble over the user's next command.
 //
 // Sentence splitting must not treat abbreviations as sentence ends:
-// "Galactic Bagels Inc. (fictional)." and "s.85(1)" are single ideas.
-// Without this guard the two-sentence cap silently dropped the actual
-// next question after "Inc." or split "s.85" into "s. 85".
+// "Galactic Bagels Inc. (fictional)." is a single idea. Without this
+// guard the two-sentence cap silently dropped the actual next question
+// after "Inc.".
 
-const ABBREVIATION = /\b(Inc|Ltd|Corp|Co|s|No|Dr|Mr|Mrs|Ms)\./g;
+const ABBREVIATION = /\b(Inc|Ltd|Corp|Co|No|Dr|Mr|Mrs|Ms)\./g;
 
 export function spokenHostText(text: string): string {
   const clean = (text ?? "").replace(/\s+/g, " ").trim();

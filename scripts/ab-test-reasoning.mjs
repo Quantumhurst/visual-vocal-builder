@@ -4,7 +4,7 @@ import { OpenAIAdapter } from "@copilotkit/runtime";
 import OpenAI from "openai";
 import { VVB_SYSTEM_PROMPT } from "../lib/agent-prompt.ts";
 import { AGENT_ACTIONS } from "../lib/agent-actions.ts";
-import { S85_PACK, FILING_STEPS_PACK } from "../lib/knowledge.ts";
+import { FILING_STEPS_PACK } from "../lib/knowledge.ts";
 import { DEMO_JURISDICTIONS } from "../lib/demo-data.ts";
 import { z } from "zod";
 import fs from "node:fs";
@@ -40,13 +40,6 @@ const toolDefinitions = [
     }),
   },
   {
-    name: AGENT_ACTIONS.showRolloverFact,
-    description: "Show a grounded s.85 rollover fact card. Call with a factId from the readable s85Facts index when the user asks a rollover / section 85 question. Never invent rollover content; only pack facts become cards.",
-    parameters: z.object({
-      factId: z.string().describe("The fact ID to display from s85Facts (e.g. 'rollover-definition', 'rollover-shares-only', etc.)"),
-    }),
-  },
-  {
     name: AGENT_ACTIONS.prepareLawyerSummary,
     description: "Prepare the lawyer-summary package (jurisdiction choice, equity split, checklist state) and display it on the canvas. Use when the user asks to prepare, show, or send-to-lawyer the summary. This only prepares the package for the user to forward; it never sends email.",
     parameters: z.object({}),
@@ -66,8 +59,6 @@ const readableContext = JSON.stringify({
     { id: "check-filing", label: "Review filing steps", done: false },
     { id: "check-summary", label: "Prepare summary package", done: false },
   ],
-  s85PackId: S85_PACK.packId,
-  s85Facts: S85_PACK.facts.map((fact) => ({ factId: fact.factId, topic: fact.topic })),
   filingStepsPackId: FILING_STEPS_PACK.packId,
   filingStepsFacts: FILING_STEPS_PACK.facts.map((fact) => ({ factId: fact.factId, topic: fact.topic })),
   note: "Demo only. Facts come only from tools.",
@@ -77,7 +68,6 @@ const turns = [
   { id: "mars", label: "Mars", prompt: "Pick Mars as our home base", expectedTool: AGENT_ACTIONS.showJurisdictionComparison },
   { id: "equity", label: "Equity Change", prompt: "Make Orbit 70%", expectedTool: AGENT_ACTIONS.setFounderEquity },
   { id: "yes", label: "Yes", prompt: "Confirm", expectedTool: null },
-  { id: "s85", label: "s.85 Grounded Card", prompt: "What is a section 85 rollover?", expectedTool: AGENT_ACTIONS.showRolloverFact },
   { id: "lawyer", label: "Lawyer Summary", prompt: "Prepare the lawyer summary", expectedTool: AGENT_ACTIONS.prepareLawyerSummary },
 ];
 

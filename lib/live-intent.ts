@@ -11,8 +11,7 @@
 //
 // Only unambiguous commands become intents. Filing questions never
 // fabricate a card here — they only surface a "heard you" state; the
-// grounded card still comes from the agent + knowledge pack. Section 85
-// is not part of this run and has no intent.
+// grounded card still comes from the agent + knowledge pack.
 
 export type ChecklistAdvanceCount = number | "all";
 

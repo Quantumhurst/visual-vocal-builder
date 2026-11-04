@@ -64,8 +64,6 @@ const demoView = {
     { id: "check-choose-place", label: "Choose where to incorporate", guidance: "g", done: true },
     { id: "check-name", label: "Pick a company name", guidance: "g", done: false },
   ],
-  rolloverCard: null,
-  rolloverNote: "",
   filingStepsCard: {
     question: "What are the filing steps and fees?",
     packId: "corp-plan-filing-steps-fees-v1",

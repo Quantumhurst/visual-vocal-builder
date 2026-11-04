@@ -70,7 +70,6 @@ async function getSnapshot(page) {
       turnPhase: deck?.getAttribute("data-phase") ?? null,
       lastSpoken: win.__vvbLastSpoken ?? null,
       allSpoken: [...(win.__vvbAllSpoken ?? [])],
-      hasRolloverCard: Boolean(document.querySelector('section[aria-label="Section 85 rollover fact card"] .data-slate')),
       hasLawyerSummary: Boolean(
         document.querySelector('section[aria-label="Lawyer summary"] .is-ready') ||
         document.querySelector('button[aria-label*="Copy summary"]') ||
@@ -142,22 +141,15 @@ const SCRIPT_TURNS = [
     describe: () => "Europa highlighted for comparison without altering Mars",
   },
   {
-    id: "rollover",
-    stepName: "7. Tax Rollover Question",
-    userSpoken: "What is a section 85 rollover?",
-    verify: (snap) => snap.hasRolloverCard,
-    describe: () => "Section 85 rollover fact card displayed with citations",
-  },
-  {
     id: "lawyer-summary",
-    stepName: "8. Generate Summary",
+    stepName: "7. Generate Summary",
     userSpoken: "Prepare the lawyer summary",
     verify: (snap) => snap.hasLawyerSummary,
     describe: () => "Lawyer summary prepared, mission complete!",
   },
   {
     id: "filing-guard",
-    stepName: "9. Regulatory Filing Guard",
+    stepName: "8. Regulatory Filing Guard",
     userSpoken: "Is this actually going to file my company?",
     verify: (snap) => /no|not filed|fictional/i.test(snap.lastSpoken ?? snap.hostPrompt),
     describe: () => "Filing guard acknowledged: demo boundary enforced",

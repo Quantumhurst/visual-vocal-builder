@@ -4,7 +4,7 @@ The MIT `LICENSE` file in this repo covers the owner's own code only. It does
 not cover the third-party packages and fonts below. This file lists the
 direct third-party stack used by the app, with each item's license as stated
 in its installed package (or, for the fonts, its upstream source). Versions
-are the versions installed in the Day 1 tree — see `package.json` and
+are the versions installed in the current tree — see `package.json` and
 `package-lock.json`.
 
 ## Direct dependencies
@@ -20,7 +20,12 @@ are the versions installed in the Day 1 tree — see `package.json` and
 | AG-UI client (via CopilotKit) | 1.0.2 | MIT | https://github.com/ag-ui-protocol/ag-ui |
 | AG-UI core (via CopilotKit) | 1.0.2 | MIT | https://github.com/ag-ui-protocol/ag-ui |
 | A2UI web_core (via CopilotKit) | 0.10.4 | Apache-2.0 | https://a2ui.org/ |
+| openai | 7.45.1 | Apache-2.0 | https://github.com/openai/openai-node |
+| pixi.js | 8.22.0 | MIT | https://pixijs.com/ |
+| canvas-confetti | 1.9.4 | ISC | https://github.com/catdad/canvas-confetti |
+| lenis | 1.3.27 | MIT | https://github.com/darkroomengineering/lenis |
 | ws | 8.22.0 | MIT | https://github.com/websockets/ws |
+| puppeteer-core (headset walk, dev-only) | 25.16.0 | Apache-2.0 | https://github.com/puppeteer/puppeteer |
 | Tailwind CSS | 4.3.3 | MIT | https://tailwindcss.com |
 | TypeScript | 5.9.3 | Apache-2.0 | https://www.typescriptlang.org/ |
 | ESLint | 9.39.5 | MIT | https://eslint.org |
@@ -30,6 +35,8 @@ Notes on the fonts: Geist and Geist Mono are loaded by `app/layout.tsx`
 through `next/font/google`. They are not bundled in this repo; their license
 (SIL Open Font License, Version 1.1) is as stated by the upstream Geist
 repository.
+
+Artwork: `public/nuntuk-avatar.webp` is an original avatar created for this entry during the hackathon window; no third-party image asset is incorporated.
 
 ## Transitive dependencies
 

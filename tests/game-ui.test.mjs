@@ -48,7 +48,6 @@ test("six modules: five required in walk order, with fees optional", () => {
     MODULES.filter((module) => module.optional).map((module) => module.id).join(","),
     "filingsteps",
   );
-  assert.ok(!MODULES.some((module) => module.id === "rollover"));
 });
 
 test("mission clock pads minutes and rolls over to hours", () => {

@@ -440,9 +440,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // still comes from the same shared state and appliers.
   const [activeModule, setActiveModule] = useState<SharedState["currentBeat"]>(() => {
     const beat = missionFor(bootState).beat;
-    // A completed saved run opens its launch package. This also keeps a
-    // legacy saved beat (the retired s.85 lesson) from selecting a module
-    // that is no longer in the nav.
+    // A completed saved run opens its launch package, keeping a legacy
+    // saved beat from selecting a module that is no longer in the nav.
     return beat === "complete" ? "summary" : beat;
   });
   const [stageTab, setStageTab] = useState<"galaxy" | "colony">(
@@ -1215,7 +1214,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
   // Grounding for the agent: fictional company/places, current equity and
   // checklist state, and the optional filing pack's fact ids + topics.
-  // Section 85 is not part of this run, so it is not a readable source.
   useCopilotReadable({
     description:
       "Fictional demo company, places, equity split, checklist state, and optional filing knowledge-pack fact index for the incorporation demo",

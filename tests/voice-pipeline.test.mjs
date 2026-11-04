@@ -96,11 +96,11 @@ test("HybridEndpointer: non-fast command passes through to onModelCommit on spee
   );
 
   endpointer.handleMetaEvent({ type: "speechStart", turnId: 43 });
-  endpointer.handleMetaEvent({ type: "transcript", transcript: "how does section 85 rollover work" });
-  endpointer.handleMetaEvent({ type: "speechComplete", turnId: 43, transcript: "How does section 85 rollover work?" });
+  endpointer.handleMetaEvent({ type: "transcript", transcript: "how does the colony build work" });
+  endpointer.handleMetaEvent({ type: "speechComplete", turnId: 43, transcript: "How does the colony build work?" });
 
   assert.equal(modelTurn, 43);
-  assert.equal(modelTranscript, "How does section 85 rollover work?");
+  assert.equal(modelTranscript, "How does the colony build work?");
 });
 
 test("StreamingSentenceChunker: chunks complete sentences and flushes remainder on end", () => {

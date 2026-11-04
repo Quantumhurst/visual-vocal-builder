@@ -34,7 +34,7 @@ test("start over is the only phrase that clears a saved run", () => {
 });
 
 test("noise and non-entry questions do not cross the bridge", () => {
-  for (const text of ["", "what is a section 85 rollover", "the weather", "no"]) {
+  for (const text of ["", "what is a tax question", "the weather", "no"]) {
     assert.equal(parseEntryIntent(text), null, text);
   }
 });

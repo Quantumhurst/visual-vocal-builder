@@ -20,40 +20,6 @@ export type KnowledgePack = {
   facts: KnowledgeFact[];
 };
 
-export const S85_PACK: KnowledgePack = {
-  packId: "corp-plan-ca-s85-rollover-v1",
-  title: "Corp Plan — Canada s.85 rollover (educational pack)",
-  jurisdictionNote:
-    "DEMO guidance summary of Canada Income Tax Act s.85 concepts for the fictional demo only — not legal advice.",
-  facts: [
-    {
-      factId: "s85-what-it-is",
-      topic: "What a s.85 rollover is",
-      text: "Under s.85(1) of the Canada Income Tax Act, a taxpayer and a taxable Canadian corporation can jointly elect to transfer eligible property to the corporation on a tax-deferred (rollover) basis, so tax on the accrued gain is deferred rather than triggered on the transfer. (Educational summary only — DEMO, not legal advice.)",
-    },
-    {
-      factId: "s85-eligible-property",
-      topic: "Eligible property",
-      text: "Eligible property for a s.85 election generally includes capital property and certain other property transferred to the corporation; real property held as inventory is a notable exclusion. Whether a specific asset qualifies depends on its character. (Educational summary only — DEMO, not legal advice.)",
-    },
-    {
-      factId: "s85-elected-amount",
-      topic: "The elected amount",
-      text: "The parties choose an elected amount within statutory limits: it generally cannot exceed the property's fair market value and cannot be less than the non-share consideration (boot) received. The elected amount becomes the transferor's proceeds and drives the corporation's cost in the property. (Educational summary only — DEMO, not legal advice.)",
-    },
-    {
-      factId: "s85-share-consideration",
-      topic: "Share consideration is required",
-      text: "The consideration the transferor receives must include share consideration — at least one share of the corporation — for the s.85 rollover to apply; taking only non-share consideration (boot) can limit or defeat the elected amount. (Educational summary only — DEMO, not legal advice.)",
-    },
-    {
-      factId: "s85-filing",
-      topic: "How the election is filed",
-      text: "The s.85 election is made on prescribed form T2057 (T2058 for a partnership), generally due by the earliest tax-return filing-due date of the parties for the tax year of the transfer; late filing is possible within limits with a penalty. This demo never files anything. (Educational summary only — DEMO, not legal advice.)",
-    },
-  ],
-};
-
 export const CHECKLIST_PACK: KnowledgePack = {
   packId: "orbital-foundry-colony-build-v1",
   title: "Orbital Foundry — colony build guide (fictional demo pack)",
@@ -133,7 +99,6 @@ export const FILING_STEPS_PACK: KnowledgePack = {
 };
 
 export const KNOWLEDGE_PACKS: KnowledgePack[] = [
-  S85_PACK,
   CHECKLIST_PACK,
   FILING_STEPS_PACK,
 ];
@@ -146,27 +111,4 @@ export function findFact(
   if (!pack) return null;
   const fact = pack.facts.find((entry) => entry.factId === factId);
   return fact ? { pack, fact } : null;
-}
-
-export function findFactById(
-  factId: string,
-): { pack: KnowledgePack; fact: KnowledgeFact } | null {
-  for (const pack of KNOWLEDGE_PACKS) {
-    const fact = pack.facts.find((entry) => entry.factId === factId);
-    if (fact) return { pack, fact };
-  }
-  return null;
-}
-
-// Pick the grounded fact that best answers a spoken s.85 question. The
-// caller still looks the id up in S85_PACK; this only routes to a fact
-// that exists, never invents text. Unknown phrasings land on the
-// "what it is" fact, the required lesson.
-export function rolloverFactIdFor(question: string): string {
-  const q = (question ?? "").toLowerCase();
-  if (/\b(?:eligible|property|asset|inventory|capital property)\b/.test(q)) return "s85-eligible-property";
-  if (/\b(?:elected amount|elect(?:ed)?|proceeds|cost|fair market value|boot)\b/.test(q)) return "s85-elected-amount";
-  if (/\b(?:share consideration|shares|consideration|at least one share)\b/.test(q)) return "s85-share-consideration";
-  if (/\b(?:file|filed|filing|form|t2057|t2058|deadline|due date|penalty)\b/.test(q)) return "s85-filing";
-  return "s85-what-it-is";
 }

@@ -34,11 +34,6 @@ test("name fallback asks for the exact approval only", () => {
   assert.doesNotMatch(q, /Call it|5\/5|colony complete/i);
 });
 
-test("rollover is not part of the run and has no s.85 prompt", () => {
-  const q = getHostQuestion("rollover");
-  assert.match(q, /not part of this run/i);
-  assert.doesNotMatch(q, /section 85|s\.85|rollover fact/i);
-});
 test("filingsteps fallback is optional and offers one way back", () => {
   const q = getHostQuestion("filingsteps");
   assert.match(q, /optional/i);

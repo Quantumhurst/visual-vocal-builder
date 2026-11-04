@@ -53,7 +53,7 @@ Tests import TypeScript sources directly and need Node 22.18+ for type stripping
 - **Commander address:** the host says “Commander” at the journey start and at milestones only (home base, name, confirmed split, 5/5 build, summary ready). It is deliberately absent from split adjustments, individual structures 1–4, utility replies, and the lawyer-summary file, which stays formal.
 - **Voice-only entry:** the landing page listens for “Enter the bridge” (or “Resume” / “Start over” when a run is saved). Crossing the bridge mounts the cockpit and starts the conversation without a click.
 - **Always-available controls:** say **help**, **repeat that**, **stop**, **slower**, **faster**, **louder**, **quieter**, **volume 40**, **mute/unmute**, **show/hide transcript**, **save progress**, **start over**, **status**, **test voice**, **slow mode**, or **take your time**. All are parsed locally, before any model turn, in every state. “Stop” silences the host but keeps the mic listening for “continue”. The cockpit shows HOST AUDIO READY/SPEAKING/OFF/SILENT; if a voice never starts, it retries the system default once and then says so visibly rather than continuing in silence.
-- **Five required beats, in order:** home base → company name → crew split (confirmed) → five structures → lawyer summary. The company name is approved immediately after the home base, before equity and the build. The filing-steps/fees card remains the one optional archive system; the old s.85 rollover lesson is not part of this run.
+- **Five required beats, in order:** home base → company name → crew split (confirmed) → five structures → lawyer summary. The company name is approved immediately after the home base, before equity and the build. The filing-steps/fees card remains the one optional archive system.
 - **Grounded facts only:** the optional filing-steps/fees content is verbatim pack text (`lib/knowledge.ts`), with pack id and fact ids on the card and a separate verifier checking it. Nothing legal is invented in prose.
 - **Live captions are the primary channel:** the HOST line and the HEARD line are always visible, large and high-contrast, directly above the controls, and the full caption history stays open in the mission rail. The HOST caption is the exact capped line the speech engine receives — never an uncapped agent reply running alongside a shortened utterance. The transcript modal remains as an expanded view, not the only way to read the run. If the reader scrolls back, auto-follow pauses and a RESUME LIVE control appears; a new conversational turn or that tap resumes following.
 - **Async summary, never a silent wait:** preparing the lawyer summary runs in short timer slices with a visible “BUILDING YOUR SUMMARY · %” caption. The host speaks a short start line and speaks the finished summary when it lands, even if the user is mid-turn (it waits for a free moment). The mic stays responsive throughout.
@@ -76,8 +76,6 @@ The page opens on the Orbital Foundry landing screen, listening. Say **Enter the
 4. **Build 5/5, one at a time:** the host asks “Structure 1 of 5: Landing pad. Say yes to raise it.” One explicit yes raises exactly one structure and gets a spoken confirmation before the next question. “Build all five” / “finish the build” does not bulk-complete; it re-asks the current structure.
 5. **Lawyer summary:** say “Prepare the lawyer summary”. The package carries the approved name, home base, split, and 5/5 checklist. Prep only — no email, no filing, no submission.
 
-The optional Filing Intel archive (steps and fees) remains available by voice but is not a required mission. Section 85 is not part of this run.
-
 The optional Filing Intel archive (steps and fees) remains available by voice but is not a required mission.
 
 ## Follow-ups
@@ -88,21 +86,23 @@ The optional Filing Intel archive (steps and fees) remains available by voice bu
 ## Provenance & Hackathon Disclosure
 
 ### Meta Global AI Developer Hackathon
-- **Problem Statement:** Build for Your World / Push the Frontier — Voice-driven spatial interface transforming complex corporate planning into a hands-free, visual, interactive canvas.
+- **Problem Statement:** Build for Your World — Voice-driven spatial interface transforming complex corporate planning into a hands-free, visual, interactive canvas.
+- **Track and team:** Indie track. Solo team: Steve Maley only.
 - **Meta Models Incorporated:**
   - **Muse Voice Transcribe (`muse-voice-transcribe-1.0`)**: Realtime streaming speech-to-text with WebSocket chunk pacing, keyword biasing (fictional jurisdictions, founder names, legal concepts), and English language biasing via Meta Model API.
   - **Muse Spark (`muse-spark-1.3`)**: Cognitive agent brain driving multi-turn tool calling, invariant validation, and co-agent state synchronization via Meta Model API.
 - **Code & Planning Disclosure:**
-  - Written planning and high-level architectural design were developed prior to the event; zero code, datasets, or UI components were carried over.
-  - All application code, styles, tests, and documentation in this repository were authored from scratch during the hackathon window starting on October 27, 2026.
+  - Written planning only was developed prior to the event; zero code, datasets, or UI components were carried over.
+  - All application code, styles, tests, and documentation in this repository were authored from scratch in-window, October 27–November 4, 2026.
+  - The Corp Plan pack texts in `lib/knowledge.ts` were written in-window during the hackathon, not copied from Corp Plan.
   - Does not call or rely on any pre-existing private services.
-  - Built with Muse agent assistance (Nuntuk) under direct developer guidance.
+  - Built with three assistant tools under direct developer guidance: Muse (Nuntuk), DeepSeek, and the Google coding agent.
 
 ## Credits
 
 <img src="public/nuntuk-avatar.webp" alt="Nuntuk — a shrew wearing headphones, wraparound sunglasses, and a chunky gold chain" width="120" />
 
-Built with Muse (Nuntuk) — the agent that built this entry under the owner's direction. The owner owns the repo and all rights to the work.
+Built with Muse (Nuntuk), DeepSeek, and the Google coding agent, under Steve Maley's direction. The owner owns the repo and all rights to the work.
 
 Note: the GitHub commit badge reads Quantumhurst because the push tool carries no author field; this image and credit line are where Muse's face and name appear.
 

@@ -22,21 +22,12 @@ export type FilingStepsCard = {
   facts: { factId: string; topic: string; text: string }[]; // verbatim pack text
 } | null;
 
-export type RolloverCard = {
-  question: string;
-  answer: string; // verbatim grounded fact text from the knowledge pack
-  packId: string; // grounding shown on the card
-  factId: string; // grounding shown on the card
-  packTitle: string;
-} | null;
-
 export type SharedState = {
   currentBeat:
     | "jurisdiction"
     | "equity"
     | "checklist"
     | "name"
-    | "rollover"
     | "filingsteps"
     | "summary";
   transcript: string; // last transcript, shown on canvas
@@ -49,8 +40,6 @@ export type SharedState = {
   founders: FounderShare[]; // DEMO founders; percents always total 100
   equityNote: string; // agent's note about the last equity adjustment
   checklist: ChecklistItem[];
-  rolloverCard: RolloverCard;
-  rolloverNote: string; // set when a rollover answer has no grounded fact
   filingStepsCard: FilingStepsCard;
   filingStepsNote: string; // set when a filing-steps answer has no grounded fact
   lawyerPackage: string; // agent- or button-prepared package; "" when none

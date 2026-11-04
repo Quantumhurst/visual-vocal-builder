@@ -47,7 +47,6 @@ export const CUES: Record<CueName, CueRecipe> = {
 export function cueForChange(before: SharedState, after: SharedState): CueName | null {
   if (!before.lawyerPackage && after.lawyerPackage) return "launch";
   if (!before.companyName && after.companyName) return "confirm";
-  if (!before.rolloverCard && after.rolloverCard) return "card";
   if (before.selectedJurisdiction !== after.selectedJurisdiction && after.selectedJurisdiction) return "select";
   const tickedBefore = before.checklist.filter((i) => i.done).length;
   const tickedAfter = after.checklist.filter((i) => i.done).length;

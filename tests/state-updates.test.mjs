@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount, applyCompanyName, normalizeCompanyName, parseSpokenCompanyName } from "../lib/state-updates.ts";
+import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount, applyCompanyName, normalizeCompanyName, parseSpokenCompanyName } from "../lib/state-updates.ts";
 import { DEMO_JURISDICTIONS } from "../lib/demo-data.ts";
 
 const base = () => withDefaults(null);
@@ -38,14 +38,6 @@ test("applyChecklistItem and advance twice from same base marks two items", () =
 test("applyJurisdiction", () => {
   assert.equal(applyJurisdiction(base(), "Mars").selectedJurisdiction, "Mars");
   assert.equal(applyJurisdiction(base(), "Nope").selectedJurisdiction, null);
-});
-test("applyRolloverFact grounded and unknown", () => {
-  const ok = applyRolloverFact(base(), "s85-what-it-is", "q?");
-  assert.equal(ok.rolloverCard.packId, "corp-plan-ca-s85-rollover-v1");
-  assert.equal(ok.rolloverCard.factId, "s85-what-it-is");
-  const bad = applyRolloverFact(base(), "nope");
-  assert.equal(bad.rolloverCard, null);
-  assert.match(bad.rolloverNote, /No grounded fact/);
 });
 test("applyFilingSteps grounded and unknown", () => {
   const ok = applyFilingSteps(base(), ["steps-order-overview"], "q?");

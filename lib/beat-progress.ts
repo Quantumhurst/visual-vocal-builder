@@ -9,7 +9,7 @@ export type Beat = SharedState["currentBeat"];
 //   -> prepare the lawyer summary.
 // The company name comes immediately after the home base, before equity
 // and the build. The filing-steps/fees card remains an optional reference
-// system. The old s.85 rollover lesson is not part of this journey.
+// system.
 export const REQUIRED_BEATS = [
   "jurisdiction",
   "name",
@@ -35,7 +35,6 @@ export function beatProgress(s: SharedState): {
     // single tick used to advance the walk while the colony was 1/5.
     checklist: s.checklist.length > 0 && s.checklist.every((i) => i.done),
     name: s.companyName.trim() !== "",
-    rollover: s.rolloverCard !== null,
     filingsteps: s.filingStepsCard !== null,
     summary: s.lawyerPackage !== "",
   };

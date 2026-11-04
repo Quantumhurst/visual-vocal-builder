@@ -638,7 +638,6 @@ async function main() {
         results.findIndex((row) => row.step === "name") >= 0 &&
         results.findIndex((row) => row.step === "name") <
           results.findIndex((row) => row.step === "equity"),
-      noRollover: s.rolloverCard === null,
       summary: (s.lawyerPackage ?? "").length > 0,
       noClicks: final.clicks === 0,
       wasListening: final.allSpoken.length > 0,

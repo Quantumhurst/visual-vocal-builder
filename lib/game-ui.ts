@@ -20,7 +20,7 @@ export type ModuleMeta = {
 
 // Display order follows the five-beat walk: home base, the company name,
 // equity, the build, then the launch package. The filing card is the only
-// optional archive system. The old s.85 lesson is not a module.
+// optional archive system.
 export const MODULES: ModuleMeta[] = [
   { id: "jurisdiction", code: "01", label: "Home base", short: "HOME", glyph: "◎", blurb: "Pick a world", optional: false },
   { id: "name", code: "02", label: "Company name", short: "NAME", glyph: "✦", blurb: "Approve the callsign", optional: false },

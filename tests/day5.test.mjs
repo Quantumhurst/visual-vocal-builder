@@ -12,12 +12,9 @@ import { readFileSync } from "node:fs";
 import {
   CHECKLIST_PACK,
   FILING_STEPS_PACK,
-  S85_PACK,
-  findFact,
 } from "../lib/knowledge.ts";
 import { verifyPaintedCards } from "../lib/verifier.ts";
 
-const s85 = findFact(S85_PACK.packId, "s85-what-it-is");
 const filingFacts = FILING_STEPS_PACK.facts.slice(0, 2).map((fact) => ({
   factId: fact.factId,
   topic: fact.topic,
@@ -41,35 +38,12 @@ const jurisdictions = [
 
 function basePainted(overrides = {}) {
   return {
-    rolloverCard: null,
     filingStepsCard: null,
     checklist: checklistItems,
     jurisdictions,
     ...overrides,
   };
 }
-
-function goodRollover() {
-  return {
-    question: "What is a section 85 rollover?",
-    answer: s85.fact.text,
-    packId: S85_PACK.packId,
-    factId: s85.fact.factId,
-    packTitle: S85_PACK.title,
-  };
-}
-
-test("verbatim rollover fact -> grounded", () => {
-  const result = verifyPaintedCards(
-    basePainted({ rolloverCard: goodRollover() }),
-  );
-  const verdict = result.verdicts.find((v) => v.cardKind === "rollover");
-  assert.ok(verdict);
-  assert.equal(verdict.status, "grounded");
-  assert.equal(verdict.reason, null);
-  assert.equal(verdict.emitted, true);
-  assert.equal(verdict.rendered, true);
-});
 
 test("verbatim filing-steps facts -> grounded", () => {
   const result = verifyPaintedCards(
@@ -99,15 +73,6 @@ test("checklist item matching its pack fact -> grounded", () => {
 });
 
 test("altered card text -> flagged with reason 'text differs'", () => {
-  const rollover = verifyPaintedCards(
-    basePainted({
-      rolloverCard: { ...goodRollover(), answer: `${s85.fact.text} Altered.` },
-    }),
-  );
-  const rv = rollover.verdicts.find((v) => v.cardKind === "rollover");
-  assert.equal(rv.status, "flagged");
-  assert.equal(rv.reason, "text differs");
-
   const filing = verifyPaintedCards(
     basePainted({
       filingStepsCard: {
@@ -135,24 +100,6 @@ test("altered card text -> flagged with reason 'text differs'", () => {
 });
 
 test("unknown packId or factId -> flagged with reason 'pack/fact missing'", () => {
-  const badPack = verifyPaintedCards(
-    basePainted({
-      rolloverCard: { ...goodRollover(), packId: "no-such-pack" },
-    }),
-  );
-  const pv = badPack.verdicts.find((v) => v.cardKind === "rollover");
-  assert.equal(pv.status, "flagged");
-  assert.equal(pv.reason, "pack missing");
-
-  const badFact = verifyPaintedCards(
-    basePainted({
-      rolloverCard: { ...goodRollover(), factId: "no-such-fact" },
-    }),
-  );
-  const fv = badFact.verdicts.find((v) => v.cardKind === "rollover");
-  assert.equal(fv.status, "flagged");
-  assert.equal(fv.reason, "fact missing");
-
   const badFiling = verifyPaintedCards(
     basePainted({
       filingStepsCard: {
@@ -180,7 +127,7 @@ test("unknown packId or factId -> flagged with reason 'pack/fact missing'", () =
 });
 
 test("DEMO jurisdiction row -> shown as DEMO, not flagged", () => {
-  const result = verifyPaintedCards(basePainted({ rolloverCard: goodRollover() }));
+  const result = verifyPaintedCards(basePainted());
   assert.equal(result.demoItems.length, 1);
   assert.equal(result.demoItems[0].jurisdiction, "Mars");
   assert.equal(result.demoItems[0].status, "DEMO");
@@ -193,7 +140,6 @@ test("DEMO jurisdiction row -> shown as DEMO, not flagged", () => {
 test("strip counts match the verdicts", () => {
   const result = verifyPaintedCards(
     basePainted({
-      rolloverCard: { ...goodRollover(), answer: "altered text" },
       filingStepsCard: {
         question: "q",
         packId: FILING_STEPS_PACK.packId,
@@ -220,7 +166,7 @@ test("strip counts match the verdicts", () => {
 
 test("no painted cards -> no verdicts, DEMO still DEMO", () => {
   const result = verifyPaintedCards(
-    basePainted({ checklist: [], rolloverCard: null, filingStepsCard: null }),
+    basePainted({ checklist: [], filingStepsCard: null }),
   );
   assert.equal(result.verdicts.length, 0);
   assert.equal(result.counts.emitted, 0);
@@ -230,7 +176,7 @@ test("no painted cards -> no verdicts, DEMO still DEMO", () => {
 });
 
 test("verifier is pure and fast (adds no conversation latency)", () => {
-  const input = basePainted({ rolloverCard: goodRollover() });
+  const input = basePainted();
   const first = verifyPaintedCards(input);
   const second = verifyPaintedCards(input);
   assert.deepEqual(first, second);

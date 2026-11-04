@@ -72,7 +72,7 @@ test("the fifth structure hands off to the lawyer summary", () => {
   const line = checklistHostLine(state);
   assert.match(line, /Everything is lined up/);
   assert.match(line, /Prepare the lawyer summary/);
-  assert.doesNotMatch(line, /Approve Galactic Bagels|s\.85|rollover/i);
+  assert.doesNotMatch(line, /Approve Galactic Bagels|rollover/i);
   // Two sentences, so the spoken-text cap never drops the question.
   assert.ok((line.match(/[.!?](?:\s|$)/g) ?? []).length <= 2);
 });

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { turnResultSignature, shouldAutoScroll, computeScrollTop, firstChangedBeat, computeSectionScrollTop, beatFieldChanged } from "../lib/scroll.ts";
-import { withDefaults, applyJurisdiction, applyEquity, applyRolloverFact } from "../lib/state-updates.ts";
+import { withDefaults, applyJurisdiction, applyEquity, applyFilingSteps } from "../lib/state-updates.ts";
 
 const base = () => withDefaults(null);
 
@@ -21,11 +21,11 @@ test("signature changes on equity turn and encodes the split", () => {
   assert.match(after, /30/);
 });
 
-test("signature changes when grounded rollover card arrives", () => {
+test("signature changes when a grounded filing card arrives", () => {
   const before = turnResultSignature(base(), "host");
-  const after = turnResultSignature(applyRolloverFact(base(), "s85-what-it-is", "What is a section 85 rollover?"), "host");
+  const after = turnResultSignature(applyFilingSteps(base(), ["steps-order-overview"], "q"), "host");
   assert.notEqual(after, before);
-  assert.match(after, /s85-what-it-is/);
+  assert.match(after, /steps-order-overview/);
 });
 
 test("signature ignores transcript-only change (send moment is not a result)", () => {
@@ -59,8 +59,8 @@ test("firstChangedBeat picks the earliest changed section on the page", () => {
   assert.equal(firstChangedBeat(prev, eq, "equity"), "equity");
   // Host-only change falls back to the current beat.
   const hostOnly = turnResultSignature(s0, "host b");
-  assert.equal(firstChangedBeat(prev, hostOnly, "rollover"), "rollover");
-  assert.equal(firstChangedBeat(null, hostOnly, "rollover"), "rollover");
+  assert.equal(firstChangedBeat(prev, hostOnly, "summary"), "summary");
+  assert.equal(firstChangedBeat(null, hostOnly, "summary"), "summary");
 });
 
 test("computeSectionScrollTop shows the section end at the viewport bottom", () => {

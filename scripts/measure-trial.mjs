@@ -254,7 +254,7 @@ async function runBenchmark() {
     };
   }
 
-  console.log("\n--- FULL RUN: Mars -> Equity -> Yes -> Build -> Name -> s.85 -> Lawyer Summary ---");
+  console.log("\n--- FULL RUN: Mars -> Equity -> Yes -> Build -> Name -> Lawyer Summary ---");
   await executeTurn("Start Over", "Start over");
 
   const fullRunResults = [];
@@ -264,8 +264,7 @@ async function runBenchmark() {
   fullRunResults.push(await executeTurn("Step 4: Build", "Tick next step"));
   fullRunResults.push(await executeTurn("Step 4b: Complete Build", "Finish the build"));
   fullRunResults.push(await executeTurn("Step 5: Name", "Approve Galactic Bagels"));
-  fullRunResults.push(await executeTurn("Step 6: s.85 Rollover", "What is a section 85 rollover?"));
-  fullRunResults.push(await executeTurn("Step 7: Lawyer Summary", "Prepare the lawyer summary"));
+  fullRunResults.push(await executeTurn("Step 6: Lawyer Summary", "Prepare the lawyer summary"));
 
   await browser.close();
 

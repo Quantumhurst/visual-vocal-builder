@@ -17,13 +17,12 @@ import type {
   ChecklistItem,
   FilingStepsCard,
   JurisdictionRow,
-  RolloverCard,
 } from "./state";
 
 export type FlagReason = "pack missing" | "fact missing" | "text differs";
 
 export type CardVerdict = {
-  cardKind: "rollover" | "filingSteps" | "checklist";
+  cardKind: "filingSteps" | "checklist";
   cardId: string;
   label: string;
   // The four trust-strip states, per painted card. grounded and flagged
@@ -53,7 +52,6 @@ export type VerifyResult = {
 };
 
 export type PaintedCards = {
-  rolloverCard: RolloverCard;
   filingStepsCard: FilingStepsCard;
   checklist: ChecklistItem[];
   jurisdictions?: JurisdictionRow[];
@@ -61,47 +59,6 @@ export type PaintedCards = {
 
 function packExists(packId: string): boolean {
   return KNOWLEDGE_PACKS.some((pack) => pack.packId === packId);
-}
-
-function verifyRollover(card: NonNullable<RolloverCard>): CardVerdict {
-  const base = {
-    cardKind: "rollover" as const,
-    cardId: card.factId,
-    label: `s.85 rollover fact card (${card.factId})`,
-    emitted: true as const,
-    rendered: true as const,
-  };
-  if (!packExists(card.packId)) {
-    return {
-      ...base,
-      status: "flagged",
-      reason: "pack missing",
-      detail: `Pack ${card.packId} does not resolve in the knowledge packs.`,
-    };
-  }
-  const found = findFact(card.packId, card.factId);
-  if (!found) {
-    return {
-      ...base,
-      status: "flagged",
-      reason: "fact missing",
-      detail: `Fact ${card.factId} does not resolve in pack ${card.packId}.`,
-    };
-  }
-  if (card.answer !== found.fact.text) {
-    return {
-      ...base,
-      status: "flagged",
-      reason: "text differs",
-      detail: `Card text for ${card.factId} differs from the pack fact text.`,
-    };
-  }
-  return {
-    ...base,
-    status: "grounded",
-    reason: null,
-    detail: `Pack ${card.packId} / fact ${card.factId} resolve and text matches verbatim.`,
-  };
 }
 
 function verifyFilingSteps(
@@ -185,7 +142,6 @@ function verifyChecklistItem(item: ChecklistItem): CardVerdict {
 // Pure and synchronous: same painted cards in, same verdicts out.
 export function verifyPaintedCards(painted: PaintedCards): VerifyResult {
   const verdicts: CardVerdict[] = [];
-  if (painted.rolloverCard) verdicts.push(verifyRollover(painted.rolloverCard));
   if (painted.filingStepsCard) {
     verdicts.push(verifyFilingSteps(painted.filingStepsCard));
   }

@@ -11,7 +11,6 @@ export type CatalogEntry = {
     | "equity"
     | "checklist"
     | "name"
-    | "rollover"
     | "filingsteps"
     | "summary";
   stateSlice: string;

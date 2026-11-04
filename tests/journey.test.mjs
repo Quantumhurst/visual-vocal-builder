@@ -1,7 +1,7 @@
 // The whole required journey, as pure state transitions. This is the
 // contract the voice walk exercises: Enter -> home base -> company name
 // -> owners/equity -> confirm -> 5/5 colony -> lawyer summary.
-// Nothing files, nothing sends, and the retired s.85 lesson is absent.
+// Nothing files, nothing sends, and the journey has no tax-rollover lesson.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -62,7 +62,6 @@ test("the journey advances in the required order, one beat at a time", () => {
   assert.equal(state.founders.reduce((sum, founder) => sum + founder.percent, 0), 100);
   assert.equal(state.checklist.filter((item) => item.done).length, 5);
   assert.match(state.companyName, /Galactic Bagels/);
-  assert.equal(state.rolloverCard, null);
   assert.ok(state.lawyerPackage.length > 0);
 });
 
@@ -97,16 +96,14 @@ test("the company name is approved before equity, not after the build", () => {
   assert.equal(missionFor(state).beat, "equity");
 });
 
-test("the grounded cards that remain verify clean and the s.85 lesson is gone", () => {
+test("the grounded cards that remain verify clean", () => {
   const { state } = walk();
-  assert.equal(state.rolloverCard, null);
   const verified = verifyPaintedCards(state);
   assert.equal(verified.counts.flagged, 0);
   assert.ok(verified.counts.grounded >= state.checklist.length);
-  assert.equal(verified.verdicts.filter((v) => v.cardKind === "rollover").length, 0);
 });
 
-test("the lawyer summary carries the approved name, the split, 5/5, and no s.85 claim", () => {
+test("the lawyer summary carries the approved name, the split, 5/5, and no tax-rollover claim", () => {
   const { state } = walk();
   const pkg = state.lawyerPackage;
   assert.match(pkg, /Galactic Bagels/);
@@ -116,7 +113,7 @@ test("the lawyer summary carries the approved name, the split, 5/5, and no s.85 
   assert.match(pkg, /not legal advice, not a filing, and nothing here is submitted/i);
   assert.match(pkg, /does not send email/i);
   assert.doesNotMatch(pkg, /filed successfully|submitted to the registry/i);
-  assert.doesNotMatch(pkg, /s\.?\s?85|rollover/i);
+  assert.doesNotMatch(pkg, /rollover/i);
   assert.doesNotMatch(pkg, /Commander/i);
 });
 
@@ -126,7 +123,6 @@ test("start over clears the company name and the whole walk", () => {
   assert.equal(reset.currentBeat, "jurisdiction");
   assert.equal(reset.selectedJurisdiction, null);
   assert.equal(reset.companyName, "");
-  assert.equal(reset.rolloverCard, null);
   assert.equal(reset.lawyerPackage, "");
   assert.equal(reset.checklist.filter((item) => item.done).length, 0);
   // The prepared package is a snapshot; it never claims a live filing.

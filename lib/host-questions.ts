@@ -35,7 +35,6 @@ export function getHostQuestion(beat: Beat, founderNames: string[] = ["Nova", "O
     }
     case "checklist": return "Build the colony one structure at a time. Say “yes” to raise the next one.";
     case "name": return "Name the fictional company. Say “Approve Galactic Bagels”.";
-    case "rollover": return "That lesson is not part of this run. Say “continue” to keep the mission moving.";
     case "filingsteps": return "That filing card is optional. No action needed — say “continue” to keep the required walk moving.";
     case "summary": return "Everything is lined up. Say “Prepare the lawyer summary” — prep only; nothing is filed or sent.";
   }

@@ -73,7 +73,7 @@ test("real commands and questions fall through to the journey", () => {
     "Pick Mars",
     "Make Orbit 70%",
     "Approve Galactic Bagels",
-    "What is a section 85 rollover?",
+    "What does the filing card say?",
     "Prepare the lawyer summary",
     "Build the next structure",
     "Yes",

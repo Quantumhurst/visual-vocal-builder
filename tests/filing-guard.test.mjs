@@ -23,7 +23,6 @@ test("normal filing and summary questions are not the guard", () => {
     "What are the filing steps and fees?",
     "Prepare the lawyer summary",
     "Tick next step",
-    "What is a section 85 rollover?",
     "Pick Mars",
   ]) {
     assert.equal(isFilingGuardQuestion(text), false, text);

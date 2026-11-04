@@ -1,7 +1,7 @@
 import { DEMO_CHECKLIST, DEMO_COMPANY_NAME, DEMO_FOUNDERS, DEMO_JURISDICTIONS } from "./demo-data.ts";
 import { resizeFounders, setFounderShare } from "./equity.ts";
 import type { FounderShare } from "./equity.ts";
-import { FILING_STEPS_PACK, findFact, findFactById } from "./knowledge.ts";
+import { FILING_STEPS_PACK, findFact } from "./knowledge.ts";
 import { buildLawyerSummary } from "./lawyer-summary.ts";
 import type { JurisdictionRow, SharedState } from "./state.ts";
 
@@ -14,8 +14,6 @@ export const INITIAL_STATE: SharedState = {
   founders: DEMO_FOUNDERS,
   equityNote: "",
   checklist: DEMO_CHECKLIST,
-  rolloverCard: null,
-  rolloverNote: "",
   filingStepsCard: null,
   filingStepsNote: "",
   lawyerPackage: "",
@@ -88,30 +86,6 @@ export function applyJurisdiction(state: SharedState, jurisdiction?: string | nu
     currentBeat: "jurisdiction",
     jurisdictions: DEMO_JURISDICTIONS,
     selectedJurisdiction: match ? match.jurisdiction : state.selectedJurisdiction,
-  };
-}
-
-export function applyRolloverFact(state: SharedState, factId: string, question?: string): SharedState {
-  const found = findFactById(factId ?? "");
-  if (!found) {
-    return {
-      ...state,
-      currentBeat: "rollover",
-      rolloverCard: null,
-      rolloverNote: "No grounded fact matched that request in the knowledge pack, so no fact card is shown. An ungrounded answer would fail this beat.",
-    };
-  }
-  return {
-    ...state,
-    currentBeat: "rollover",
-    rolloverCard: {
-      question: question ?? "Rollover question",
-      answer: found.fact.text,
-      packId: found.pack.packId,
-      factId: found.fact.factId,
-      packTitle: found.pack.title,
-    },
-    rolloverNote: "",
   };
 }
 

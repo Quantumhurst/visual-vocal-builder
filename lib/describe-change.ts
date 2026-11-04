@@ -63,13 +63,6 @@ export function describeChange(before: SharedState, after: SharedState): string 
     );
   }
 
-  if (JSON.stringify(before.rolloverCard) !== JSON.stringify(after.rolloverCard)) {
-    parts.push(
-      after.rolloverCard
-        ? `Shown s.85 card ${after.rolloverCard.factId}.`
-        : "Rollover card cleared (no grounded fact).",
-    );
-  }
   if (JSON.stringify(before.filingStepsCard) !== JSON.stringify(after.filingStepsCard)) {
     parts.push(
       after.filingStepsCard

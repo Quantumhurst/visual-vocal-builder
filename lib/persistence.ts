@@ -28,7 +28,7 @@ export type SavedSession = {
   log: TranscriptEntry[];
 };
 
-const BEATS = new Set<string>(["jurisdiction", "equity", "checklist", "name", "rollover", "filingsteps", "summary"]);
+const BEATS = new Set<string>(["jurisdiction", "equity", "checklist", "name", "filingsteps", "summary"]);
 
 function cleanEntry(value: unknown): TranscriptEntry | null {
   if (!value || typeof value !== "object") return null;
@@ -78,12 +78,10 @@ export function sanitizeState(raw: unknown): SharedState {
   if (state.checklist.some((item) => item.id.startsWith("check-"))) {
     state.checklist = INITIAL_STATE.checklist.map((item) => ({ ...item, done: false }));
     // A migrated build has to pass through the new interview and its
-    // downstream name/s.85/summary beats, even if the old run had already
+    // downstream name/summary beats, even if the old run had already
     // marked them. Home base and equity are kept.
     state.currentBeat = "checklist";
     state.companyName = "";
-    state.rolloverCard = null;
-    state.rolloverNote = "";
     state.lawyerPackage = "";
     state.lawyerNote = "";
   }
@@ -92,11 +90,8 @@ export function sanitizeState(raw: unknown): SharedState {
   state.selectedJurisdiction =
     typeof state.selectedJurisdiction === "string" ? state.selectedJurisdiction : null;
   state.lawyerPackage = typeof state.lawyerPackage === "string" ? state.lawyerPackage : "";
-  state.rolloverCard =
-    state.rolloverCard && typeof state.rolloverCard === "object" ? state.rolloverCard : null;
   state.filingStepsCard =
     state.filingStepsCard && typeof state.filingStepsCard === "object" ? state.filingStepsCard : null;
-  state.rolloverNote = typeof state.rolloverNote === "string" ? state.rolloverNote : "";
   state.filingStepsNote = typeof state.filingStepsNote === "string" ? state.filingStepsNote : "";
   state.equityNote = typeof state.equityNote === "string" ? state.equityNote : "";
   state.lawyerNote = typeof state.lawyerNote === "string" ? state.lawyerNote : "";
@@ -151,7 +146,6 @@ export function isResumable(state: SharedState): boolean {
     state.selectedJurisdiction !== null ||
     state.companyName.trim() !== "" ||
     state.lawyerPackage !== "" ||
-    state.rolloverCard !== null ||
     state.filingStepsCard !== null ||
     state.checklist.some((item) => item.done) ||
     state.founders.some((founder, index) => founder.percent !== INITIAL_STATE.founders[index]?.percent)
@@ -163,7 +157,6 @@ const LABELS: Record<string, string> = {
   equity: "crew split",
   checklist: "colony build",
   name: "company name",
-  rollover: "s.85 lesson",
   filingsteps: "filing intel",
   summary: "lawyer summary",
 };

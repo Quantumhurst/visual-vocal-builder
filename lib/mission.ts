@@ -8,8 +8,8 @@
 //   home base -> company name -> crew split (confirmed) -> 5/5 colony
 //   -> launch the lawyer summary.
 // The company name is approved immediately after the home base, before
-// equity and the build. The s.85 lesson is not part of this run.
-// The filing-steps/fees card is the only optional archive system.
+// equity and the build. The filing-steps/fees card is the only optional
+// archive system.
 
 import { beatProgress, type Beat, type RequiredBeat } from "./beat-progress.ts";
 import type { SharedState } from "./state.ts";
