@@ -18,7 +18,7 @@ cd visual-vocal-builder
 npm install
 cp .env.example .env   # fill in META_API_KEY (never commit .env)
 npm run build
-node server.mjs        # unified Next + ASR WebSocket server on :3000
+NODE_ENV=production node server.mjs   # unified Next + ASR WebSocket server on :3000
 ```
 
 Windows: use Git Bash, or replace cp with Copy-Item.
