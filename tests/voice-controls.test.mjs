@@ -40,6 +40,8 @@ test("volume, rate, pacing, transcript, save, and status are voice controls", ()
   assert.equal(parse("show transcript"), "show-transcript");
   assert.equal(parse("hide the transcript"), "hide-transcript");
   assert.equal(parse("save progress"), "save");
+  assert.equal(parse("test voice"), "test-voice");
+  assert.equal(parse("can you hear me"), "test-voice");
   assert.equal(parse("Savesave progress"), "save");
   assert.equal(parse("where am I"), "status");
   assert.equal(parse("what's next"), "status");

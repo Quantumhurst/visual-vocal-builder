@@ -32,6 +32,7 @@ export default function VoiceEntry({ saved, onEnter, onStartOver }: Props) {
   const [level, setLevel] = useState(0);
   const [busy, setBusy] = useState(false);
   const [permissionHint, setPermissionHint] = useState(false);
+  const [audioWarn, setAudioWarn] = useState(false);
   const streamRef = useRef<MediaStream | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
   const nodeRef = useRef<AudioWorkletNode | null>(null);
@@ -203,10 +204,14 @@ export default function VoiceEntry({ saved, onEnter, onStartOver }: Props) {
       began = true;
       void start();
     };
+    let promptStarted = false;
     try {
       if (typeof window !== "undefined" && window.speechSynthesis) {
         const utter = new SpeechSynthesisUtterance(prompt);
         utter.rate = 0.95;
+        utter.onstart = () => {
+          promptStarted = true;
+        };
         utter.onend = begin;
         utter.onerror = begin;
         window.speechSynthesis.speak(utter);
@@ -214,9 +219,13 @@ export default function VoiceEntry({ saved, onEnter, onStartOver }: Props) {
     } catch {
       // ignore
     }
+    const audioCheck = setTimeout(() => {
+      if (!promptStarted) setAudioWarn(true);
+    }, 1800);
     const fallback = setTimeout(begin, 2400);
     return () => {
       clearTimeout(fallback);
+      clearTimeout(audioCheck);
       cancelledRef.current = true;
       startedRef.current = false;
       cleanup();
@@ -273,6 +282,12 @@ export default function VoiceEntry({ saved, onEnter, onStartOver }: Props) {
         {heard ? (
           <p className="voice-gate-heard" data-testid="voice-gate-heard">
             Heard: <q>{heard}</q>
+          </p>
+        ) : null}
+        {audioWarn ? (
+          <p className="voice-gate-error" data-testid="landing-audio-warning" role="alert">
+            No host audio detected. Check the system output device and the tab mute; voice entry
+            still works. Inside, say “test voice”.
           </p>
         ) : null}
         {error ? (

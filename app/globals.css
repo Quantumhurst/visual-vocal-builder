@@ -3910,3 +3910,22 @@ pre {
     padding: 14px;
   }
 }
+
+/* Host-audio health: silence must be visible, not mistaken for a stall. */
+.deck-host-audio {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--green);
+  white-space: nowrap;
+}
+
+.deck-host-audio.is-speaking {
+  color: var(--cyan);
+}
+
+.deck-host-audio.is-silent {
+  color: var(--red);
+  font-weight: 700;
+  animation: pipPulse 1.2s ease-in-out infinite;
+}

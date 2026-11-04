@@ -31,6 +31,7 @@ export type VoiceControlKind =
   | "slow-mode"
   | "normal-mode"
   | "status"
+  | "test-voice"
   | "start-over";
 
 export type VoiceControl = {
@@ -157,6 +158,9 @@ export function parseVoiceControl(text: string): VoiceControl | null {
   }
   if (/^(?:hide\s+(?:the\s+)?transcript|close\s+(?:the\s+)?transcript)$/.test(t)) {
     return { kind: "hide-transcript" };
+  }
+  if (/^(?:test\s+voice|voice\s+test|test\s+the\s+host\s+voice|can\s+you\s+hear\s+me|check\s+voice)$/.test(t)) {
+    return { kind: "test-voice" };
   }
   if (/^(?:save|save\s+(?:my\s+)?progress|save\s+(?:the\s+)?session|save\s+and\s+pause)$/.test(t)) {
     return { kind: "save" };

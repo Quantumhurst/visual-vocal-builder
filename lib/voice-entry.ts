@@ -32,7 +32,10 @@ export function parseEntryIntent(text: string): EntryIntent {
   ) {
     return { mode: "resume", phrase: "enter the bridge" };
   }
-  if (/^(?:enter|start|begin|go|launch|ready|lets\s+go|let\s+s\s+go)\b/.test(t)) {
+  if (
+    /^(?:enter|start|begin|go|launch|ready|lets\s+go|let\s+s\s+go)\b/.test(t) ||
+    /^(?:hello|hi|hey|are\s+you\s+there|can\s+you\s+hear\s+me)\b/.test(t)
+  ) {
     return { mode: "resume", phrase: "start" };
   }
   return null;

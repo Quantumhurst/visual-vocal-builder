@@ -286,7 +286,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // True while the host voice is actually speaking. The mic stays closed
   // during this window, and the deck says so instead of claiming LIVE.
   const [hostSpeaking, setHostSpeaking] = useState(false);
+  const [hostSilent, setHostSilent] = useState(false);
   const hostSpeakingRef = useRef(false);
+  const hostAttemptSeqRef = useRef(0);
+  const hostStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Continuous conversation (OpenClaw pattern): talk, agent answers
   // out loud, mic re-opens by itself. On by default; a manual Stop
   // ends it. The full control set lives in a pop-out, not the bar.
@@ -358,6 +361,16 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const lastHostLineRef = useRef("");
   const eventsRef = useRef<string[]>([]);
   const audioStatsRef = useRef({ blocks: 0, hostDropped: 0, listeningDropped: 0 });
+  const hostAudioRef = useRef({
+    started: 0,
+    ended: 0,
+    errors: 0,
+    retries: 0,
+    lastVoice: "",
+    lastVolume: 1,
+    lastRate: 1,
+    lastStartedAt: 0,
+  });
   function logEvent(line: string) {
     eventsRef.current.push(`${Math.round(performance.now())} ${line}`);
     if (eventsRef.current.length > 300) eventsRef.current.shift();
@@ -490,7 +503,11 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   }
 
   function previewHostVoice() {
-    if (!voiceOn || typeof window === "undefined" || !window.speechSynthesis) return;
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    setHostSilent(false);
+    if (!settingsRef.current.voiceOn || settingsRef.current.volume <= 0.01) {
+      updateVoiceSettings({ voiceOn: true, volume: Math.max(0.25, settingsRef.current.volume) });
+    }
     refreshCachedVoice();
     speakNative("This is your host voice. Pick your home base — Mars, Europa, or Andromeda Galaxy?");
   }
@@ -545,7 +562,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
   function cancelSpeech() {
     utterCancelledRef.current = true;
+    hostAttemptSeqRef.current += 1;
     clearSpeechWatchdog();
+    clearHostStartTimer();
     clearRearmTimer();
     utteranceRef.current = null;
     hostSpeakingRef.current = false;
@@ -580,13 +599,31 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // Voice-out is the curated system voice only: pick the best English
   // voice actually on this machine (enhanced/natural beats the robotic
   // default) with question/statement prosody. No downloads, no model.
-  function speakNative(text: string, onDone?: () => void) {
+  //
+  // A browser can report `speechSynthesis.speaking === true` while the
+  // utterance never starts — that is silence, not a slow start. If no
+  // onstart arrives, cancel and retry once with the system default voice.
+  // If the default also fails, surface a visible host-audio fault instead
+  // of continuing silently.
+  function clearHostStartTimer() {
+    if (hostStartTimerRef.current !== null) {
+      clearTimeout(hostStartTimerRef.current);
+      hostStartTimerRef.current = null;
+    }
+  }
+
+  function speakNative(
+    text: string,
+    onDone?: () => void,
+    options: { retry?: number; useDefaultVoice?: boolean } = {},
+  ) {
     if (typeof window === "undefined") return false;
     const spoken = spokenHostText(text);
     if (!spoken) return false;
+    const retry = options.retry ?? 0;
     lastHostLineRef.current = spoken;
-    appendLog("host", spoken);
-    if (typeof window !== "undefined") {
+    if (retry === 0) {
+      appendLog("host", spoken);
       const win = window as unknown as { __vvbLastSpoken?: string; __vvbAllSpoken?: string[] };
       win.__vvbLastSpoken = spoken;
       win.__vvbAllSpoken = win.__vvbAllSpoken ?? [];
@@ -600,23 +637,43 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
     echoFilter.recordHostSpeech(spoken);
     try {
+      // Chrome can leave speechSynthesis stuck with `speaking === true`
+      // after a cancelled landing prompt, which queues every later host
+      // line behind an utterance that never starts. If nothing of ours is
+      // active, clear that stale queue before enqueueing the new line.
+      const synth = window.speechSynthesis;
+      if (synth.speaking && !utteranceRef.current && !hostSpeakingRef.current) {
+        try {
+          synth.cancel();
+        } catch {
+          // ignore
+        }
+      }
       refreshCachedVoice();
-      const voice = cachedVoiceRef.current ?? pickVoice(window.speechSynthesis.getVoices());
+      const voice = options.useDefaultVoice
+        ? null
+        : cachedVoiceRef.current ?? pickVoice(window.speechSynthesis.getVoices());
+      const attempt = ++hostAttemptSeqRef.current;
       const base = prosodyFor(spoken);
       const rate = Math.min(1.6, Math.max(0.5, base.rate * settingsRef.current.rate));
       const pitch = base.pitch;
       clearSpeechWatchdog();
+      clearHostStartTimer();
       utterCancelledRef.current = false;
       hostSpeakingRef.current = true;
       setHostSpeaking(true);
+      let started = false;
 
       const finishSpeech = () => {
+        if (attempt !== hostAttemptSeqRef.current) return;
         clearSpeechWatchdog();
+        clearHostStartTimer();
         utteranceRef.current = null;
         hostSpeakingRef.current = false;
         setHostSpeaking(false);
         echoFilter.scheduleClear(1200);
         if (utterCancelledRef.current) return;
+        hostAudioRef.current.ended += 1;
         onDone?.();
         requestRearm();
       };
@@ -627,7 +684,28 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         pitch,
         volume: settingsRef.current.volume,
         voice,
+        useDefaultVoice: options.useDefaultVoice,
+        onStart: () => {
+          if (attempt !== hostAttemptSeqRef.current) return;
+          started = true;
+          clearHostStartTimer();
+          setHostSilent(false);
+          hostAudioRef.current.started += 1;
+          hostAudioRef.current.lastVoice = voice?.name ?? "(browser default)";
+          hostAudioRef.current.lastVolume = settingsRef.current.volume;
+          hostAudioRef.current.lastRate = rate;
+          hostAudioRef.current.lastStartedAt = Date.now();
+          logEvent(`host voice started ${voice?.name ?? "default"}`);
+          // The end watchdog starts only once audio really started.
+          speechWatchdogRef.current = setTimeout(() => {
+            speechWatchdogRef.current = null;
+            if (utteranceRef.current !== utter) return;
+            speechQueue.hardFlushOnBargeIn();
+            finishSpeech();
+          }, Math.min(12000, 3000 + spoken.length * 55));
+        },
         onDone: () => {
+          if (attempt !== hostAttemptSeqRef.current) return;
           stampTiming("speechEnd");
           finishSpeech();
         },
@@ -636,20 +714,36 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
           // failure of the current, non-cancelled utterance is a real
           // host-voice failure. This was lost in 4972d2b; restore it without
           // touching the echo/mic loop guards.
+          if (attempt !== hostAttemptSeqRef.current) return;
           if (utteranceRef.current !== failed || utterCancelledRef.current) return;
-          setNotice("Host voice could not play — open Controls, choose Auto, and press PREVIEW.");
+          hostAudioRef.current.errors += 1;
+          setNotice("Host voice could not play — retrying with the system default.");
         },
       });
 
-      if (utter) utteranceRef.current = utter;
-
-      speechWatchdogRef.current = setTimeout(() => {
-        speechWatchdogRef.current = null;
-        if (utteranceRef.current !== utter) return;
-        speechQueue.hardFlushOnBargeIn();
-        finishSpeech();
-      }, Math.min(9000, 2000 + spoken.length * 55));
-
+      if (utter) {
+        utteranceRef.current = utter;
+        hostStartTimerRef.current = setTimeout(() => {
+          hostStartTimerRef.current = null;
+          if (attempt !== hostAttemptSeqRef.current || started) return;
+          utteranceRef.current = null;
+          utterCancelledRef.current = true;
+          speechQueue.hardFlushOnBargeIn();
+          hostSpeakingRef.current = false;
+          setHostSpeaking(false);
+          if (retry < 1) {
+            hostAudioRef.current.retries += 1;
+            logEvent("host voice did not start; retrying system default");
+            setNotice("Host voice did not start — switching to the system default voice.");
+            speakNative(text, onDone, { retry: 1, useDefaultVoice: true });
+          } else {
+            setHostSilent(true);
+            setNotice("Host voice is silent. Check the tab mute and the system output device, then say “test voice”.");
+            onDone?.();
+            requestRearm();
+          }
+        }, 1800);
+      }
       return utter !== null;
     } catch {
       hostSpeakingRef.current = false;
@@ -1378,7 +1472,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   }
 
   function helpLine(): string {
-    return `${missionSayLine()} You can always say help, repeat that, stop, slower, or start over.`;
+    return `${missionSayLine()} You can always say help, repeat that, stop, slower, test voice, or start over.`;
   }
 
   // Every voice control is handled locally: no model, no state change for
@@ -1460,6 +1554,18 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         const line = `${missionSayLine()} ${progressSummary(withDefaults(stateRef.current))}.`;
         setLocalHost(line);
         if (voiceOn) speakNative(line);
+        return true;
+      }
+      case "test-voice": {
+        setHostSilent(false);
+        if (!settingsRef.current.voiceOn || settingsRef.current.volume <= 0.01) {
+          updateVoiceSettings({ voiceOn: true, volume: Math.max(0.25, settingsRef.current.volume) });
+        }
+        const line = "This is the host voice. If you can hear this, say “help” to keep going or “start over” for a new colony.";
+        setLocalHost(line);
+        setNotice("");
+        cancelSpeech();
+        speakNative(line);
         return true;
       }
       case "start-over": {
@@ -2545,6 +2651,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     ? { text: localHost, source: "fallback" as const }
     : resolvedHostPrompt;
   const doneCount = progress.requiredDone;
+  const voiceAudiblyOn = settings.voiceOn && settings.volume > 0.01;
 
   // The visible host line is always the thing the transcript records and
   // "repeat that" replays, whether VOX is on or off.
@@ -2573,6 +2680,12 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (!autoStart) return;
     convoRef.current = true;
     unlockedRef.current = true;
+    // A saved run must never restore into silence just because VOX was
+    // off or the volume was 0. Entering by voice means the founder expects
+    // a spoken reply; re-enable it for this session, visibly.
+    if (!settingsRef.current.voiceOn || settingsRef.current.volume <= 0.01) {
+      updateVoiceSettings({ voiceOn: true, volume: 1, soundOn: true, sound: 0.8 });
+    }
     refreshCachedVoice();
     const timer = setTimeout(() => {
       setConvoActive(true);
@@ -2716,6 +2829,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       getLastSpoken: () => lastHostLineRef.current,
       getEvents: () => [...eventsRef.current],
       getAudioStats: () => ({ ...audioStatsRef.current }),
+      getHostAudio: () => ({ ...hostAudioRef.current }),
       getAsrState: () => ({
         ready: streamingReadyRef.current,
         socket: asrSocketRef.current?.readyState ?? -1,
@@ -3549,6 +3663,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
                 onSelect={selectHostVoice}
                 onPreview={previewHostVoice}
               />
+              <button type="button" className="btn" data-testid="test-voice" onClick={previewHostVoice}>
+                TEST VOICE
+              </button>
               <p className="popout-clock" aria-label={`Mission clock ${clockLabel}`}>
                 MISSION CLOCK T+{clockLabel}
               </p>
@@ -3595,6 +3712,18 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
           <span data-testid="voice-settings" className="deck-settings" aria-label="Voice settings">
             {settingsSummary(settings)}
           </span>
+          <span
+            data-testid="host-audio"
+            className={`deck-host-audio${!voiceAudiblyOn || hostSilent ? " is-silent" : hostSpeaking ? " is-speaking" : ""}`}
+          >
+            {!voiceAudiblyOn
+              ? "HOST AUDIO OFF"
+              : hostSilent
+                ? "HOST AUDIO SILENT"
+                : hostSpeaking
+                  ? "HOST AUDIO SPEAKING"
+                  : "HOST AUDIO READY"}
+          </span>
           {savedNotice ? (
             <span data-testid="autosave" className="deck-saved">
               {savedNotice}
@@ -3638,6 +3767,16 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
           </span>
         </div>
 
+        {!voiceAudiblyOn ? (
+          <p data-testid="host-audio-off" className="alert" role="alert">
+            Host voice is off. Say “voice on” or “test voice” — I will turn it back on.
+          </p>
+        ) : hostSilent ? (
+          <p data-testid="host-audio-error" className="alert" role="alert">
+            No host audio started. Check the tab mute and the system output device, then say “test
+            voice” — I will retry with the system default voice.
+          </p>
+        ) : null}
         {turnError ? (
           <p data-testid="turn-error" className="alert" role="alert">
             {turnError}

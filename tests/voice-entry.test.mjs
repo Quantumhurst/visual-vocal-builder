@@ -12,6 +12,8 @@ test("the obvious bridge phrases enter the app", () => {
     "Start",
     "Let's go",
     "Begin",
+    "Hello",
+    "Are you there",
   ]) {
     const intent = parseEntryIntent(text);
     assert.ok(intent, text);
@@ -32,7 +34,7 @@ test("start over is the only phrase that clears a saved run", () => {
 });
 
 test("noise and non-entry questions do not cross the bridge", () => {
-  for (const text of ["", "hello", "what is a section 85 rollover", "the weather", "no"]) {
+  for (const text of ["", "what is a section 85 rollover", "the weather", "no"]) {
     assert.equal(parseEntryIntent(text), null, text);
   }
 });

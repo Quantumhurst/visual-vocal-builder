@@ -17,6 +17,10 @@ export type EnqueueOptions = {
   // The caller's curated voice. It must be applied BEFORE speak() so browsers
   // that snapshot the utterance at synthesis time use the selected voice.
   voice?: SpeechSynthesisVoice | null;
+  // Force the browser's own default voice, bypassing the curated pick.
+  // Used when a selected voice reports speaking but never starts.
+  useDefaultVoice?: boolean;
+  onStart?: (utterance: SpeechSynthesisUtterance) => void;
   onDone?: () => void;
   // Fires before onDone when the utterance reports an error. Cancellation
   // (barge-in) also reports an error in some browsers; callers decide whether
@@ -70,7 +74,7 @@ export class SurvivingSpeechQueue {
       // Apply every property BEFORE speak(): several browsers snapshot the
       // utterance at speak() time, so assigning a voice/pitch afterwards can
       // be ignored. This is the single source of truth for host voice-out.
-      const voice = options.voice ?? this.getVoice();
+      const voice = options.useDefaultVoice ? null : options.voice ?? this.getVoice();
       if (voice) utterance.voice = voice;
       utterance.rate = options.rate ?? 1.05;
       utterance.pitch = options.pitch ?? 1;
@@ -86,6 +90,9 @@ export class SurvivingSpeechQueue {
         onDone?.();
       };
 
+      utterance.onstart = () => {
+        options.onStart?.(utterance);
+      };
       utterance.onend = cleanup;
       utterance.onerror = () => {
         if (settled) return;
