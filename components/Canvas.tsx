@@ -38,7 +38,7 @@ import { DEFAULT_VOICE_SETTINGS, applyVoiceControl, normalizeVoiceSettings, pars
 import { clearSavedSession, progressSummary, saveSession, type TranscriptEntry } from "../lib/persistence";
 import { resumeSummary } from "../lib/resume";
 import { withCommander } from "../lib/commander";
-import { buildTranscriptFile, hasTranscriptContent, summaryFilename, transcriptFilename } from "../lib/downloads";
+import { buildPackageFile, buildTranscriptFile, hasTranscriptContent, packageFilename, summaryFilename, transcriptFilename } from "../lib/downloads";
 import { FIRST_SPEAK_GREETING, hasFirstSpeakGreeting, markFirstSpeakGreeting } from "../lib/first-speak";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
 import { withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount, applyCompanyName, parseSpokenCompanyName } from "../lib/state-updates";
@@ -1159,10 +1159,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (next === "checklist") {
       // Keep the handoff to two sentences: the spoken cap would drop the
       // instruction to say yes if the full build question were appended.
-      const built = state.checklist.filter((item) => item.done).length;
-      const total = state.checklist.length;
       const nextItem = state.checklist.find((item) => !item.done);
-      nextLine = `Structure ${built + 1} of ${total}: ${nextItem?.label ?? "next structure"} — say “yes” to raise it.`;
+      nextLine = `Say “yes” to raise the ${nextItem?.label ?? "next structure"}.`;
     }
     const line = `${owners} ${owners === 1 ? "owner" : "owners"} confirmed — ${split}. ${nextLine}`;
     const milestoneLine = withCommander(line);
@@ -1729,6 +1727,21 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     hostFeedback(`Downloaded ${filename}.`);
   }
 
+  function downloadPackageNow() {
+    const current = withDefaults(stateRef.current);
+    const entries = logRef.current;
+    if (!current.lawyerPackage.trim() && !hasTranscriptContent(entries)) {
+      hostFeedback("Nothing to download yet — prepare the summary or say something first.");
+      return;
+    }
+    const filename = packageFilename(current);
+    if (!saveTextFile(filename, buildPackageFile(entries, current))) {
+      hostFeedback("The browser blocked the download. Nothing was saved.");
+      return;
+    }
+    hostFeedback(`Downloaded ${filename}.`);
+  }
+
   // Every new turn starts with no displayed error. Last transcript and
   // host reply are separate state and are deliberately not cleared here.
   function clearTurnErrors() {
@@ -1944,6 +1957,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }
       case "download-transcript": {
         downloadTranscriptNow();
+        return true;
+      }
+      case "download-package": {
+        downloadPackageNow();
         return true;
       }
       case "save": {

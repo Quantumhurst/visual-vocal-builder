@@ -56,7 +56,7 @@ test("the guided build asks for exactly one yes before raising one structure", (
     applyChecklistItem(state, CHECKLIST_PACK.facts[0].factId, true),
     "Landing pad",
   );
-  assert.match(raised, /^Landing pad raised — 1 of 5 structures up\./);
+  assert.match(raised, /^Landing pad up — 1 of 5\./);
   assert.match(raised, /Next: Habitat dome/);
   assert.doesNotMatch(raised, /or /);
   const guide = buildGuideLine(base().checklist[0]);

@@ -2,9 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   FILE_DISCLAIMER,
+  buildPackageFile,
   buildTranscriptFile,
   companyFileSlug,
   hasTranscriptContent,
+  packageFilename,
+  packageFilenameFor,
   summaryFilename,
   summaryFilenameFor,
   transcriptFilename,
@@ -12,6 +15,10 @@ import {
 } from "../lib/downloads.ts";
 
 const company = { companyName: "Galactic Bagels Inc. (fictional)" };
+const prepared = {
+  ...company,
+  lawyerPackage: "Galactic Bagels Inc. (fictional) — Mars — 40% / 20% / 20% / 20%\nDemo data only. This is not legal advice, not a filing.",
+};
 
 test("file names are built from the company", () => {
   assert.equal(companyFileSlug("Galactic Bagels Inc. (fictional)"), "galactic-bagels");
@@ -22,6 +29,8 @@ test("file names are built from the company", () => {
   assert.equal(transcriptFilename(company), "galactic-bagels-transcript.txt");
   assert.equal(summaryFilenameFor("Acme Rockets (fictional)"), "acme-rockets-summary.txt");
   assert.equal(transcriptFilenameFor("Acme Rockets (fictional)"), "acme-rockets-transcript.txt");
+  assert.equal(packageFilename(company), "galactic-bagels-demo-package.txt");
+  assert.equal(packageFilenameFor("Acme Rockets (fictional)"), "acme-rockets-demo-package.txt");
 });
 
 test("transcript file contains the dialogue and the disclaimer inside the file", () => {
@@ -44,4 +53,21 @@ test("empty transcript is detectable", () => {
   assert.equal(hasTranscriptContent([{ role: "host", text: "   " }]), false);
   const text = buildTranscriptFile([], company);
   assert.match(text, /not a filing/);
+});
+
+test("demo package contains both sections, the company name, and the disclaimer", () => {
+  const entries = [
+    { role: "you", text: "Pick Mars", at: 1 },
+    { role: "host", text: "Commander — Mars is home.", at: 2 },
+  ];
+  const text = buildPackageFile(entries, prepared);
+  assert.match(text, /demo package for Galactic Bagels/);
+  assert.match(text, /===== LAWYER SUMMARY =====/);
+  assert.match(text, /Galactic Bagels Inc\. \(fictional\) — Mars/);
+  assert.match(text, /===== FULL TRANSCRIPT =====/);
+  assert.match(text, /HEARD: Pick Mars/);
+  assert.match(text, /HOST: Commander — Mars is home/);
+  assert.match(text, /not legal advice, not a filing/);
+  assert.ok(text.includes(FILE_DISCLAIMER));
+  assert.match(text, /End of demo package/);
 });

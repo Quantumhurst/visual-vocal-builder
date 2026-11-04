@@ -40,8 +40,40 @@ export function transcriptFilename(state: Pick<SharedState, "companyName">): str
   return transcriptFilenameFor(state.companyName);
 }
 
+export function packageFilenameFor(companyName?: string | null): string {
+  return `${companyFileSlug(companyName)}-demo-package.txt`;
+}
+
+export function packageFilename(state: Pick<SharedState, "companyName">): string {
+  return packageFilenameFor(state.companyName);
+}
+
 export function hasTranscriptContent(entries: readonly TranscriptEntry[]): boolean {
   return entries.some((entry) => entry.text.trim().length > 0);
+}
+
+export function buildPackageFile(
+  entries: readonly TranscriptEntry[],
+  state: Pick<SharedState, "companyName" | "lawyerPackage">,
+): string {
+  const company = (state.companyName ?? "").trim() || DEMO_COMPANY_NAME;
+  const summary = (state.lawyerPackage ?? "").trim() || "(No lawyer summary was prepared.)";
+  const transcript = entries.map(
+    (entry) => `${entry.role === "you" ? "HEARD" : "HOST"}: ${entry.text.trim()}`,
+  );
+  return [
+    `Visual Vocal Builder — demo package for ${company}`,
+    FILE_DISCLAIMER,
+    "",
+    "===== LAWYER SUMMARY =====",
+    summary,
+    "",
+    "===== FULL TRANSCRIPT =====",
+    ...(transcript.length > 0 ? transcript : ["(No transcript entries.)"]),
+    "",
+    "End of demo package.",
+    FILE_DISCLAIMER,
+  ].join("\n");
 }
 
 export function buildTranscriptFile(

@@ -37,7 +37,7 @@ export function buildRaisedLine(state: SharedState, raisedLabel: string): string
   if (!next) {
     return withCommander(getHostQuestion("summary", shortFounderNames(state.founders), state.selectedJurisdiction));
   }
-  return `${raisedLabel} raised — ${built} of ${total} structures up. Next: ${next.label}, structure ${built + 1} of ${total} — say “yes”.`;
+  return `${raisedLabel} up — ${built} of ${total}. Next: ${next.label} — say “yes”.`;
 }
 
 export function buildGuideLine(item: { label: string; guidance: string }): string {
@@ -71,8 +71,7 @@ export function nameApprovalLine(state: SharedState): string {
 // the approval and the next equity cue. The selected-place prefix is
 // omitted so the "Inc." sentence cannot push the cue past the speech cap.
 export function nameApprovedLine(state: SharedState): string {
-  const equityLine = getHostQuestion("equity", shortFounderNames(state.founders));
-  return `Company name approved as ${state.companyName}. ${equityLine}`;
+  return `Company name approved as ${state.companyName}. Say “Make Orbit 70%”.`;
 }
 
 // Equity/owner changes pause on a confirmation card before the cockpit

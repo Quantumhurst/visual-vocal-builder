@@ -396,6 +396,7 @@ async function main() {
       ["download", "Download"],
       ["download-summary", "Download summary"],
       ["download-transcript", "Download transcript"],
+      ["download-package", "Download package"],
       ["close", "Close"],
       ["test-voice", "Test voice"],
       ["start-over", "Start over"],
@@ -670,6 +671,11 @@ async function main() {
       summaryDisclaimer: false,
       summaryNoCommander: false,
       summaryConfirmation: false,
+      packageFile: false,
+      packageSections: false,
+      packageDialogue: false,
+      packageDisclaimer: false,
+      packageConfirmation: false,
       genericPicksTranscript: false,
       transcriptFile: false,
       transcriptNamed: false,
@@ -701,6 +707,28 @@ async function main() {
     downloadChecks.summaryNoCommander = !/Commander/i.test(summaryDownload.text);
     downloadChecks.summaryConfirmation = /Downloaded/i.test(summaryConfirmation.lastSpoken || summaryConfirmation.host);
     console.log(`  Saved ${summaryDownload.name} · confirmation "${summaryConfirmation.lastSpoken}"`);
+
+    console.log("\n[download] Download package by voice");
+    await waitMicReady(page, 30000);
+    clearDownloads();
+    downloadHostBefore = await hostCount(page);
+    await say(page, audio["download-package"]);
+    const packageConfirmation = await waitNewHost(
+      page,
+      downloadHostBefore,
+      (text) => /Downloaded/i.test(text),
+      "download package confirmation",
+      30000,
+    );
+    const packageDownload = await waitForDownload((name) => /galactic-bagels-demo-package/i.test(name));
+    downloadChecks.packageFile = /galactic-bagels-demo-package\.txt$/i.test(packageDownload.name);
+    downloadChecks.packageSections =
+      /===== LAWYER SUMMARY =====/.test(packageDownload.text) &&
+      /===== FULL TRANSCRIPT =====/.test(packageDownload.text);
+    downloadChecks.packageDialogue = /HEARD:|HOST:/.test(packageDownload.text);
+    downloadChecks.packageDisclaimer = /not legal advice, not a filing/i.test(packageDownload.text);
+    downloadChecks.packageConfirmation = /Downloaded/i.test(packageConfirmation.lastSpoken || packageConfirmation.host);
+    console.log(`  Saved ${packageDownload.name} with both sections.`);
 
     await waitMicReady(page, 30000);
     console.log('\n[meta] Show transcript');

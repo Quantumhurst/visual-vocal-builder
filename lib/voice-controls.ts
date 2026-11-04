@@ -30,6 +30,7 @@ export type VoiceControlKind =
   | "download"
   | "download-summary"
   | "download-transcript"
+  | "download-package"
   | "close-transcript"
   | "save"
   | "slow-mode"
@@ -159,6 +160,9 @@ export function parseVoiceControl(text: string): VoiceControl | null {
   if (/^(?:sound\s+off|sfx\s+off|cues\s+off|no\s+sound)$/.test(t)) return { kind: "sound-off" };
   if (/^(?:voice\s+on|host\s+voice\s+on)$/.test(t)) return { kind: "voice-on" };
   if (/^(?:voice\s+off|host\s+voice\s+off|stop\s+the\s+voice)$/.test(t)) return { kind: "voice-off" };
+  if (/^(?:download\s+(?:the\s+)?(?:demo\s+)?package|download\s+both(?:\s+files)?|download\s+everything)$/.test(t)) {
+    return { kind: "download-package" };
+  }
   if (/^(?:download\s+(?:the\s+)?summary(?:\s+file)?)$/.test(t)) return { kind: "download-summary" };
   if (/^(?:download\s+(?:the\s+)?transcript(?:\s+file)?)$/.test(t)) return { kind: "download-transcript" };
   if (/^(?:download|download\s+(?:the\s+)?file)$/.test(t)) return { kind: "download" };

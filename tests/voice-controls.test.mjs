@@ -56,6 +56,9 @@ test("download and close are voice controls, and close never targets the app", (
   assert.equal(parse("download the file"), "download");
   assert.equal(parse("download summary"), "download-summary");
   assert.equal(parse("download the summary"), "download-summary");
+  assert.equal(parse("download package"), "download-package");
+  assert.equal(parse("download the demo package"), "download-package");
+  assert.equal(parse("download both files"), "download-package");
   assert.equal(parse("download transcript"), "download-transcript");
   assert.equal(parse("download the transcript"), "download-transcript");
   assert.equal(parse("close"), "close-transcript");
