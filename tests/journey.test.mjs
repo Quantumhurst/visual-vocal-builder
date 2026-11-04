@@ -117,6 +117,7 @@ test("the lawyer summary carries the approved name, the split, 5/5, and no s.85 
   assert.match(pkg, /does not send email/i);
   assert.doesNotMatch(pkg, /filed successfully|submitted to the registry/i);
   assert.doesNotMatch(pkg, /s\.?\s?85|rollover/i);
+  assert.doesNotMatch(pkg, /Commander/i);
 });
 
 test("start over clears the company name and the whole walk", () => {

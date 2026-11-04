@@ -17,7 +17,7 @@
 
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -40,10 +40,36 @@ const CHROME =
 const STAMP = new Date().toISOString().replace(/[:.]/g, "-");
 const SHOTS = path.resolve(".shots", `headset-${STAMP}`);
 const AUDIO_DIR = path.resolve(".tmp-audio", "headset");
+const DOWNLOADS = path.resolve("proof", "downloads", STAMP);
 mkdirSync(SHOTS, { recursive: true });
 mkdirSync(AUDIO_DIR, { recursive: true });
+mkdirSync(DOWNLOADS, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function clearDownloads() {
+  try { rmSync(DOWNLOADS, { recursive: true, force: true }); } catch { /* ignore */ }
+  mkdirSync(DOWNLOADS, { recursive: true });
+}
+
+async function waitForDownload(predicate, timeout = 20000) {
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    const files = existsSync(DOWNLOADS) ? readdirSync(DOWNLOADS) : [];
+    for (const name of files) {
+      if (name.endsWith(".crdownload")) continue;
+      if (!predicate(name)) continue;
+      try {
+        const text = readFileSync(path.join(DOWNLOADS, name), "utf8");
+        if (text.length > 0) return { name, text };
+      } catch {
+        // still being written
+      }
+    }
+    await sleep(250);
+  }
+  throw new Error(`Timeout waiting for download in ${DOWNLOADS}`);
+}
 
 function synth(text, key) {
   const aiff = path.join(AUDIO_DIR, `${key}.aiff`);
@@ -326,6 +352,23 @@ async function main() {
   page.on("console", (msg) => consoleLines.push(`${msg.type()}: ${msg.text()}`));
   page.on("pageerror", (err) => consoleLines.push(`pageerror: ${err.message}`));
   await page.evaluateOnNewDocument(audioInitScript);
+  // Voice-triggered files must land in a known directory so the walk can
+  // verify the company-named file and its in-file disclaimer.
+  try {
+    const cdp = await page.createCDPSession();
+    await cdp.send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: DOWNLOADS });
+  } catch (err) {
+    try {
+      const browserCdp = await browser.target().createCDPSession();
+      await browserCdp.send("Browser.setDownloadBehavior", {
+        behavior: "allow",
+        downloadPath: DOWNLOADS,
+        eventsEnabled: true,
+      });
+    } catch (fallbackError) {
+      console.warn("download behavior setup failed", err?.message, fallbackError?.message);
+    }
+  }
 
   const results = [];
   let current = 0;
@@ -350,6 +393,10 @@ async function main() {
       ["hide-transcript", "Hide transcript"],
       ["save", "Save progress"],
       ["status", "Status"],
+      ["download", "Download"],
+      ["download-summary", "Download summary"],
+      ["download-transcript", "Download transcript"],
+      ["close", "Close"],
       ["test-voice", "Test voice"],
       ["start-over", "Start over"],
     ]) {
@@ -381,11 +428,13 @@ async function main() {
       oneSay: snap.sayCount === 1,
       oneChip: snap.chipCount === 1,
       hostAgrees: captionsMatch(snap),
+      commanderAtStart: /^Commander\b/.test(snap.lastSpoken || snap.host),
     };
     console.log(
       "  Captions:",
       `host ${snap.hostFont}px · heard ${snap.heardFont}px · history ${snap.historyFont}px · ` +
-      `SAY ${snap.sayCount} · chip ${snap.chipCount} · agree ${captionLayout.hostAgrees}`,
+      `SAY ${snap.sayCount} · chip ${snap.chipCount} · agree ${captionLayout.hostAgrees} · ` +
+      `Commander start ${captionLayout.commanderAtStart}`,
     );
     if (!Object.values(captionLayout).every(Boolean)) {
       throw new Error(`Caption layout failed: ${JSON.stringify(captionLayout)}`);
@@ -401,6 +450,7 @@ async function main() {
     await screenshot(page, "01-cockpit");
 
     const captionFailures = [];
+    const commanderFailures = [];
     for (const turn of TURNS) {
       current += 1;
       await waitMicReady(page, 40000);
@@ -473,12 +523,20 @@ async function main() {
       const slowMerged = turn.slow
         ? /want/i.test(lastUser) && /mars/i.test(lastUser)
         : null;
+      // Commander is for the journey start and milestones only. The
+      // split/owner changes and structures 1–4 are deliberately plain.
+      const commanderExpected = !["owners", "equity", "build-1", "build-2", "build-3", "build-4"].includes(turn.id);
+      const commanderLine = turn.id === "summary"
+        ? snap.allSpoken.some((line) => /^Commander\b/.test(line) && /Summary prepared/i.test(line))
+        : /^Commander\b/.test(snap.lastSpoken || snap.host);
+      const commanderOk = commanderExpected ? commanderLine : !commanderLine;
       const summaryBuildSeen = summaryWatch ? await summaryWatch : null;
       const passed =
         Boolean(state) &&
         Boolean(snap.recording) &&
         agrees &&
         heardAgrees &&
+        commanderOk &&
         oneSay &&
         oneChip &&
         historyVisible &&
@@ -490,6 +548,7 @@ async function main() {
       console.log(`  Screen: ${snap.mission} · ${visible.slice(0, 110)}`);
       console.log(
         `  Captions agree: ${agrees} · heard ${heardAgrees} · SAY ${snap.sayCount} · chips ${snap.chipCount} · history ${snap.historyCount}` +
+        ` · Commander ${commanderOk ? "ok" : "WRONG"}` +
         (turn.slow ? ` · held ${holdSeen} · merged ${slowMerged}` : "") +
         (turn.id === "summary" ? ` · build ${summaryBuildSeen ? `${summaryBuildSeen.pct}%` : "not seen"}` : ""),
       );
@@ -504,6 +563,7 @@ async function main() {
           lastUser,
         });
       }
+      if (!commanderOk) commanderFailures.push({ step: turn.id, expected: commanderExpected, host: snap.lastSpoken || snap.host });
       results.push({
         step: turn.id,
         heard: turn.text,
@@ -515,6 +575,9 @@ async function main() {
         passed,
         captionsAgree: agrees,
         heardAgrees,
+        commander: commanderLine,
+        commanderOk,
+        commanderExpected,
         oneSay,
         oneChip,
         historyCount: snap.historyCount,
@@ -589,23 +652,116 @@ async function main() {
       summaryBuildVisible: Boolean(results.find((row) => row.step === "summary")?.summaryBuildSeen),
       scrollLockParked: scrollChecks.scrollParked,
       scrollLockReleasedByNewTurn: scrollChecks.newTurnReleased,
+      commanderAtStart: captionLayout.commanderAtStart,
+      commanderMilestonesOnly: commanderFailures.length === 0,
+      commanderNotEveryLine:
+        results.filter((row) => row.commanderExpected === true || row.commanderExpected === false).filter((row) => row.commander === true).length <
+        results.filter((row) => row.commanderExpected === true || row.commanderExpected === false).length,
+      noCommanderInSummary: !/Commander/i.test(s.lawyerPackage ?? ""),
     };
     console.log("\nFINAL CHECKS");
     for (const [name, ok] of Object.entries(checks)) console.log(`  ${ok ? "✓" : "✗"} ${name}`);
     await screenshot(page, "09-summary");
     await page.evaluate(() => window.scrollTo(0, 0));
 
-    // Voice-only transcript + save + meta controls.
+    // Voice-only transcript + save + downloads + meta controls.
+    const downloadChecks = {
+      summaryFile: false,
+      summaryNamed: false,
+      summaryDisclaimer: false,
+      summaryNoCommander: false,
+      summaryConfirmation: false,
+      genericPicksTranscript: false,
+      transcriptFile: false,
+      transcriptNamed: false,
+      transcriptDisclaimer: false,
+      transcriptDialogue: false,
+      transcriptConfirmation: false,
+      closeTranscriptOnly: false,
+      explicitTranscript: false,
+      genericPicksSummary: false,
+      nothingToDownload: false,
+    };
+
+    console.log("\n[download] Download summary by voice");
     await waitMicReady(page, 40000);
+    clearDownloads();
+    let downloadHostBefore = await hostCount(page);
+    await say(page, audio["download-summary"]);
+    const summaryConfirmation = await waitNewHost(
+      page,
+      downloadHostBefore,
+      (text) => /Downloaded/i.test(text),
+      "download summary confirmation",
+      30000,
+    );
+    const summaryDownload = await waitForDownload((name) => /galactic-bagels-summary/i.test(name));
+    downloadChecks.summaryFile = /galactic-bagels-summary\.txt$/i.test(summaryDownload.name);
+    downloadChecks.summaryNamed = /Galactic Bagels/i.test(summaryDownload.text);
+    downloadChecks.summaryDisclaimer = /not legal advice, not a filing/i.test(summaryDownload.text);
+    downloadChecks.summaryNoCommander = !/Commander/i.test(summaryDownload.text);
+    downloadChecks.summaryConfirmation = /Downloaded/i.test(summaryConfirmation.lastSpoken || summaryConfirmation.host);
+    console.log(`  Saved ${summaryDownload.name} · confirmation "${summaryConfirmation.lastSpoken}"`);
+
+    await waitMicReady(page, 30000);
     console.log('\n[meta] Show transcript');
     await say(page, audio.transcript);
     await waitFor("transcript open by voice", async () => (await snapshot(page)).transcriptOpen, 20000);
     const transcript = await snapshot(page);
     console.log(`  Transcript open with ${transcript.transcriptCount} entries.`);
     await screenshot(page, "10-transcript");
+
+    console.log("\n[download] Generic download while transcript is open");
     await waitMicReady(page, 30000);
-    await say(page, audio["hide-transcript"]);
+    clearDownloads();
+    downloadHostBefore = await hostCount(page);
+    await say(page, audio.download);
+    const transcriptConfirmation = await waitNewHost(
+      page,
+      downloadHostBefore,
+      (text) => /Downloaded/i.test(text),
+      "download transcript confirmation",
+      30000,
+    );
+    const transcriptDownload = await waitForDownload((name) => /galactic-bagels-transcript/i.test(name));
+    downloadChecks.genericPicksTranscript = /galactic-bagels-transcript\.txt$/i.test(transcriptDownload.name);
+    downloadChecks.transcriptFile = /galactic-bagels-transcript\.txt$/i.test(transcriptDownload.name);
+    downloadChecks.transcriptNamed = /demo transcript for Galactic Bagels/i.test(transcriptDownload.text);
+    downloadChecks.transcriptDisclaimer = /not legal advice, not a filing/i.test(transcriptDownload.text);
+    downloadChecks.transcriptDialogue = /HEARD:|HOST:/.test(transcriptDownload.text);
+    downloadChecks.transcriptConfirmation = /Downloaded/i.test(transcriptConfirmation.lastSpoken || transcriptConfirmation.host);
+    console.log(`  Saved ${transcriptDownload.name} from the open transcript.`);
+
+    console.log("\n[meta] Close transcript by voice");
+    await waitMicReady(page, 30000);
+    await say(page, audio.close);
     await waitFor("transcript closed by voice", async () => !(await snapshot(page)).transcriptOpen, 20000);
+    const afterClose = await snapshot(page);
+    downloadChecks.closeTranscriptOnly =
+      !afterClose.transcriptOpen &&
+      Boolean(await page.evaluate(() => Boolean(document.querySelector('[data-testid="command-deck"]')))) &&
+      page.url().startsWith(URL);
+    console.log(`  Transcript closed · cockpit still mounted: ${downloadChecks.closeTranscriptOnly}`);
+
+    console.log("\n[download] Explicit transcript download while closed");
+    await waitMicReady(page, 30000);
+    clearDownloads();
+    downloadHostBefore = await hostCount(page);
+    await say(page, audio["download-transcript"]);
+    await waitNewHost(page, downloadHostBefore, (text) => /Downloaded/i.test(text), "explicit transcript confirmation", 30000);
+    const explicitTranscript = await waitForDownload((name) => /galactic-bagels-transcript/i.test(name));
+    downloadChecks.explicitTranscript = /galactic-bagels-transcript\.txt$/i.test(explicitTranscript.name);
+    console.log(`  Saved ${explicitTranscript.name} with the transcript closed.`);
+
+    console.log("\n[download] Generic download with summary shown");
+    await waitMicReady(page, 30000);
+    clearDownloads();
+    downloadHostBefore = await hostCount(page);
+    await say(page, audio.download);
+    await waitNewHost(page, downloadHostBefore, (text) => /Downloaded/i.test(text), "generic summary confirmation", 30000);
+    const genericSummary = await waitForDownload((name) => /galactic-bagels-summary/i.test(name));
+    downloadChecks.genericPicksSummary = /galactic-bagels-summary\.txt$/i.test(genericSummary.name);
+    console.log(`  Saved ${genericSummary.name} from the summary view.`);
 
     await waitMicReady(page, 30000);
     let hostBefore = await hostCount(page);
@@ -751,6 +907,7 @@ async function main() {
     const resumeText = resumeLine.lastSpoken || resumeLine.host;
     const resumeChecks = {
       resumeWelcome: /Welcome back/.test(resumeText),
+      resumeCommander: /^Commander\b/.test(resumeText),
       resumeHomeBase: /Home base Mars/.test(resumeText),
       resumeCompanyName: /Galactic Bagels/.test(resumeText),
       resumeSplit: /40%\/20%\/20%\/20%/.test(resumeText),
@@ -780,6 +937,32 @@ async function main() {
       clicks: reset.clicks,
     });
 
+    console.log("\n[download] Nothing to download after reset");
+    await waitMicReady(page, 30000);
+    clearDownloads();
+    downloadHostBefore = await hostCount(page);
+    await say(page, audio["download-summary"]);
+    const noContentLine = await waitNewHost(
+      page,
+      downloadHostBefore,
+      (text) => /No lawyer summary|Nothing to download/i.test(text),
+      "nothing-to-download notice",
+      30000,
+    );
+    await sleep(800);
+    const leftover = existsSync(DOWNLOADS)
+      ? readdirSync(DOWNLOADS).filter((name) => !name.endsWith(".crdownload"))
+      : [];
+    downloadChecks.nothingToDownload = leftover.length === 0;
+    console.log(`  Visible: "${noContentLine.lastSpoken}" · files saved: ${leftover.length}`);
+    results.push({
+      step: "downloads",
+      ...downloadChecks,
+      clicks: reset.clicks,
+    });
+    console.log("\nDOWNLOAD CHECKS");
+    for (const [name, ok] of Object.entries(downloadChecks)) console.log(`  ${ok ? "✓" : "✗"} ${name}`);
+
     const report = {
       at: new Date().toISOString(),
       url: URL,
@@ -789,6 +972,7 @@ async function main() {
       checks,
       recoveryChecks,
       resumeChecks,
+      downloadChecks,
       results,
       console: consoleLines.slice(-40),
     };
@@ -801,6 +985,9 @@ async function main() {
     }
     if (!Object.values(resumeChecks).every(Boolean)) {
       throw new Error(`Resume checks failed: ${JSON.stringify(resumeChecks)}`);
+    }
+    if (!Object.values(downloadChecks).every(Boolean)) {
+      throw new Error(`Download checks failed: ${JSON.stringify(downloadChecks)}`);
     }
     console.log(`\nWALK PASSED · ${results.length} voice turns · ${final.clicks} clicks · shots in ${SHOTS}\n`);
   } catch (err) {

@@ -27,6 +27,10 @@ export type VoiceControlKind =
   | "voice-off"
   | "show-transcript"
   | "hide-transcript"
+  | "download"
+  | "download-summary"
+  | "download-transcript"
+  | "close-transcript"
   | "save"
   | "slow-mode"
   | "normal-mode"
@@ -155,10 +159,14 @@ export function parseVoiceControl(text: string): VoiceControl | null {
   if (/^(?:sound\s+off|sfx\s+off|cues\s+off|no\s+sound)$/.test(t)) return { kind: "sound-off" };
   if (/^(?:voice\s+on|host\s+voice\s+on)$/.test(t)) return { kind: "voice-on" };
   if (/^(?:voice\s+off|host\s+voice\s+off|stop\s+the\s+voice)$/.test(t)) return { kind: "voice-off" };
+  if (/^(?:download\s+(?:the\s+)?summary(?:\s+file)?)$/.test(t)) return { kind: "download-summary" };
+  if (/^(?:download\s+(?:the\s+)?transcript(?:\s+file)?)$/.test(t)) return { kind: "download-transcript" };
+  if (/^(?:download|download\s+(?:the\s+)?file)$/.test(t)) return { kind: "download" };
+  if (/^(?:close|close\s+(?:the\s+)?transcript|close\s+it)$/.test(t)) return { kind: "close-transcript" };
   if (/^(?:show\s+(?:the\s+)?transcript|open\s+(?:the\s+)?transcript|full\s+transcript|read\s+(?:the\s+)?transcript|transcript)$/.test(t)) {
     return { kind: "show-transcript" };
   }
-  if (/^(?:hide\s+(?:the\s+)?transcript|close\s+(?:the\s+)?transcript)$/.test(t)) {
+  if (/^(?:hide\s+(?:the\s+)?transcript)$/.test(t)) {
     return { kind: "hide-transcript" };
   }
   if (/^(?:test\s+voice|voice\s+test|test\s+the\s+host\s+voice|can\s+you\s+hear\s+me|check\s+voice)$/.test(t)) {

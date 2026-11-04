@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { SharedState } from "../lib/state";
 import { buildLawyerSummary } from "../lib/lawyer-summary";
+import { summaryFilenameFor } from "../lib/downloads";
 
 export { buildLawyerSummary };
 
@@ -20,6 +21,7 @@ type Props = {
 // prepareLawyerSummary. PREP only: no send path in this code, not even
 // a disabled one — only copy-to-clipboard and local download.
 export default function LawyerSummary({
+  companyName,
   lawyerPackage,
   lawyerNote,
   onPrepare,
@@ -41,10 +43,11 @@ export default function LawyerSummary({
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "lawyer-summary.txt";
+    const filename = summaryFilenameFor(companyName);
+    link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
-    setNotice("Downloaded. Forward it yourself — this app does not send email.");
+    setNotice(`Downloaded ${filename}. Forward it yourself — this app does not send email.`);
   }
 
   return (

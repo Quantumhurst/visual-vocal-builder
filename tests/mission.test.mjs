@@ -114,6 +114,13 @@ test("spoken text keeps Inc. from being split as a sentence", () => {
   assert.match(spokenHostText(nameLine), /^Company name approved as Galactic Bagels Inc\./);
 });
 
+test("spoken text keeps company .txt filenames whole", () => {
+  const summary = "Downloaded galactic-bagels-summary.txt.";
+  const transcript = "Downloaded galactic-bagels-transcript.txt.";
+  assert.equal(spokenHostText(summary), summary);
+  assert.equal(spokenHostText(transcript), transcript);
+});
+
 test("spoken text is capped to two short sentences", () => {
   const long = "First sentence here. Second one follows! Third should be dropped? Fourth too.";
   assert.equal(spokenHostText(long), "First sentence here. Second one follows!");

@@ -51,6 +51,23 @@ test("volume, rate, pacing, transcript, save, and status are voice controls", ()
   assert.equal(parse("what's next"), "status");
 });
 
+test("download and close are voice controls, and close never targets the app", () => {
+  assert.equal(parse("download"), "download");
+  assert.equal(parse("download the file"), "download");
+  assert.equal(parse("download summary"), "download-summary");
+  assert.equal(parse("download the summary"), "download-summary");
+  assert.equal(parse("download transcript"), "download-transcript");
+  assert.equal(parse("download the transcript"), "download-transcript");
+  assert.equal(parse("close"), "close-transcript");
+  assert.equal(parse("close transcript"), "close-transcript");
+  assert.equal(parse("close the transcript"), "close-transcript");
+  assert.equal(parse("close it"), "close-transcript");
+  // Anything that names the app/browser falls through; there is no
+  // window.close path anywhere in the control handler.
+  assert.equal(parse("close the app"), null);
+  assert.equal(parse("close browser"), null);
+});
+
 test("real commands and questions fall through to the journey", () => {
   for (const text of [
     "Pick Mars",

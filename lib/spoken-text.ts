@@ -17,9 +17,13 @@ export function spokenHostText(text: string): string {
   const guarded = clean
     .replace(ABBREVIATION, "$1\u0001")
     .replace(/(\d)\.(\d)/g, "$1\u0002$2");
-  const sentences = (guarded.match(/[^.!?]+[.!?]+(?=\s|$)/g) ?? [guarded]).map((s) =>
-    s.replace(/\u0001/g, ".").replace(/\u0002/g, ".").trim(),
-  );
+  // Split at punctuation only when whitespace or end-of-line follows.
+  // A filename such as "galactic-bagels-summary.txt." must stay whole;
+  // the old regex could start a match after the dot and drop the prefix.
+  const sentences = guarded
+    .split(/(?<=[.!?])(?=\s|$)/)
+    .map((s) => s.replace(/\u0001/g, ".").replace(/\u0002/g, ".").trim())
+    .filter(Boolean);
   const capped = sentences.slice(0, 2).join(" ") || clean;
   return capped.length > 283 ? `${capped.slice(0, 280).trimEnd()}...` : capped;
 }

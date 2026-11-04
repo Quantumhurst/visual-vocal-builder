@@ -37,6 +37,8 @@ import { FILING_GUARD_REPLY, isFilingGuardQuestion } from "../lib/filing-guard";
 import { DEFAULT_VOICE_SETTINGS, applyVoiceControl, normalizeVoiceSettings, parseVoiceControl, settingsSummary, type VoiceControl, type VoiceSettings } from "../lib/voice-controls";
 import { clearSavedSession, progressSummary, saveSession, type TranscriptEntry } from "../lib/persistence";
 import { resumeSummary } from "../lib/resume";
+import { withCommander } from "../lib/commander";
+import { buildTranscriptFile, hasTranscriptContent, summaryFilename, transcriptFilename } from "../lib/downloads";
 import { FIRST_SPEAK_GREETING, hasFirstSpeakGreeting, markFirstSpeakGreeting } from "../lib/first-speak";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
 import { withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount, applyCompanyName, parseSpokenCompanyName } from "../lib/state-updates";
@@ -213,7 +215,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // not the generic "prepare the summary" fallback for a summary that is
   // already prepared.
   const [localHost, setLocalHost] = useState(() =>
-    resumed ? resumeSummary(bootState) : "",
+    resumed ? withCommander(resumeSummary(bootState)) : "",
   );
   const [turnError, setTurnError] = useState("");
   const [transcribeFailure, setTranscribeFailure] = useState<TranscribeFailure | null>(null);
@@ -287,6 +289,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     logRef.current = log;
   }, [log]);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const transcriptOpenRef = useRef(false);
+  useEffect(() => {
+    transcriptOpenRef.current = transcriptOpen;
+  }, [transcriptOpen]);
+  function setTranscriptVisibility(open: boolean) {
+    transcriptOpenRef.current = open;
+    setTranscriptOpen(open);
+  }
   // Recovery is visible state, never a console-only warning. The tracker
   // counts consecutive recoveries so the copy can escalate while the mic
   // keeps re-arming (a paused mic is a stall in a hands-free loop).
@@ -1156,14 +1166,15 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       nextLine = `Structure ${built + 1} of ${total}: ${nextItem?.label ?? "next structure"} — say “yes” to raise it.`;
     }
     const line = `${owners} ${owners === 1 ? "owner" : "owners"} confirmed — ${split}. ${nextLine}`;
+    const milestoneLine = withCommander(line);
     setEquityConfirm(false);
     setActiveModule(next === "complete" ? "summary" : next);
     setStageTab(next === "jurisdiction" ? "galaxy" : "colony");
-    setLocalHost(line);
+    setLocalHost(milestoneLine);
     playCue("highlight");
     if (voiceOn && unlockedRef.current) {
-      lastSpokenRef.current = spokenHostText(line);
-      speakNative(line);
+      lastSpokenRef.current = spokenHostText(milestoneLine);
+      speakNative(milestoneLine);
     }
   }
 
@@ -1542,7 +1553,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   function approveCompanyName(rawName?: string) {
     commit("name", (s) => applyCompanyName(s, rawName));
     const current = withDefaults(stateRef.current);
-    const line = nameApprovedLine(current);
+    const line = withCommander(nameApprovedLine(current));
     setLocalHost(line);
     setAck("");
     setActiveModule("equity");
@@ -1579,9 +1590,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
     summarySpeakTimerRef.current = null;
     setSummaryBuild(null);
-    setLocalHost(SUMMARY_READY_LINE);
-    lastSpokenRef.current = spokenHostText(SUMMARY_READY_LINE);
-    if (voiceOn && unlockedRef.current) speakNative(SUMMARY_READY_LINE);
+    const line = withCommander(SUMMARY_READY_LINE);
+    setLocalHost(line);
+    lastSpokenRef.current = spokenHostText(line);
+    if (voiceOn && unlockedRef.current) speakNative(line);
   }
 
   function finishSummaryBuild(token: number) {
@@ -1661,6 +1673,64 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }),
   });
 
+  // Short spoken/visible host feedback for downloads and the safe
+  // transcript close. These lines are not milestones, so no Commander.
+  function hostFeedback(line: string) {
+    setLocalHost(line);
+    if (voiceOn && unlockedRef.current) {
+      lastSpokenRef.current = spokenHostText(line);
+      speakNative(line);
+    }
+  }
+
+  function saveTextFile(filename: string, text: string): boolean {
+    if (typeof window === "undefined") return false;
+    try {
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.rel = "noopener";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function downloadSummaryNow() {
+    const current = withDefaults(stateRef.current);
+    if (!current.lawyerPackage.trim()) {
+      hostFeedback("No lawyer summary yet. Prepare the summary first.");
+      return;
+    }
+    const filename = summaryFilename(current);
+    if (!saveTextFile(filename, current.lawyerPackage)) {
+      hostFeedback("The browser blocked the download. Nothing was saved.");
+      return;
+    }
+    hostFeedback(`Downloaded ${filename}.`);
+  }
+
+  function downloadTranscriptNow() {
+    const current = withDefaults(stateRef.current);
+    const entries = logRef.current;
+    if (!hasTranscriptContent(entries)) {
+      hostFeedback("No transcript yet. Say something first.");
+      return;
+    }
+    const filename = transcriptFilename(current);
+    if (!saveTextFile(filename, buildTranscriptFile(entries, current))) {
+      hostFeedback("The browser blocked the download. Nothing was saved.");
+      return;
+    }
+    hostFeedback(`Downloaded ${filename}.`);
+  }
+
   // Every new turn starts with no displayed error. Last transcript and
   // host reply are separate state and are deliberately not cleared here.
   function clearTurnErrors() {
@@ -1680,7 +1750,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
     clearTurnErrors();
     commit("click", (s) => ({ ...s, selectedJurisdiction: jurisdiction }));
-    const line = nextObjectiveHostLine(withDefaults(stateRef.current));
+    const line = withCommander(nextObjectiveHostLine(withDefaults(stateRef.current)));
     setLocalHost(line);
     if (voiceOn && unlockedRef.current && spokenHostText(line) !== lastSpokenRef.current) {
       lastSpokenRef.current = spokenHostText(line);
@@ -1699,7 +1769,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
     switch (intent.kind) {
       case "jurisdiction":
-        return question || `${intent.jurisdiction} locked in.`;
+        return withCommander(question || `${intent.jurisdiction} locked in.`);
       case "equity":
       case "equity-split":
       case "owner-count":
@@ -1837,17 +1907,45 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         return true;
       }
       case "show-transcript": {
-        setTranscriptOpen(true);
-        const line = "Transcript open — every line from both sides is listed.";
-        setLocalHost(line);
-        if (voiceOn) speakNative(line);
+        setTranscriptVisibility(true);
+        hostFeedback("Transcript open — say “download transcript” or “close”.");
         return true;
       }
       case "hide-transcript": {
-        setTranscriptOpen(false);
-        const line = "Transcript hidden. Say “show transcript” to open it again.";
-        setLocalHost(line);
-        if (voiceOn) speakNative(line);
+        setTranscriptVisibility(false);
+        hostFeedback("Transcript hidden. Say “show transcript” to open it again.");
+        return true;
+      }
+      case "close-transcript": {
+        if (!transcriptOpenRef.current) {
+          hostFeedback("The transcript is not open.");
+          return true;
+        }
+        // Close only the transcript window. There is deliberately no
+        // window.close()/tab-close path anywhere in this handler.
+        setTranscriptVisibility(false);
+        hostFeedback("Transcript closed. Back to the journey.");
+        return true;
+      }
+      case "download": {
+        if (transcriptOpenRef.current) {
+          // The open transcript wins over the summary.
+          downloadTranscriptNow();
+          return true;
+        }
+        if (withDefaults(stateRef.current).lawyerPackage.trim()) {
+          downloadSummaryNow();
+          return true;
+        }
+        hostFeedback("Nothing to download yet — prepare the lawyer summary or open the transcript first.");
+        return true;
+      }
+      case "download-summary": {
+        downloadSummaryNow();
+        return true;
+      }
+      case "download-transcript": {
+        downloadTranscriptNow();
         return true;
       }
       case "save": {
@@ -1883,9 +1981,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         cancelSummaryBuild();
         clearHeldUtterance();
         commit("start-over", (s) => applyStartOver(s));
-        setTranscriptOpen(false);
+        setTranscriptVisibility(false);
         setEquityConfirm(false);
-        const line = `Fresh start. ${nextObjectiveHostLine(withDefaults(stateRef.current))}`;
+        const line = withCommander(`Fresh start. ${nextObjectiveHostLine(withDefaults(stateRef.current))}`);
         setLocalHost(line);
         if (voiceOn) speakNative(line);
         return true;
@@ -2174,7 +2272,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         const question = next === "complete"
           ? ""
           : getHostQuestion(next, shortFounderNames(stateRef.current.founders), stateRef.current.selectedJurisdiction);
-        line = `Fresh start.${question ? ` ${question}` : ""}`;
+        line = withCommander(`Fresh start.${question ? ` ${question}` : ""}`);
       } else {
         line = localFastLine(applied, stateRef.current);
       }
@@ -2846,7 +2944,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (consumeFirstSpeakGreeting()) {
       if (voiceOn && typeof window !== "undefined" && window.speechSynthesis) {
         refreshCachedVoice();
-        if (speakNative(FIRST_SPEAK_GREETING, () => { void startRecording(); })) {
+        const greeting = withCommander(FIRST_SPEAK_GREETING);
+        setLocalHost(greeting);
+        if (speakNative(greeting, () => { void startRecording(); })) {
           return;
         }
       }
@@ -3111,8 +3211,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       setConvoActive(true);
       const current = withDefaults(stateRef.current);
       const line = resumed
-        ? resumeSummary(current)
-        : FIRST_SPEAK_GREETING;
+        ? withCommander(resumeSummary(current))
+        : withCommander(FIRST_SPEAK_GREETING);
       setLocalHost(line);
       const begin = () => {
         if (convoRef.current && !recordingRef.current) void startRecording();
@@ -4048,7 +4148,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
             <div data-beat="summary" hidden={activeModule !== "summary"}>
               <LawyerSummary
                 view={view}
-                companyName={DEMO_COMPANY_NAME}
+                companyName={view.companyName || DEMO_COMPANY_NAME}
                 lawyerPackage={view.lawyerPackage}
                 lawyerNote={view.lawyerNote}
                 onPrepare={() => prepareLawyerPackage(true)}
@@ -4416,7 +4516,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
               className="btn"
               data-testid="transcript-toggle"
               aria-expanded={transcriptOpen}
-              onClick={() => setTranscriptOpen((open) => !open)}
+              onClick={() => setTranscriptVisibility(!transcriptOpen)}
             >
               {transcriptOpen ? "HIDE TRANSCRIPT" : "TRANSCRIPT"}
             </button>
@@ -4450,7 +4550,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
               <span className="eyebrow">FULL TRANSCRIPT</span>
               <h2>Everything said, both sides</h2>
             </div>
-            <button type="button" className="btn" onClick={() => setTranscriptOpen(false)}>
+            <button type="button" className="btn" onClick={() => setTranscriptVisibility(false)}>
               CLOSE
             </button>
           </header>

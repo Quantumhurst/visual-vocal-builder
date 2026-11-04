@@ -7,6 +7,7 @@
 
 import { beatProgress } from "./beat-progress.ts";
 import { getHostQuestion, shortFounderNames } from "./host-questions.ts";
+import { withCommander } from "./commander.ts";
 import type { SharedState } from "./state.ts";
 
 // The next required objective, in the same words the fallback host uses.
@@ -24,7 +25,7 @@ export function buildQuestionLine(state: SharedState): string {
   const built = state.checklist.filter((item) => item.done).length;
   const next = state.checklist.find((item) => !item.done);
   if (!next) {
-    return getHostQuestion("summary", shortFounderNames(state.founders), state.selectedJurisdiction);
+    return withCommander(getHostQuestion("summary", shortFounderNames(state.founders), state.selectedJurisdiction));
   }
   return `Structure ${built + 1} of ${total}: ${next.label} — ${built} of ${total} are up. Say “yes” to raise it.`;
 }
@@ -34,7 +35,7 @@ export function buildRaisedLine(state: SharedState, raisedLabel: string): string
   const built = state.checklist.filter((item) => item.done).length;
   const next = state.checklist.find((item) => !item.done);
   if (!next) {
-    return getHostQuestion("summary", shortFounderNames(state.founders), state.selectedJurisdiction);
+    return withCommander(getHostQuestion("summary", shortFounderNames(state.founders), state.selectedJurisdiction));
   }
   return `${raisedLabel} raised — ${built} of ${total} structures up. Next: ${next.label}, structure ${built + 1} of ${total} — say “yes”.`;
 }
@@ -51,10 +52,10 @@ export function checklistHostLine(state: SharedState): string {
   if (nextBeat === "summary") {
     // The question itself carries the next step; repeating a count here
     // would be a third sentence and the spoken-text cap would drop it.
-    return getHostQuestion("summary", shortFounderNames(state.founders), state.selectedJurisdiction);
+    return withCommander(getHostQuestion("summary", shortFounderNames(state.founders), state.selectedJurisdiction));
   }
   if (nextBeat === "complete") {
-    return `All ${total} structures online. Mission complete.`;
+    return withCommander(`All ${total} structures online. Mission complete.`);
   }
   return buildQuestionLine(state);
 }
