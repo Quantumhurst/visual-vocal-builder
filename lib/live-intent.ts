@@ -85,7 +85,11 @@ export function parseLiveIntent(text: string): LiveIntent | null {
   // Equity: a founder token and a percent, in either order.
   // "make orbit 70%", "make me 70%", "70% for nova", "set nova to 70 percent"
   const founderMatch = ownerName(lower);
-  const percentMatch = lower.match(/(\d{1,3})\s*(?:%|percent)/) ?? lower.match(/\bto\s+(\d{1,3})\b/);
+  const percentMatch =
+    lower.match(/(\d{1,3})\s*(?:%|percent)/) ??
+    lower.match(/\bto\s+(\d{1,3})\b/) ??
+    // Fast ASR often drops the word "percent": "make Nova 40".
+    lower.match(/\b(?:make|set|give)\s+\w+\s+(\d{1,3})\b/);
   if (founderMatch && percentMatch) {
     const percent = Number(percentMatch[1]);
     if (Number.isFinite(percent) && percent >= 0 && percent <= 100) {
@@ -147,9 +151,11 @@ export function parseLiveIntent(text: string): LiveIntent | null {
   // interim fragment is too easy to mishear to move state on.
   const tickPhrase = /\btick\s+(?:off\s+)?(?:the\s+)?(?:first|next|last|all|every|remaining|one|two|three|four|five|\d)\b/.test(lower)
     || /\btick\s+(?:off\s+)?(?:them|these|those|it|that)\b/.test(lower);
-  const checklistPhrase = /next\s+(?:checklist\s+)?step|mark (it|that|this)( one)? done|check (it|that|this)( off)?|that'?s done|done with (that|it)|advance|complete (that|the|this) step|move on|finish (the )?build|complete (the )?(checklist|build)/.test(lower) || tickPhrase;
+  const buildPhrase = /\b(?:build|raise|construct|put up)\b.*\b(?:next|one|first|second|third|fourth|fifth|all|every|remaining|structure|five)\b/.test(lower)
+    || /\b(?:build|raise)\s+(?:the\s+)?(?:next\s+)?structure\b/.test(lower);
+  const checklistPhrase = buildPhrase || /next\s+(?:checklist\s+)?step|mark (it|that|this)( one)? done|check (it|that|this)( off)?|that'?s done|done with (that|it)|advance|complete (that|the|this) step|move on|finish (the )?build|complete (the )?(checklist|build)/.test(lower) || tickPhrase;
   if (checklistPhrase) {
-    const all = /\b(?:finish|complete)\s+(?:the\s+)?(?:build|checklist)|tick\s+(?:off\s+)?(?:all|everything|every|the remaining)|mark\s+all\b/.test(lower);
+    const all = /\b(?:finish|complete)\s+(?:the\s+)?(?:build|checklist)|tick\s+(?:off\s+)?(?:all|everything|every|the remaining)|mark\s+all\b|\bbuild\s+(?:all|every|the\s+remaining|five|5)\b/.test(lower);
     const countMatch = lower.match(/\b(?:first|next|last)\s+(one|two|three|four|five|\d+)\s+(?:checklist\s+)?(?:items?|steps?)\b/)
       ?? lower.match(/\b(?:first|next|last)\s+(one|two|three|four|five|\d+)\b/);
     const count: ChecklistAdvanceCount = all ? "all" : (countFrom(countMatch?.[1]) ?? 1);
@@ -186,12 +192,23 @@ export function parseLiveIntent(text: string): LiveIntent | null {
 // the batch upload used to force a manual Stop click).
 
 export const SPEECH_RMS = 0.012;
-export const SILENCE_TO_STOP_MS = 1100;
+// A natural pause ends the turn. The default is deliberately generous
+// for slow or atypical speech; a recognised command may finish sooner,
+// and slow mode waits much longer.
+export const SILENCE_TO_STOP_MS = 1400;
 export const MIN_SPEECH_MS = 150;
 // Shorter stop pause once a live intent (a command, never a question) has
 // already matched in the current recording — the turn is recognised, so a
-// shorter pause sends it sooner. Questions keep the full 1100 ms.
-export const INTENT_SILENCE_TO_STOP_MS = 600;
+// shorter pause sends it sooner. Questions keep the full pause.
+export const INTENT_SILENCE_TO_STOP_MS = 900;
+// Slow mode: no streaming ASR, local endpointing only.
+export const SLOW_SILENCE_TO_STOP_MS = 2800;
+export const SLOW_INTENT_SILENCE_TO_STOP_MS = 2200;
+
+export function autoStopSilence(slowMode: boolean, intentMatched: boolean): number {
+  if (slowMode) return intentMatched ? SLOW_INTENT_SILENCE_TO_STOP_MS : SLOW_SILENCE_TO_STOP_MS;
+  return intentMatched ? INTENT_SILENCE_TO_STOP_MS : SILENCE_TO_STOP_MS;
+}
 
 export function rmsLevel(samples: Float32Array): number {
   if (!samples || samples.length === 0) return 0;

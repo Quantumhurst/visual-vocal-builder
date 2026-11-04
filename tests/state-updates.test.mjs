@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount } from "../lib/state-updates.ts";
+import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount, applyCompanyName, normalizeCompanyName, parseSpokenCompanyName } from "../lib/state-updates.ts";
 import { DEMO_JURISDICTIONS } from "../lib/demo-data.ts";
 
 const base = () => withDefaults(null);
@@ -68,6 +68,7 @@ test("applyStartOver keeps transcript, resets canvas", () => {
   assert.equal(out.selectedJurisdiction, null);
   assert.equal(out.founders[0].percent, 60);
   assert.equal(out.checklist.filter((i) => i.done).length, 0);
+  assert.equal(out.companyName, "");
   assert.equal(out.lawyerPackage, "");
 });
 test("applyFocusJurisdiction does not change selection", () => {
@@ -83,23 +84,34 @@ test("cheapestByNumber returns Europa with sameCurrency false", () => {
   assert.match(c.fee, /DEMO 400/);
   assert.equal(c.sameCurrency, false);
 });
-test("applyLawyerSummary gates the company name until the checklist is 5/5", () => {
+test("applyLawyerSummary uses the name the founder approved, never an assumed one", () => {
   const unnamed = applyLawyerSummary(base());
   assert.equal(unnamed.currentBeat, "summary");
   assert.match(unnamed.lawyerPackage, /company name not chosen yet/);
   assert.doesNotMatch(unnamed.lawyerPackage, /Galactic Bagels/);
   assert.match(unnamed.lawyerNote, /does not send email/);
 
-  const namedOnly = applyLawyerSummary(applyChecklistItem(base(), "check-name", true));
-  assert.match(namedOnly.lawyerPackage, /company name not chosen yet/);
-  assert.doesNotMatch(namedOnly.lawyerPackage, /Galactic Bagels/);
-
-  const complete = base().checklist.reduce(
+  // Ticking the "Pick a company name" structure is not approval.
+  const builtOnly = base().checklist.reduce(
     (state, item) => applyChecklistItem(state, item.id, true),
     base(),
   );
-  const named = applyLawyerSummary(complete);
+  assert.match(applyLawyerSummary(builtOnly).lawyerPackage, /company name not chosen yet/);
+
+  const approved = applyCompanyName(builtOnly, undefined);
+  assert.equal(approved.currentBeat, "name");
+  assert.match(approved.companyName, /^Galactic Bagels Inc\. \(fictional\)$/);
+  const named = applyLawyerSummary(approved);
   assert.match(named.lawyerPackage, /Galactic Bagels/);
+});
+
+test("normalizeCompanyName always marks a fictional demo name", () => {
+  assert.match(normalizeCompanyName(""), /Galactic Bagels/);
+  assert.equal(normalizeCompanyName("Cosmic Donuts"), "Cosmic Donuts (fictional)");
+  assert.equal(normalizeCompanyName("Cosmic Donuts (fictional)"), "Cosmic Donuts (fictional)");
+  assert.equal(normalizeCompanyName("  Starlight   Coffee  "), "Starlight Coffee (fictional)");
+  assert.equal(parseSpokenCompanyName("call it Cosmic Donuts"), "Cosmic Donuts");
+  assert.equal(parseSpokenCompanyName("approve Galactic Bagels"), null);
 });
 
 test("applyOwnerCount supports 1–5 owners and keeps the split at 100", () => {

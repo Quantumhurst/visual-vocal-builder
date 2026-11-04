@@ -5,6 +5,7 @@ export const AGENT_ACTIONS = {
   setChecklistItem: "setChecklistItem",
   setChecklistItems: "setChecklistItems",
   advanceChecklist: "advanceChecklist",
+  approveCompanyName: "approveCompanyName",
   showRolloverFact: "showRolloverFact",
   showFilingSteps: "showFilingSteps",
   prepareLawyerSummary: "prepareLawyerSummary",

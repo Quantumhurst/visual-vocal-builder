@@ -12,6 +12,7 @@ export function turnResultSignature(state: SharedState, hostText: string): strin
     selected: state.selectedJurisdiction,
     founders: state.founders.map((f) => `${f.name}:${f.percent}`),
     checklistDone: state.checklist.map((i) => (i.done ? "1" : "0")).join(""),
+    companyName: state.companyName,
     rollover: state.rolloverCard ? state.rolloverCard.factId : state.rolloverNote,
     filing: state.filingStepsCard
       ? state.filingStepsCard.facts.map((f) => f.factId).join(",")
@@ -43,6 +44,7 @@ const FIELD_BEATS: [string, string][] = [
   ["selected", "jurisdiction"],
   ["founders", "equity"],
   ["checklistDone", "checklist"],
+  ["companyName", "name"],
   ["filing", "filingsteps"],
   ["rollover", "rollover"],
   ["lawyer", "summary"],

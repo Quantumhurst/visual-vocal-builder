@@ -13,6 +13,7 @@ export type EnqueueOptions = {
   role?: UtteranceRole;
   rate?: number;
   pitch?: number;
+  volume?: number;
   // The caller's curated voice. It must be applied BEFORE speak() so browsers
   // that snapshot the utterance at synthesis time use the selected voice.
   voice?: SpeechSynthesisVoice | null;
@@ -73,6 +74,7 @@ export class SurvivingSpeechQueue {
       if (voice) utterance.voice = voice;
       utterance.rate = options.rate ?? 1.05;
       utterance.pitch = options.pitch ?? 1;
+      utterance.volume = Math.min(1, Math.max(0, options.volume ?? 1));
 
       this.activeUtterances.add(utterance);
 

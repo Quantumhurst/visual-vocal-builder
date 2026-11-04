@@ -50,6 +50,7 @@ export function buildLawyerSummary(
 export function lawyerPackageFingerprint(view: SharedState): string {
   return JSON.stringify({
     jurisdiction: view.selectedJurisdiction,
+    companyName: view.companyName,
     founders: view.founders.map((founder) => [founder.name, founder.percent]),
     checklist: view.checklist.map((item) => [item.id, item.label, item.done]),
     equityNote: view.equityNote,

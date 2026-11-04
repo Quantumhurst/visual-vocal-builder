@@ -3,11 +3,18 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checklistHostLine, equityConfirmationLine, nextObjectiveHostLine } from "../lib/build-host.ts";
-import { applyOwnerCount } from "../lib/state-updates.ts";
+import {
+  checklistHostLine,
+  equityConfirmationLine,
+  nameApprovalLine,
+  nextObjectiveHostLine,
+  rolloverLearnLine,
+} from "../lib/build-host.ts";
+import { applyOwnerCount, applyRolloverFact } from "../lib/state-updates.ts";
 import { CHECKLIST_PACK } from "../lib/knowledge.ts";
 import {
   applyChecklistItem,
+  applyCompanyName,
   applyEquity,
   applyJurisdiction,
   withDefaults,
@@ -19,8 +26,8 @@ test("after the equity split, the host line hands off to the build queue", () =>
   let state = applyJurisdiction(base(), "Mars");
   state = applyEquity(state, 0, 70, "test");
   const line = nextObjectiveHostLine(state);
-  assert.match(line, /filing step from the five on the left/i);
-  assert.match(line, /tick next step/i);
+  assert.match(line, /Build the colony/i);
+  assert.match(line, /Build the next structure/i);
 });
 
 test("a checklist click reports the real count and names the next step", () => {
@@ -32,15 +39,35 @@ test("a checklist click reports the real count and names the next step", () => {
   assert.match(line, /Next: Pick a company name\./);
 });
 
-test("the fifth structure hands off to the lawyer summary", () => {
+test("the fifth structure hands off to the company-name approval", () => {
   let state = applyJurisdiction(base(), "Mars");
   state = applyEquity(state, 0, 70, "test");
   for (const fact of CHECKLIST_PACK.facts) {
     state = applyChecklistItem(state, fact.factId, true);
   }
   const line = checklistHostLine(state);
-  assert.match(line, /^All 5 structures online\./);
-  assert.match(line, /lawyer summary package/i);
+  assert.match(line, /Colony complete — five of five/);
+  assert.match(line, /Approve Galactic Bagels/);
+  // Two sentences, so the spoken-text cap never drops the question.
+  assert.ok((line.match(/[.!?](?:\s|$)/g) ?? []).length <= 2);
+});
+
+test("the explicit name-approval line is the same question the banner shows", () => {
+  let state = applyJurisdiction(base(), "Mars");
+  state = applyEquity(state, 0, 70, "test");
+  for (const fact of CHECKLIST_PACK.facts) {
+    state = applyChecklistItem(state, fact.factId, true);
+  }
+  assert.match(nameApprovalLine(state), /Colony complete — five of five/);
+  assert.match(nameApprovalLine(state), /Approve Galactic Bagels/);
+  assert.match(nameApprovalLine(state), /Call it/);
+});
+
+test("the rollover lesson speaks the grounded pack sentence verbatim", () => {
+  const state = applyRolloverFact(base(), "s85-what-it-is", "what is a section 85 rollover?");
+  const line = rolloverLearnLine(state);
+  assert.match(line, /^Under s\.85\(1\) of the Canada Income Tax Act/);
+  assert.ok(line.length <= 283);
 });
 
 test("unticking reports the reduced count and the reopened step", () => {
@@ -59,6 +86,8 @@ test("all required work complete uses a complete line, not a stale question", ()
   for (const fact of CHECKLIST_PACK.facts) {
     state = applyChecklistItem(state, fact.factId, true);
   }
+  state = applyCompanyName(state);
+  state = applyRolloverFact(state, "s85-what-it-is", "what is s.85?");
   state = { ...state, lawyerPackage: "package" };
   assert.equal(nextObjectiveHostLine(state), "Mission complete — colony founded.");
 });

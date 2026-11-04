@@ -4,10 +4,17 @@ import { getHostQuestion, getLatestAssistantText, resolveHostPrompt, shouldSpeak
 
 test("jurisdiction fallback", () => { assert.match(getHostQuestion("jurisdiction"), /Mars, Europa, or Andromeda/); });
 test("equity fallback uses founder names", () => { const q = getHostQuestion("equity", ["Nova", "Orbit"]); assert.match(q, /Nova/); assert.match(q, /Orbit/); assert.match(q, /100% equity/); });
-test("checklist fallback", () => { assert.match(getHostQuestion("checklist"), /filing step/); });
-test("rollover fallback", () => { assert.match(getHostQuestion("rollover"), /s\.85 rollover/); });
-test("filingsteps fallback", () => { assert.match(getHostQuestion("filingsteps"), /filing steps and fees/); });
-test("summary fallback", () => { assert.match(getHostQuestion("summary"), /lawyer summary package/); });
+test("checklist fallback", () => {
+  assert.match(getHostQuestion("checklist"), /Build the next structure/);
+  assert.match(getHostQuestion("checklist"), /Finish the build/);
+});
+test("name fallback asks for the exact approval", () => {
+  assert.match(getHostQuestion("name"), /Approve Galactic Bagels/);
+  assert.match(getHostQuestion("name"), /Call it/);
+});
+test("rollover fallback", () => { assert.match(getHostQuestion("rollover"), /Explain section 85/); });
+test("filingsteps fallback is optional", () => { assert.match(getHostQuestion("filingsteps"), /optional/i); });
+test("summary fallback", () => { assert.match(getHostQuestion("summary"), /Prepare the lawyer summary/); });
 test("tool-call-only turn yields fallback, not empty box", () => {
   const msgs = [{ role: "assistant", content: "" }, { role: "assistant", content: [{ type: "tool-call", name: "x" }] }];
   assert.equal(getLatestAssistantText(msgs), null);

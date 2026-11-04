@@ -32,12 +32,15 @@ import type { SharedState } from "../lib/state";
 import TrustStrip from "./TrustStrip";
 import { verifyPaintedCards } from "../lib/verifier";
 import { getHostQuestion, resolveHostPrompt, shortFounderNames, shouldSpeakFallbackQuestion, type Beat } from "../lib/host-questions";
-import { checklistHostLine, equityConfirmationLine, nextObjectiveHostLine } from "../lib/build-host";
+import { checklistHostLine, equityConfirmationLine, nameApprovalLine, nextObjectiveHostLine, rolloverLearnLine } from "../lib/build-host";
 import { isChangeAnswer, isConfirmationAnswer } from "../lib/confirmation";
 import { FILING_GUARD_REPLY, isFilingGuardQuestion } from "../lib/filing-guard";
+import { rolloverFactIdFor } from "../lib/knowledge";
+import { DEFAULT_VOICE_SETTINGS, applyVoiceControl, normalizeVoiceSettings, parseVoiceControl, settingsSummary, type VoiceControl, type VoiceSettings } from "../lib/voice-controls";
+import { clearSavedSession, progressSummary, saveSession, type TranscriptEntry } from "../lib/persistence";
 import { FIRST_SPEAK_GREETING, hasFirstSpeakGreeting, markFirstSpeakGreeting } from "../lib/first-speak";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
-import { INITIAL_STATE, withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount } from "../lib/state-updates";
+import { withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyRolloverFact, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount, applyCompanyName, parseSpokenCompanyName } from "../lib/state-updates";
 import { pushHistory, popHistory, statesEqual, type HistoryEntry } from "../lib/history";
 import { describeChange, currentStateSummary } from "../lib/describe-change";
 import { REQUIRED_BEATS, beatProgress } from "../lib/beat-progress";
@@ -60,7 +63,7 @@ import { checklistNoopReply, isNothingDoneAnswer, isCompanyNameQuestion, company
 import { turnResultSignature } from "../lib/scroll";
 import confetti from "canvas-confetti";
 import { MAX_PCM_BYTES } from "../lib/request-guard";
-import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, IDLE_ACTIVITY, SILENCE_TO_STOP_MS, INTENT_SILENCE_TO_STOP_MS, MIN_SPEECH_MS, type LiveIntent, type VoiceActivity } from "../lib/live-intent";
+import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, autoStopSilence, IDLE_ACTIVITY, MIN_SPEECH_MS, type LiveIntent, type VoiceActivity } from "../lib/live-intent";
 import { queueTurn, flushQueuedTurn, QUEUED_TURN_NOTICE } from "../lib/turn-queue";
 import { AnnouncementBudget } from "../lib/announcements";
 import { cueForChange, CUES, type CueName } from "../lib/sound-cues";
@@ -116,15 +119,42 @@ const FAST_INTENT_KINDS: ReadonlySet<LiveIntent["kind"]> = new Set([
 
 const activeVoiceTurnRef = { current: false };
 
-function Canvas() {
+export type CanvasProps = {
+  autoStart?: boolean;
+  resumed?: boolean;
+  initialState?: Partial<SharedState> | null;
+  initialSettings?: Partial<VoiceSettings> | null;
+  initialLog?: TranscriptEntry[] | null;
+};
+
+function Canvas({ autoStart = false, resumed = false, initialState, initialSettings, initialLog }: CanvasProps) {
+  const [bootState] = useState<SharedState>(() => withDefaults(initialState));
+  const [bootSettings] = useState<VoiceSettings>(() =>
+    normalizeVoiceSettings(initialSettings ?? DEFAULT_VOICE_SETTINGS),
+  );
   const { state, setState } = useCoAgent<SharedState>({
     name: "vvb",
-    initialState: INITIAL_STATE,
+    initialState: bootState,
   });
-  // Before the provider syncs agent state, `state` is undefined — and it can
-  // also arrive as an empty or partial object. Merge over the initial state
-  // so every render read has a value; never dereference `state` directly.
-  const view = withDefaults(state);
+  // The canvas renders from a local authoritative copy. CopilotKit's
+  // initial co-agent state can land a beat after mount; in a voice-first
+  // flow the user may already have spoken, and that late initial sync
+  // must never erase a real selection (the "Mars locked in" line with an
+  // UNSET board bug). Once this session writes locally, the local copy
+  // wins and the agent is kept in sync through setState.
+  const [localState, setLocalState] = useState<SharedState>(bootState);
+  // A resumed boot is already authoritative: do not let a late initial
+  // co-agent sync replace the saved run with an empty starting state.
+  const localTouchedRef = useRef(Boolean(initialState));
+  const view = localState;
+  useEffect(() => {
+    if (localTouchedRef.current || !state) return;
+    const external = withDefaults(state);
+    if (!statesEqual(external, stateRef.current)) {
+      stateRef.current = external;
+      setLocalState(external);
+    }
+  }, [state]);
   // Day 5: separate verifier over the painted cards (pure, on state
   // change, outside the voice turn path — it never blocks a turn).
   const verification = verifyPaintedCards(view);
@@ -154,8 +184,12 @@ function Canvas() {
   const [announcement, setAnnouncement] = useState<{ id: number; text: string } | null>(null);
   // A locally spoken host line for the deterministic fast lane. It also
   // becomes the visible host prompt, so the text and the voice agree.
-  const [localHost, setLocalHost] = useState("");
-  const [namePromptActive, setNamePromptActive] = useState(false);
+  // A resumed run opens with the saved progress line on screen and spoken,
+  // not the generic "prepare the summary" fallback for a summary that is
+  // already prepared.
+  const [localHost, setLocalHost] = useState(() =>
+    resumed ? `Welcome back. ${progressSummary(bootState)}. Say “Show transcript” or “Start over”.` : "",
+  );
   const [turnError, setTurnError] = useState("");
   const [transcribeFailure, setTranscribeFailure] = useState<TranscribeFailure | null>(null);
   const [hasLastAudio, setHasLastAudio] = useState(false);
@@ -187,6 +221,9 @@ function Canvas() {
   const asrSocketRef = useRef<WebSocket | null>(null);
   const streamingReadyRef = useRef(false);
   const activeTurnIdRef = useRef(0);
+  const asrLastEventAtRef = useRef(0);
+  const bufferedFallbackTurnRef = useRef<number | null>(null);
+  const completedStreamingTurnRef = useRef<number | null>(null);
   const isTurnListeningRef = useRef(false);
   const announcementBudgetRef = useRef(new AnnouncementBudget());
   const announcementIdRef = useRef(0);
@@ -210,9 +247,42 @@ function Canvas() {
   }, [view]);
   const historyRef = useRef<HistoryEntry[]>([]);
   const [historySize, setHistorySize] = useState(0);
-  // Game layer: sound cues + spoken host + mission celebration.
-  const [soundOn, setSoundOn] = useState(true);
-  const [voiceOn, setVoiceOn] = useState(true);
+  // Voice settings are the single source for rate, volume, cues, pacing,
+  // and on/off. They are changeable by voice and persisted with the run.
+  const [settings, setSettings] = useState<VoiceSettings>(bootSettings);
+  const settingsRef = useRef(settings);
+  const voiceOn = settings.voiceOn;
+  const soundOn = settings.soundOn;
+  // Full transcript: every heard command and every host line, available
+  // on screen and by voice ("show transcript").
+  const [log, setLog] = useState<TranscriptEntry[]>(() => (initialLog ?? []).slice(-240));
+  const logRef = useRef(log);
+  useEffect(() => {
+    logRef.current = log;
+  }, [log]);
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [savedNotice, setSavedNotice] = useState("");
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+
+  function updateVoiceSettings(patch: Partial<VoiceSettings>) {
+    const next = normalizeVoiceSettings({ ...settingsRef.current, ...patch });
+    settingsRef.current = next;
+    setSettings(next);
+    return next;
+  }
+
+  function appendLog(role: TranscriptEntry["role"], text: string) {
+    const clean = (text ?? "").trim();
+    if (!clean) return;
+    setLog((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && last.role === role && last.text === clean) return prev;
+      return [...prev, { role, text: clean, at: Date.now() }].slice(-240);
+    });
+  }
+
   // True while the host voice is actually speaking. The mic stays closed
   // during this window, and the deck says so instead of claiming LIVE.
   const [hostSpeaking, setHostSpeaking] = useState(false);
@@ -227,8 +297,13 @@ function Canvas() {
   // Game shell: which system panel is open, which viewport is up, and a
   // light mission clock. These are presentation state only — every fact
   // still comes from the same shared state and appliers.
-  const [activeModule, setActiveModule] = useState<SharedState["currentBeat"]>("jurisdiction");
-  const [stageTab, setStageTab] = useState<"galaxy" | "colony">("galaxy");
+  const [activeModule, setActiveModule] = useState<SharedState["currentBeat"]>(() => {
+    const beat = missionFor(bootState).beat;
+    return beat === "complete" ? bootState.currentBeat : beat;
+  });
+  const [stageTab, setStageTab] = useState<"galaxy" | "colony">(
+    bootState.selectedJurisdiction ? "colony" : "galaxy",
+  );
   // Equity/owner changes pause here: the split is already applied through
   // the one invariant path, but the cockpit does not advance to BUILD
   // until the user confirms the visible split.
@@ -260,11 +335,6 @@ function Canvas() {
   useEffect(() => {
     equityConfirmRef.current = equityConfirm;
   }, [equityConfirm]);
-  const namePromptActiveRef = useRef(namePromptActive);
-  useEffect(() => {
-    namePromptActiveRef.current = namePromptActive;
-  }, [namePromptActive]);
-
   function logToolCall() {
     stampTiming("firstToolCall");
   }
@@ -285,6 +355,16 @@ function Canvas() {
   // the synchronous guard; sessionStorage is the cross-reload marker.
   const firstSpeakHandledRef = useRef(false);
   const lastSpokenRef = useRef("");
+  const lastHostLineRef = useRef("");
+  const eventsRef = useRef<string[]>([]);
+  const audioStatsRef = useRef({ blocks: 0, hostDropped: 0, listeningDropped: 0 });
+  function logEvent(line: string) {
+    eventsRef.current.push(`${Math.round(performance.now())} ${line}`);
+    if (eventsRef.current.length > 300) eventsRef.current.shift();
+    if (typeof window !== "undefined") {
+      (window as unknown as { __vvbEvents?: string[] }).__vvbEvents = [...eventsRef.current];
+    }
+  }
   const prevDoneCountRef = useRef(-1);
   // Voice pre-warm: cache the picked system voice, re-pick once when
   // the browser finishes loading voices, preload on first gesture.
@@ -423,7 +503,8 @@ function Canvas() {
   // Synthesised cues only (no assets). Browsers refuse audio before a
   // user gesture, so cues stay silent until the first interaction.
   function playCue(name: CueName) {
-    if (!soundOn || !unlockedRef.current || typeof window === "undefined") return;
+    if (!settingsRef.current.soundOn || settingsRef.current.sound <= 0.01) return;
+    if (!unlockedRef.current || typeof window === "undefined") return;
     try {
       const ctx = sfxCtxRef.current ?? new AudioContext();
       sfxCtxRef.current = ctx;
@@ -437,7 +518,7 @@ function Canvas() {
         osc.frequency.value = note.freq;
         const start = t0 + note.atMs / 1000;
         gain.gain.setValueAtTime(0.0001, start);
-        gain.gain.exponentialRampToValueAtTime(0.12, start + 0.015);
+        gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.14 * settingsRef.current.sound), start + 0.015);
         gain.gain.exponentialRampToValueAtTime(0.0001, start + note.durMs / 1000);
         osc.connect(gain).connect(ctx.destination);
         osc.start(start);
@@ -500,20 +581,30 @@ function Canvas() {
   // voice actually on this machine (enhanced/natural beats the robotic
   // default) with question/statement prosody. No downloads, no model.
   function speakNative(text: string, onDone?: () => void) {
-    if (typeof window === "undefined" || !window.speechSynthesis) return false;
+    if (typeof window === "undefined") return false;
     const spoken = spokenHostText(text);
     if (!spoken) return false;
-    echoFilter.recordHostSpeech(spoken);
+    lastHostLineRef.current = spoken;
+    appendLog("host", spoken);
     if (typeof window !== "undefined") {
       const win = window as unknown as { __vvbLastSpoken?: string; __vvbAllSpoken?: string[] };
       win.__vvbLastSpoken = spoken;
       win.__vvbAllSpoken = win.__vvbAllSpoken ?? [];
       win.__vvbAllSpoken.push(spoken);
     }
+    // Muted or no speech engine: the line is still visible, logged, and
+    // repeatable. Callers still get their completion callback.
+    if (!settingsRef.current.voiceOn || settingsRef.current.volume <= 0.01 || !window.speechSynthesis) {
+      onDone?.();
+      return true;
+    }
+    echoFilter.recordHostSpeech(spoken);
     try {
       refreshCachedVoice();
       const voice = cachedVoiceRef.current ?? pickVoice(window.speechSynthesis.getVoices());
-      const { rate, pitch } = prosodyFor(spoken);
+      const base = prosodyFor(spoken);
+      const rate = Math.min(1.6, Math.max(0.5, base.rate * settingsRef.current.rate));
+      const pitch = base.pitch;
       clearSpeechWatchdog();
       utterCancelledRef.current = false;
       hostSpeakingRef.current = true;
@@ -534,6 +625,7 @@ function Canvas() {
         role: "CONTENT",
         rate,
         pitch,
+        volume: settingsRef.current.volume,
         voice,
         onDone: () => {
           stampTiming("speechEnd");
@@ -582,10 +674,20 @@ function Canvas() {
     );
   }
 
+  // One local write path for the canvas. Every state change updates the
+  // view immediately and pushes the same object to the agent.
+  function writeShared(next: SharedState) {
+    localTouchedRef.current = true;
+    stateRef.current = next;
+    setLocalState(next);
+    setState(next);
+  }
+
   function commit(label: string, fn: (s: SharedState) => SharedState): string {
     const before = withDefaults(stateRef.current);
     const after = fn(before);
     const changed = !statesEqual(before, after);
+    logEvent(`commit ${label} changed=${changed} sel=${String(after.selectedJurisdiction)} name=${JSON.stringify(after.companyName)}`);
     if (changed) {
       historyRef.current = pushHistory(historyRef.current, before, label, performance.now());
       setHistorySize(historyRef.current.length);
@@ -625,8 +727,12 @@ function Canvas() {
         // required beat, open the next one in the same handler. 5/5
         // moves to LAUNCH; equity waits for confirmation above.
         if (afterNext !== "complete" && afterNext !== beforeNext) {
-          setActiveModule(afterNext);
-          setStageTab(afterNext === "jurisdiction" ? "galaxy" : "colony");
+          // Keep the grounded s.85 card on screen when it is painted: the
+          // next step is visible in the mission banner, not by hiding the
+          // fact the user just asked to learn.
+          const openModule = after.currentBeat === "rollover" ? "rollover" : afterNext;
+          setActiveModule(openModule);
+          setStageTab(openModule === "jurisdiction" ? "galaxy" : "colony");
         }
       }
       if (selectionChanged && after.selectedJurisdiction) {
@@ -648,8 +754,7 @@ function Canvas() {
         }
       }
     }
-    stateRef.current = after;
-    setState(after);
+    writeShared(after);
     stampTiming("firstPaint");
     const cue = cueForChange(before, after);
     if (cue) playCue(cue);
@@ -663,8 +768,7 @@ function Canvas() {
     setHistorySize(stack.length);
     const restored: SharedState = { ...entry.state, transcript: current.transcript };
     const summary = describeChange(current, restored);
-    stateRef.current = restored;
-    setState(restored);
+    writeShared(restored);
     setEquityConfirm(false);
     setActiveModule(restored.selectedJurisdiction && restored.currentBeat === "jurisdiction" ? "equity" : restored.currentBeat);
     setStageTab(restored.selectedJurisdiction ? "colony" : "galaxy");
@@ -697,9 +801,10 @@ function Canvas() {
     if (itemId === "check-name" && done) {
       const built = current.checklist.filter((i) => i.done).length;
       const total = current.checklist.length;
-      const undoneNext = current.checklist.find((i) => !i.done);
       setLocalHost(
-        `Company name confirmed as Galactic Bagels Inc. (fictional) — ${built} of ${total} structures online.${undoneNext ? ` Next: ${undoneNext.label}.` : ""}`
+        built >= total
+          ? nameApprovalLine(current)
+          : `Name prepared: Galactic Bagels Inc. (fictional). ${built} of ${total} structures online. The name is approved as its own step after 5/5.`,
       );
     } else {
       setLocalHost(checklistHostLine(current));
@@ -735,7 +840,7 @@ function Canvas() {
     endpointerRef.current = new HybridEndpointer(
       () => ({
         equityConfirm: equityConfirmRef.current,
-        namePromptActive: namePromptActiveRef.current,
+        namePromptActive: false,
       }),
       {
         stabilityMs: 250,
@@ -751,7 +856,7 @@ function Canvas() {
             setLivePreview(null);
             setLiveTranscript(rawText);
             setLastTranscript(rawText);
-            setState((prev) => ({ ...withDefaults(prev), transcript: rawText }));
+            writeShared({ ...withDefaults(stateRef.current), transcript: rawText });
             setAck("");
             confirmEquitySelection();
           } else if (cmd.kind === "APPROVE_NAME") {
@@ -865,7 +970,7 @@ function Canvas() {
     };
     noSpeechAttemptsRef.current = 0;
 
-    if (equityConfirm && isConfirmationAnswer(trimmed)) {
+    if (equityConfirmRef.current && isConfirmationAnswer(trimmed)) {
       intentMatchedRef.current = true;
       setLivePreview({ key: "confirm-equity", label: "Confirming equity split…", status: "live" });
       // Fast endpointing: short affirmative answers ("yes", "confirm", "split")
@@ -883,22 +988,18 @@ function Canvas() {
       return;
     }
 
-    if (namePromptActive && isNameApproval(trimmed)) {
+    clearConfirmationTimer();
+
+    if (beatProgress(stateRef.current).nextBeat === "name" && isNameApproval(trimmed)) {
       intentMatchedRef.current = true;
-      setLivePreview({ key: "approve-name", label: "Approving company name: Galactic Bagels Inc. (fictional)…", status: "live" });
-      clearConfirmationTimer();
-      confirmationTimerRef.current = setTimeout(() => {
-        if (recordingRef.current && !finishingRef.current) {
-          if (streamingReadyRef.current && endpointerRef.current) {
-            endpointerRef.current.forceFastCommitNow(trimmed);
-          } else {
-            void finishRecording();
-          }
-        }
-      }, isFinal ? 150 : 350);
+      setLivePreview({ key: "approve-name", label: "Approving Galactic Bagels Inc. (fictional)…", status: "live" });
+      if (isFinal) {
+        setTimeout(() => {
+          if (recordingRef.current && !finishingRef.current) void finishRecording();
+        }, 150);
+      }
       return;
     }
-    clearConfirmationTimer();
 
     if (isCompanyNameQuestion(trimmed)) {
       intentMatchedRef.current = true;
@@ -1133,9 +1234,31 @@ function Canvas() {
   // Day 3: lawyer-summary package display. The Prepare button and this
   // agent action share buildLawyerSummary() over shared state — one
   // package, rendered on the canvas. Prep only; nothing is sent.
+  function approveCompanyName(rawName?: string) {
+    commit("name", (s) => applyCompanyName(s, rawName));
+    const current = withDefaults(stateRef.current);
+    const line = `Company name approved as ${current.companyName}. Say “Explain section 85” to see the grounded rollover fact.`;
+    setLocalHost(line);
+    setAck("");
+    setActiveModule("rollover");
+    setStageTab("colony");
+    if (voiceOn && unlockedRef.current) {
+      lastSpokenRef.current = spokenHostText(line);
+      speakNative(line);
+    }
+  }
+
   function prepareLawyerPackage() {
+    const current = withDefaults(stateRef.current);
+    const next = beatProgress(current).nextBeat;
+    if (next !== "summary" && next !== "complete") {
+      const line = `Not yet — ${nextObjectiveHostLine(current)}`;
+      setLocalHost(line);
+      if (voiceOn && unlockedRef.current) speakNative(line);
+      return;
+    }
     commit("summary", (s) => applyLawyerSummary(s));
-    setLocalHost("Summary prepared — copy or download it; nothing is sent.");
+    setLocalHost("Summary prepared — copy or download it. Mission complete: nothing was filed and nothing was sent.");
   }
 
   useCopilotAction({
@@ -1196,7 +1319,9 @@ function Canvas() {
         if (next === "checklist") {
           return `${built} of ${total} structures online. Tick the next step or finish the build.`;
         }
-        return `${built} of ${total} structures online.${question ? ` ${question}` : ""}`;
+        // At 5/5 the next question already says "five of five"; do not
+        // prepend a third sentence the speech cap would cut.
+        return question || `${built} of ${total} structures online.`;
       }
       case "cheapest": {
         const cheapest = cheapestByNumber(DEMO_JURISDICTIONS);
@@ -1206,7 +1331,7 @@ function Canvas() {
         return `DEMO cheapest by number: ${cheapest.name} (${cheapest.fee}). ${currency}${question ? ` ${question}` : ""}`;
       }
       case "lawyer-summary":
-        return "Summary prepared — copy or download it; nothing is sent.";
+        return "Summary prepared — copy or download it. Mission complete: nothing was filed and nothing was sent.";
       default:
         return "";
     }
@@ -1230,7 +1355,7 @@ function Canvas() {
     if (options?.mutate) {
       commit("agent", options.mutate);
     } else {
-      setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
+      writeShared({ ...withDefaults(stateRef.current), transcript: trimmed });
     }
     setLocalHost(reply);
     setAck("");
@@ -1240,6 +1365,135 @@ function Canvas() {
     if (voiceOn && unlockedRef.current) {
       lastSpokenRef.current = spokenHostText(reply);
       speakNative(reply);
+    }
+  }
+
+  function missionSayLine(): string {
+    const current = withDefaults(stateRef.current);
+    const mission = missionFor(current);
+    if (mission.beat === "complete") {
+      return "Mission complete — the summary is ready and nothing was filed. Say “Show transcript”, “Save progress”, or “Start over”.";
+    }
+    return `Step ${mission.step} of ${mission.total}: ${mission.title}. Say “${mission.voiceCue}”.`;
+  }
+
+  function helpLine(): string {
+    return `${missionSayLine()} You can always say help, repeat that, stop, slower, or start over.`;
+  }
+
+  // Every voice control is handled locally: no model, no state change for
+  // help/repeat/stop, and one short confirmation for a settings change.
+  // Returns true when the turn was consumed.
+  function handleVoiceControl(control: VoiceControl): boolean {
+    switch (control.kind) {
+      case "help": {
+        const line = helpLine();
+        setLocalHost(line);
+        if (voiceOn) speakNative(line);
+        return true;
+      }
+      case "repeat": {
+        const line = lastHostLineRef.current;
+        if (!line) {
+          const fallback = missionSayLine();
+          setLocalHost(fallback);
+          if (voiceOn) speakNative(fallback);
+          return true;
+        }
+        cancelSpeech();
+        setLocalHost(line);
+        if (voiceOn) speakNative(line);
+        return true;
+      }
+      case "stop": {
+        // Immediate silence. The mic stays available so "continue" is
+        // understood; nothing is repeated and no new filler is spoken.
+        cancelSpeech();
+        // Visible, not spoken: stop means stop. The mic comes back so the
+        // user can say "continue" without a pointer.
+        setLocalHost("Stopped. I'm still listening — say “continue” when you're ready.");
+        if (convoRef.current && !recordingRef.current) {
+          setTimeout(() => {
+            if (convoRef.current && !recordingRef.current) void startRecording();
+          }, 260);
+        }
+        return true;
+      }
+      case "continue": {
+        convoRef.current = true;
+        setConvoActive(true);
+        setNotice("");
+        const line = nextObjectiveHostLine(withDefaults(stateRef.current));
+        setLocalHost(line);
+        if (voiceOn) {
+          speakNative(line, () => {
+            if (convoRef.current && !recordingRef.current) void startRecording();
+          });
+        } else if (!recordingRef.current) {
+          void startRecording();
+        }
+        return true;
+      }
+      case "show-transcript": {
+        setTranscriptOpen(true);
+        setLocalHost("Transcript open — every line from both sides is listed.");
+        if (voiceOn) speakNative("Transcript open — every line from both sides is listed.");
+        return true;
+      }
+      case "hide-transcript": {
+        setTranscriptOpen(false);
+        setLocalHost("Transcript hidden. Say “show transcript” to open it again.");
+        if (voiceOn) speakNative("Transcript hidden.");
+        return true;
+      }
+      case "save": {
+        const ok = saveSession(withDefaults(stateRef.current), settingsRef.current, log);
+        const line = ok
+          ? "Saved. Close the tab whenever you need a break — say “Resume” on the landing screen to pick up here."
+          : "I could not save in this browser. The run is still on screen; keep the tab open.";
+        setSavedNotice(ok ? "Saved just now" : "Save unavailable");
+        setLocalHost(line);
+        if (voiceOn) speakNative(line);
+        return true;
+      }
+      case "status": {
+        const line = `${missionSayLine()} ${progressSummary(withDefaults(stateRef.current))}.`;
+        setLocalHost(line);
+        if (voiceOn) speakNative(line);
+        return true;
+      }
+      case "start-over": {
+        clearSavedSession();
+        commit("start-over", (s) => applyStartOver(s));
+        setTranscriptOpen(false);
+        setEquityConfirm(false);
+        const line = `Fresh start. ${nextObjectiveHostLine(withDefaults(stateRef.current))}`;
+        setLocalHost(line);
+        if (voiceOn) speakNative(line);
+        return true;
+      }
+      default: {
+        const { settings: nextSettings, reply } = applyVoiceControl(settingsRef.current, control);
+        settingsRef.current = nextSettings;
+        setSettings(nextSettings);
+        if (nextSettings.slowMode !== settings.slowMode) {
+          // Slow mode uses the buffered path so the local, generous
+          // silence window is the authority instead of Meta's endpoint.
+          try {
+            asrSocketRef.current?.close();
+          } catch {
+            // ignore
+          }
+          asrSocketRef.current = null;
+          streamingReadyRef.current = false;
+        }
+        if (control.kind === "mute" || control.kind === "voice-off") cancelSpeech();
+        if (reply) {
+          setLocalHost(reply);
+          speakNative(reply);
+        }
+        return true;
+      }
     }
   }
 
@@ -1256,7 +1510,23 @@ function Canvas() {
       }
       return;
     }
+    // Always-available voice controls run before the busy gate and before
+    // any journey handling, so help, repeat, stop, slower, and start over
+    // are understood in every state.
+    logEvent(`sendToAgent ${JSON.stringify(trimmed)} phase=${recordingRef.current ? "rec" : "idle"}`);
+    const control = parseVoiceControl(trimmed);
+    if (control) {
+      logEvent(`control ${control.kind}`);
+      announceHeard(trimmed, fromVoice);
+      appendLog("you", trimmed);
+      handleVoiceControl(control);
+      return;
+    }
     noSpeechAttemptsRef.current = 0;
+    // Long-lived audio callbacks can call this from an older render. Read
+    // the live state and confirmation gate through refs, never stale
+    // render-time state, or a spoken "confirm" is answered as a model turn.
+    const live = withDefaults(stateRef.current);
     // Busy lane: park one turn (latest wins) with a visible notice instead
     // of the old silent drop. The flush effect below sends it once idle.
     if (sending || isLoading) {
@@ -1267,6 +1537,7 @@ function Canvas() {
     // Announce the final transcript once for this turn. Queued turns are
     // announced when they are actually flushed, not twice at park + flush.
     announceHeard(trimmed, fromVoice);
+    appendLog("you", trimmed);
     if (turnTimingRef.current.micStart === undefined) {
       turnTimingRef.current = { micStart: performance.now() };
     }
@@ -1278,7 +1549,7 @@ function Canvas() {
     // before the required walk advances. A new owner/equity command is
     // still allowed (it updates the split and the card); undo/start over
     // remain escape hatches; other commands wait for the confirmation.
-    if (equityConfirm) {
+    if (equityConfirmRef.current) {
       const pendingIntent = parseLiveIntent(trimmed);
       const isConfirm = isConfirmationAnswer(trimmed) || (!isChangeAnswer(trimmed) && /\b(?:confirm(?:ed)?|the split)\b/i.test(trimmed));
       if (isConfirm) {
@@ -1287,7 +1558,7 @@ function Canvas() {
         setLivePreview(null);
         setLiveTranscript(trimmed);
         setLastTranscript(trimmed);
-        setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
+        writeShared({ ...withDefaults(stateRef.current), transcript: trimmed });
         setAck("");
         confirmEquitySelection();
         return;
@@ -1312,7 +1583,7 @@ function Canvas() {
         setLivePreview(null);
         setLiveTranscript(trimmed);
         setLastTranscript(trimmed);
-        setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
+        writeShared({ ...withDefaults(stateRef.current), transcript: trimmed });
         setAck("");
         confirmEquitySelection();
         return;
@@ -1343,8 +1614,8 @@ function Canvas() {
     // question, but it changes no shared state, so the agent has nothing
     // to call. Acknowledge it from the real board and show the build
     // queue instead of sending a dead turn and reporting an agent error.
-    if (beatProgress(view).nextBeat === "checklist" && isNothingDoneAnswer(trimmed)) {
-      answerLocally(checklistNoopReply(view), trimmed, {
+    if (beatProgress(live).nextBeat === "checklist" && isNothingDoneAnswer(trimmed)) {
+      answerLocally(checklistNoopReply(live), trimmed, {
         module: "checklist",
         stageTab: "colony",
         cue: "adjust",
@@ -1358,67 +1629,28 @@ function Canvas() {
       return;
     }
 
-    // When prompted to pick/approve the company name:
-    if (namePromptActive) {
-      setNamePromptActive(false);
-      if (isNameApproval(trimmed)) {
-        previewKeyRef.current = null;
-        pendingTurnRef.current = null;
-        setLivePreview(null);
-        setLiveTranscript(trimmed);
-        setLastTranscript(trimmed);
-        commit("checklist", (s) => applyChecklistItem(s, "check-name", true));
-        const current = withDefaults(stateRef.current);
-        const built = current.checklist.filter((i) => i.done).length;
-        const total = current.checklist.length;
-        const undoneNext = current.checklist.find((i) => !i.done);
-        const line = `Company name confirmed as Galactic Bagels Inc. (fictional) — ${built} of ${total} structures online.${undoneNext ? ` Next: ${undoneNext.label}.` : ""}`;
-        setLocalHost(line);
-        setAck("");
-        setActiveModule("checklist");
-        setStageTab("colony");
-        if (voiceOn && unlockedRef.current) {
-          lastSpokenRef.current = spokenHostText(line);
-          speakNative(line);
-        }
+    // Mission 4: the company name has its own approval beat after 5/5.
+    // Handled locally so the exact approval can never stall on a model.
+    if (beatProgress(live).nextBeat === "name") {
+      const proposed = parseSpokenCompanyName(trimmed);
+      if (isNameApproval(trimmed) || proposed) {
+        approveCompanyName(proposed ?? DEMO_COMPANY_NAME);
         return;
       }
       if (isNameCancel(trimmed)) {
         answerLocally(
-          "No problem — we can pick the company name later. Which checklist item shall we do next?",
+          `No problem — the community is built. Say “Approve Galactic Bagels” or “Call it <your name>” when you're ready.`,
           trimmed,
-          { module: "checklist", stageTab: "colony", cue: "adjust" },
+          { module: "name", stageTab: "colony", cue: "highlight" },
         );
         return;
       }
-      // If user suggested a custom name (e.g. "Call it Cosmic Donuts", "Starlight Coffee")
-      const customMatch = trimmed.match(/^(?:call\s+it|name\s+it|let'?s\s+(?:call|name)\s+it|how\s+about)\s+(.+)$/i);
-      const isCustomSuggestion = Boolean(customMatch || (!parseLiveIntent(trimmed) && trimmed.split(/\s+/).length <= 4));
-      if (isCustomSuggestion) {
-        const rawName = customMatch ? customMatch[1] : trimmed;
-        const cleaned = rawName.replace(/[.!?]+$/, "").trim();
-        const customName = `${cleaned} (fictional)`;
-        previewKeyRef.current = null;
-        pendingTurnRef.current = null;
-        setLivePreview(null);
-        setLiveTranscript(trimmed);
-        setLastTranscript(trimmed);
-        commit("checklist", (s) => applyChecklistItem(s, "check-name", true));
-        const current = withDefaults(stateRef.current);
-        const built = current.checklist.filter((i) => i.done).length;
-        const total = current.checklist.length;
-        const undoneNext = current.checklist.find((i) => !i.done);
-        const line = `Company name confirmed as ${customName} — ${built} of ${total} structures online.${undoneNext ? ` Next: ${undoneNext.label}.` : ""}`;
-        setLocalHost(line);
-        setAck("");
-        setActiveModule("checklist");
-        setStageTab("colony");
-        if (voiceOn && unlockedRef.current) {
-          lastSpokenRef.current = spokenHostText(line);
-          speakNative(line);
-        }
-        return;
-      }
+      answerLocally(
+        `I still need the company name. Say “Approve Galactic Bagels”, or “Call it” and a fictional name.`,
+        trimmed,
+        { module: "name", stageTab: "colony", cue: "highlight" },
+      );
+      return;
     }
 
     // Direct company name checklist step:
@@ -1429,17 +1661,10 @@ function Canvas() {
       /^(?:the\s+|a\s+)?(?:company\s+)?name[.!?]*$/i.test(trimmed);
 
     if (isPickName && !isExplicitTick && !isCompanyNameQuestion(trimmed)) {
-      const isAlreadyDone = view.checklist.find((i) => i.id === "check-name")?.done;
-      if (isAlreadyDone) {
-        answerLocally(
-          "Company name is already confirmed as Galactic Bagels Inc. (fictional). Which checklist item shall we do next?",
-          trimmed,
-        );
-        return;
-      }
-      setNamePromptActive(true);
       answerLocally(
-        "We have the fictional demo name ready: Galactic Bagels Inc. (fictional). Shall we use Galactic Bagels, or would you like a different name?",
+        beatProgress(live).nextBeat === "checklist"
+          ? "The prepared fictional name is Galactic Bagels Inc. (fictional). You'll approve it as its own step after the colony is 5/5. Keep building — say “Build the next structure”."
+          : "The prepared fictional name is Galactic Bagels Inc. (fictional). It becomes official at the name-approval step.",
         trimmed,
         { module: "checklist", stageTab: "colony", cue: "highlight" },
       );
@@ -1456,13 +1681,37 @@ function Canvas() {
       const current = withDefaults(stateRef.current);
       const built = current.checklist.filter((i) => i.done).length;
       const total = current.checklist.length;
-      const undoneNext = current.checklist.find((i) => !i.done);
-      const line = `Company name confirmed as Galactic Bagels Inc. (fictional) — ${built} of ${total} structures online.${undoneNext ? ` Next: ${undoneNext.label}.` : ""}`;
+      const line = built >= total
+        ? nameApprovalLine(current)
+        : `Name prepared: Galactic Bagels Inc. (fictional). ${built} of ${total} structures online. Approval comes after 5/5.`;
       setLocalHost(line);
       setAck("");
-      setActiveModule("checklist");
+      setActiveModule(built >= total ? "name" : "checklist");
       setStageTab("colony");
-      if (voiceOn && unlockedRef.current) {
+      if (settingsRef.current.voiceOn && unlockedRef.current) {
+        lastSpokenRef.current = spokenHostText(line);
+        speakNative(line);
+      }
+      return;
+    }
+
+    // Grounded s.85 lesson: paint the pack fact locally through the same
+    // applier the agent uses. The card text is verbatim pack text and the
+    // verifier checks it; no legal wording is ever invented here.
+    if (/\b(?:section 85|s\.?\s?85|rollover|roll over)\b/i.test(trimmed)) {
+      const factId = rolloverFactIdFor(trimmed);
+      commit("rollover", (s) => applyRolloverFact(s, factId, trimmed));
+      const current = withDefaults(stateRef.current);
+      const line = rolloverLearnLine(current);
+      setLiveTranscript(trimmed);
+      setLastTranscript(trimmed);
+      writeShared({ ...withDefaults(stateRef.current), transcript: trimmed });
+      setLocalHost(line);
+      setAck("");
+      setActiveModule("rollover");
+      setStageTab("colony");
+      pendingTurnRef.current = null;
+      if (line && voiceOn && unlockedRef.current) {
         lastSpokenRef.current = spokenHostText(line);
         speakNative(line);
       }
@@ -1471,6 +1720,7 @@ function Canvas() {
 
     const intent = parseLiveIntent(trimmed);
     const fast = Boolean(intent && FAST_INTENT_KINDS.has(intent.kind));
+    logEvent(`intent ${intent?.kind ?? "none"} fast=${fast}`);
 
     // Immediate acknowledgment for the model path only. The fast lane
     // below answers immediately with its full host line instead of "on it".
@@ -1492,7 +1742,7 @@ function Canvas() {
     const applied = applyLiveIntent(trimmed, "confirming");
     setLiveTranscript(trimmed);
     setLastTranscript(trimmed);
-    setState((prev) => ({ ...withDefaults(prev), transcript: trimmed }));
+    writeShared({ ...withDefaults(stateRef.current), transcript: trimmed });
 
     // Deterministic commands do not need the model. Apply the same
     // appliers (already done above), speak/display the derived host line,
@@ -1519,7 +1769,7 @@ function Canvas() {
       if (line) {
         setLocalHost(line);
         const spoken = spokenHostText(line);
-        if (voiceOn && unlockedRef.current && spoken !== lastSpokenRef.current) {
+        if (settingsRef.current.voiceOn && unlockedRef.current && spoken !== lastSpokenRef.current) {
           lastSpokenRef.current = spoken;
           speakNative(line);
         }
@@ -1529,14 +1779,15 @@ function Canvas() {
 
     // Model path: clear the local line so the agent's reply can take over.
     setLocalHost("");
-    const sel = view.selectedJurisdiction;
+    const sel = live.selectedJurisdiction;
     const mentioned = DEMO_JURISDICTIONS.map((r) => r.jurisdiction).find((name) => trimmed.toLowerCase().includes(name.toLowerCase()));
     if (sel && mentioned && mentioned.toLowerCase() === sel.toLowerCase()) {
       setAck(`${sel} again — confirming ${sel} as your home base.`);
     } else {
       setAck("");
     }
-    pendingTurnRef.current = { signature: turnResultSignature(view, hostPrompt.text), text: trimmed, beat: view.currentBeat };
+    pendingTurnRef.current = { signature: turnResultSignature(live, hostPrompt.text), text: trimmed, beat: live.currentBeat };
+    playCue("think");
     setSending(true);
     messageIdRef.current += 1;
     activeVoiceTurnRef.current = fromVoice;
@@ -1570,6 +1821,7 @@ function Canvas() {
 
       ws.onopen = () => {
         streamingReadyRef.current = true;
+        logEvent("asr socket open");
       };
 
       ws.onmessage = (event: MessageEvent) => {
@@ -1579,6 +1831,8 @@ function Canvas() {
           const type = msg.type as string | undefined;
 
           if (type === "speechStart") {
+            asrLastEventAtRef.current = performance.now();
+            logEvent(`asr speechStart ${String(msg.turnId)}`);
             const turnId = msg.turnId as number | undefined;
             if (turnId !== undefined) {
               activeTurnIdRef.current = turnId;
@@ -1586,8 +1840,12 @@ function Canvas() {
             }
             endpointerRef.current?.handleMetaEvent(msg);
           } else if (type === "transcript") {
+            asrLastEventAtRef.current = performance.now();
             const transcript = msg.transcript as string | undefined;
             const turnId = (msg.turnId as number | undefined) ?? activeTurnIdRef.current;
+            if (bufferedFallbackTurnRef.current === turnId) return;
+            if (completedStreamingTurnRef.current === turnId) return;
+            logEvent(`asr transcript ${JSON.stringify(transcript)}`);
             if (transcript) {
               if (echoFilter.checkAndTombstone(turnId, transcript)) {
                 return;
@@ -1601,8 +1859,12 @@ function Canvas() {
             if (echoFilter.isTurnIgnored(turnId)) return;
             endpointerRef.current?.handleMetaEvent(msg);
           } else if (type === "speechComplete") {
+            asrLastEventAtRef.current = performance.now();
             const transcript = (msg.transcript as string | undefined) ?? "";
+            logEvent(`asr speechComplete ${JSON.stringify(transcript)}`);
             const turnId = (msg.turnId as number | undefined) ?? activeTurnIdRef.current;
+            if (bufferedFallbackTurnRef.current === turnId) return;
+            if (completedStreamingTurnRef.current === turnId) return;
             if (echoFilter.checkAndTombstone(turnId, transcript)) {
               return;
             }
@@ -1613,6 +1875,11 @@ function Canvas() {
             }
           } else if (type === "ready") {
             streamingReadyRef.current = true;
+            // A new Meta session restarts its turn ids; do not carry old
+            // tombstones across sessions.
+            completedStreamingTurnRef.current = null;
+            bufferedFallbackTurnRef.current = null;
+            logEvent("asr relay ready");
           } else if (type === "error") {
             console.warn("[asr-stream] upstream error:", msg.message);
           }
@@ -1624,6 +1891,7 @@ function Canvas() {
       ws.onclose = () => {
         streamingReadyRef.current = false;
         asrSocketRef.current = null;
+        logEvent("asr socket closed");
       };
 
       ws.onerror = (err) => {
@@ -1640,6 +1908,13 @@ function Canvas() {
     if (endpointerRef.current?.isFastCommitted(turnId)) {
       return;
     }
+    // Meta can deliver a late duplicate final after the next turn has
+    // already opened. Only the first final for a turn may speak or paint.
+    if (completedStreamingTurnRef.current === turnId) {
+      logEvent(`duplicate speechComplete ignored ${turnId}`);
+      return;
+    }
+    completedStreamingTurnRef.current = turnId;
     finishingRef.current = true;
     recordingRef.current = false;
     isTurnListeningRef.current = false;
@@ -1649,20 +1924,29 @@ function Canvas() {
     stampTiming("finalTranscript");
 
     const trimmed = (transcript ?? "").trim();
-    if (isEmptyTranscript(trimmed)) {
-      finishingRef.current = false;
-      const line = emptyTranscriptReply();
-      setLocalHost(line);
-      setNotice(line);
-      if (voiceOn && unlockedRef.current) {
-        lastSpokenRef.current = spokenHostText(line);
-        speakNative(line);
-      }
-      return;
-    }
-
+    logEvent(`model commit ${JSON.stringify(trimmed)}`);
     void (async () => {
       try {
+        if (isEmptyTranscript(trimmed)) {
+          // No speech in this turn: stay quiet and keep the current host
+          // line. A silence-only final must never replace the question
+          // the user is about to answer.
+          if (!activityRef.current.hasSpoken) {
+            return;
+          }
+          // The user did speak but streaming lost the words; the buffered
+          // audio is the same utterance, so try the batch recogniser.
+          const retried = await sendBufferedChunks();
+          if (retried) return;
+          const line = emptyTranscriptReply();
+          setLocalHost(line);
+          setNotice(line);
+          if (voiceOn && unlockedRef.current) {
+            lastSpokenRef.current = spokenHostText(line);
+            speakNative(line);
+          }
+          return;
+        }
         await sendToAgent(trimmed, true);
       } finally {
         finishingRef.current = false;
@@ -1863,6 +2147,29 @@ function Canvas() {
     await transcribeAndSend(buf);
   }
 
+  // Buffered fallback for the streaming path. The worklet keeps every
+  // captured block, so when Meta streaming ends a turn empty — or never
+  // reports a turn at all — the same audio can still be transcribed
+  // through the reliable batch endpoint instead of dropping the turn.
+  // Returns true when the turn was sent (even if the transcript is empty).
+  async function sendBufferedChunks(): Promise<boolean> {
+    const chunks = chunksRef.current;
+    chunksRef.current = [];
+    if (chunks.length === 0) return false;
+    const inputRate = audioContextRef.current?.sampleRate ?? 0;
+    if (!inputRate || inputRate <= 0) return false;
+    const samples = concatFloat32(chunks);
+    if (samples.length === 0) return false;
+    const pcm = toPcm16k(samples, inputRate);
+    if (pcm.byteLength === 0 || pcm.byteLength % 2 !== 0) return false;
+    const buf = new ArrayBuffer(pcm.byteLength);
+    new Int16Array(buf).set(pcm);
+    lastAudioRef.current = buf;
+    setHasLastAudio(true);
+    await transcribeAndSend(buf);
+    return true;
+  }
+
   async function finishRecording() {
     clearConfirmationTimer();
     if (finishingRef.current) return;
@@ -1879,7 +2186,16 @@ function Canvas() {
       stopWebSpeech();
       setMicLevel(0);
       setRecording(false);
-      finishingRef.current = false;
+      // Streaming never delivered this turn. Keep the audio usable: send
+      // the buffered utterance through the batch recogniser. Tombstone the
+      // streamed turn so a late Meta final cannot run the command twice.
+      bufferedFallbackTurnRef.current = activeTurnIdRef.current;
+      completedStreamingTurnRef.current = activeTurnIdRef.current;
+      try {
+        await sendBufferedChunks();
+      } finally {
+        finishingRef.current = false;
+      }
       return;
     }
 
@@ -1934,6 +2250,21 @@ function Canvas() {
     stopWebSpeech();
     setMicLevel(0);
     setRecording(false);
+    // If the user did speak but streaming never reported a turn, the
+    // buffered audio still holds the utterance. Transcribe it rather
+    // than claiming silence.
+    if (activityRef.current.hasSpoken) {
+      try {
+        const sent = await sendBufferedChunks();
+        if (sent) {
+          noSpeechAttemptsRef.current = 0;
+          finishingRef.current = false;
+          return;
+        }
+      } catch {
+        // Fall through to the visible no-speech line.
+      }
+    }
     finishingRef.current = false;
 
     if (noSpeechAttemptsRef.current === 0) {
@@ -1941,7 +2272,7 @@ function Canvas() {
       const line = noSpeechReply();
       setLocalHost(line);
       setNotice(line);
-      if (voiceOn && unlockedRef.current) {
+      if (settingsRef.current.voiceOn && unlockedRef.current) {
         lastSpokenRef.current = spokenHostText(line);
         speakNative(line);
       }
@@ -2037,9 +2368,16 @@ function Canvas() {
     node.port.onmessage = (event: MessageEvent) => {
       const block = event.data as Float32Array;
       if (!block || block.length === 0) return;
-      if (!isTurnListeningRef.current) return;
+      if (!isTurnListeningRef.current) {
+        audioStatsRef.current.listeningDropped += 1;
+        return;
+      }
       // Mic gated during host playback to eliminate acoustic self-echo
-      if (hostSpeakingRef.current || speechQueue.isSpeaking()) return;
+      if (hostSpeakingRef.current || speechQueue.isSpeaking()) {
+        audioStatsRef.current.hostDropped += 1;
+        return;
+      }
+      audioStatsRef.current.blocks += 1;
 
       chunksRef.current.push(block);
       const rate = audioContextRef.current?.sampleRate ?? 0;
@@ -2082,13 +2420,29 @@ function Canvas() {
         return;
       }
 
+      // Guard 3 (streaming watchdog): the user spoke, the mic is quiet,
+      // and Meta has not reported a turn for several seconds. Do not wait
+      // forever or drop the turn: transcribe the buffered audio instead.
+      if (
+        streamingReadyRef.current &&
+        activityRef.current.hasSpoken &&
+        activityRef.current.lastSpeechAt !== null &&
+        now - activityRef.current.lastSpeechAt > 1800 &&
+        now - asrLastEventAtRef.current > 3800
+      ) {
+        logEvent("streaming watchdog → buffered fallback");
+        void finishRecording();
+        return;
+      }
+
       activityRef.current = nextVoiceActivity(activityRef.current, level, now, rate > 0 ? (block.length / rate) * 1000 : 0);
 
       // Demote client RMS/silence gate:
       // When streaming ASR is active, Meta endpointing is the authority for turn end.
       // If streaming is not active, fall back to local auto-stop.
       if (!streamingReadyRef.current) {
-        if (shouldAutoStop(activityRef.current, now, intentMatchedRef.current ? INTENT_SILENCE_TO_STOP_MS : SILENCE_TO_STOP_MS)) {
+        const silence = autoStopSilence(settingsRef.current.slowMode, intentMatchedRef.current);
+        if (shouldAutoStop(activityRef.current, now, silence)) {
           void finishRecording();
           return;
         }
@@ -2113,6 +2467,10 @@ function Canvas() {
 
   async function startRecording() {
     if (recordingRef.current) return;
+    audioStatsRef.current = { blocks: 0, hostDropped: 0, listeningDropped: 0 };
+    asrLastEventAtRef.current = performance.now();
+    bufferedFallbackTurnRef.current = null;
+    logEvent(`startRecording streaming=${streamingReadyRef.current} socket=${asrSocketRef.current?.readyState ?? -1}`);
     clearRearmTimer();
     clearConfirmationTimer();
     liveTranscriptRef.current = "";
@@ -2143,8 +2501,21 @@ function Canvas() {
 
     try {
       await ensureAudioPipeline();
-      ensureAsrStreamSocket();
+      if (settingsRef.current.slowMode) {
+        // Slow mode: the local, generous silence window is the authority.
+        // No streaming socket, so Meta cannot end the turn on a short pause.
+        try {
+          asrSocketRef.current?.close();
+        } catch {
+          // ignore
+        }
+        asrSocketRef.current = null;
+        streamingReadyRef.current = false;
+      } else {
+        ensureAsrStreamSocket();
+      }
       setRecording(true);
+      playCue("listen");
       if (!streamingReadyRef.current) {
         startWebSpeech();
       }
@@ -2174,6 +2545,51 @@ function Canvas() {
     ? { text: localHost, source: "fallback" as const }
     : resolvedHostPrompt;
   const doneCount = progress.requiredDone;
+
+  // The visible host line is always the thing the transcript records and
+  // "repeat that" replays, whether VOX is on or off.
+  useEffect(() => {
+    const text = hostPrompt.text.trim();
+    if (!text) return;
+    lastHostLineRef.current = spokenHostText(text);
+    const timer = setTimeout(() => appendLog("host", spokenHostText(text)), 0);
+    return () => clearTimeout(timer);
+  }, [hostPrompt.text]);
+
+  // Autosave: a break never loses the run. The write is debounced so a
+  // slider drag or a live tick does not hammer localStorage. Loading a
+  // saved run is fail-safe (lib/persistence.ts).
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const ok = saveSession(withDefaults(view), settingsRef.current, logRef.current);
+      setSavedNotice(ok ? `Autosaved ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Autosave unavailable");
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [view, settings, log]);
+
+  // Voice-first boot: the cockpit opens the conversation and the mic on
+  // its own after the landing gate. No click, no "press TALK" step.
+  useEffect(() => {
+    if (!autoStart) return;
+    convoRef.current = true;
+    unlockedRef.current = true;
+    refreshCachedVoice();
+    const timer = setTimeout(() => {
+      setConvoActive(true);
+      const current = withDefaults(stateRef.current);
+      const line = resumed
+        ? `Welcome back. ${progressSummary(current)}. Picking up where you left off.`
+        : FIRST_SPEAK_GREETING;
+      setLocalHost(line);
+      const begin = () => {
+        if (convoRef.current && !recordingRef.current) void startRecording();
+      };
+      const spoke = speakNative(line, begin);
+      if (!spoke) begin();
+    }, 450);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart, resumed]);
 
   // First gesture unlocks audio/speech (browser autoplay policy) and
   // warms the curated system voice. Voice lists often arrive after first
@@ -2246,13 +2662,13 @@ function Canvas() {
     if (convoRef.current && !recordingRef.current && !hostSpeaking) {
       requestRearm();
     }
+    // requestRearm is an intentional stable closure over refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convoActive, recording, transcribing, sending, isLoading, turnError, transcribeFailure, hostSpeaking]);
 
   // Errors get a dull buzz, never silence.
   useEffect(() => {
     if (turnError || transcribeFailure) playCue("error");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnError, transcribeFailure]);
 
   // The host line is the outcome of a turn. When VOX is on it is already
@@ -2294,6 +2710,18 @@ function Canvas() {
       getPhase: () =>
         recording ? "recording" : transcribing ? "transcribing" : sending ? "sending" : isLoading ? "agent-busy" : "idle",
       isHostSpeaking: () => Boolean(hostSpeaking || isSpeechActive()),
+      getState: () => withDefaults(stateRef.current),
+      getLog: () => [...logRef.current],
+      getSettings: () => ({ ...settingsRef.current }),
+      getLastSpoken: () => lastHostLineRef.current,
+      getEvents: () => [...eventsRef.current],
+      getAudioStats: () => ({ ...audioStatsRef.current }),
+      getAsrState: () => ({
+        ready: streamingReadyRef.current,
+        socket: asrSocketRef.current?.readyState ?? -1,
+      }),
+      isListening: () => isTurnListeningRef.current,
+      isTranscriptOpen: () => transcriptOpen,
       feedVoice: async (text: string) => {
         handleLiveTranscript(text);
         setMicLevel(0.85);
@@ -2314,7 +2742,7 @@ function Canvas() {
       delete win.__vvbVoice;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recording, transcribing, sending, isLoading, hostSpeaking]);
+  }, [recording, transcribing, sending, isLoading, hostSpeaking, transcriptOpen]);
 
   // Beat completion celebrates on the mission banner, with a
   // zero-gravity stardust burst over the page (skipped entirely for
@@ -2506,13 +2934,12 @@ function Canvas() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const structures = colonyProgress(view.checklist);
   const flight = flightPlan(view, activeModule);
-  // Judge view: four required missions stay in the open; the two
-  // optional archive systems and the detailed plan stay tucked away.
+  // The six required missions stay in the open; the one optional
+  // archive system and the detailed plan stay tucked away.
   const requiredFlight = flight.filter((step) => !step.optional);
   const archiveFlight = flight.filter((step) => step.optional);
   const requiredModules = MODULES.filter((module) => !module.optional);
@@ -2558,7 +2985,7 @@ function Canvas() {
         </div>
 
         <div className="hud-mission" aria-label={`${doneCount} of ${progress.requiredTotal} missions complete`}>
-          <span className="hud-kicker">4 MISSIONS</span>
+          <span className="hud-kicker">{progress.requiredTotal} MISSIONS</span>
           <div className="hud-pips" role="group" aria-label="Required missions">
             {REQUIRED_BEATS.map((beat) => {
               const step = flight.find((entry) => entry.id === beat);
@@ -2603,7 +3030,7 @@ function Canvas() {
               <h2>
                 {view.founders.length} owner{view.founders.length === 1 ? "" : "s"} — {equityLabel}
               </h2>
-              <p className="objective-prompt">
+              <p className="objective-prompt" data-testid="mission-prompt">
                 Does this split look right? Confirm to move on, or choose another owner count / drag a slider.
               </p>
               <div className="confirm-actions" data-testid="equity-confirm">
@@ -2643,6 +3070,9 @@ function Canvas() {
             <p data-testid="mission-prompt" className="objective-prompt">
               {mission.prompt}
             </p>
+            <p className="objective-say" data-testid="next-step">
+              <span>SAY</span> <q>{mission.voiceCue}</q>
+            </p>
             <div className="objective-meter" aria-hidden="true">
               <span style={{ width: `${Math.round((doneCount / progress.requiredTotal) * 100)}%` }} />
             </div>
@@ -2661,6 +3091,28 @@ function Canvas() {
                 nextItemId={nextChecklistId}
                 onToggle={updateChecklistItem}
               />
+            ) : null}
+
+            {mission.beat === "name" ? (
+              <div className="name-approval" data-testid="name-approval-card">
+                <span className="eyebrow">PROPOSED COMPANY NAME</span>
+                <strong className="name-approval-name">{DEMO_COMPANY_NAME}</strong>
+                <p className="name-approval-why">
+                  The colony is 5/5. This is the one spoken approval that names the company; it feeds
+                  the lawyer summary. Fictional demo only.
+                </p>
+                <div className="confirm-actions">
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    data-testid="approve-name-button"
+                    onClick={() => approveCompanyName(DEMO_COMPANY_NAME)}
+                  >
+                    APPROVE NAME
+                  </button>
+                </div>
+                <p className="objective-build-hint">Or say “Approve Galactic Bagels” / “Call it &lt;name&gt;”.</p>
+              </div>
             ) : null}
 
             {celebrated ? (
@@ -2953,6 +3405,32 @@ function Canvas() {
               />
             </div>
 
+            <div data-beat="name" hidden={activeModule !== "name"}>
+              <section className="panel module-card" aria-label="Company name approval">
+                <span className="eyebrow">COMPANY NAME · DEMO</span>
+                <h3 className="module-card-title">{view.companyName || DEMO_COMPANY_NAME}</h3>
+                <p className="module-card-copy">
+                  {view.companyName
+                    ? "Approved by voice. This name appears in the lawyer summary."
+                    : "Say “Approve Galactic Bagels”, or “Call it” and a fictional name. The name is approved after the colony reaches 5/5."}
+                </p>
+                {!view.companyName ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    data-testid="rail-approve-name"
+                    onClick={() => approveCompanyName(DEMO_COMPANY_NAME)}
+                  >
+                    APPROVE GALACTIC BAGELS
+                  </button>
+                ) : (
+                  <p className="module-card-ok" data-testid="name-approved">
+                    Approved: {view.companyName}
+                  </p>
+                )}
+              </section>
+            </div>
+
             <div data-beat="rollover" hidden={activeModule !== "rollover"}>
               <RolloverFactCard
                 card={view.rolloverCard}
@@ -3049,7 +3527,7 @@ function Canvas() {
                   className="hud-btn"
                   data-testid="sound-toggle"
                   aria-pressed={soundOn}
-                  onClick={() => setSoundOn((value) => !value)}
+                  onClick={() => updateVoiceSettings({ soundOn: !soundOn })}
                 >
                   <span aria-hidden="true">{soundOn ? "◉" : "○"}</span> SFX
                 </button>
@@ -3060,7 +3538,7 @@ function Canvas() {
                   aria-pressed={voiceOn}
                   onClick={() => {
                     if (voiceOn) cancelSpeech();
-                    setVoiceOn((value) => !value);
+                    updateVoiceSettings({ voiceOn: !voiceOn });
                   }}
                 >
                   <span aria-hidden="true">{voiceOn ? "◉" : "○"}</span> VOX
@@ -3114,6 +3592,14 @@ function Canvas() {
           <span data-testid="flow-status" className="deck-flow">
             {flowStatus}
           </span>
+          <span data-testid="voice-settings" className="deck-settings" aria-label="Voice settings">
+            {settingsSummary(settings)}
+          </span>
+          {savedNotice ? (
+            <span data-testid="autosave" className="deck-saved">
+              {savedNotice}
+            </span>
+          ) : null}
           {!voiceOn ? (
             <span className="deck-vox-off" data-testid="vox-off">
               VOX OFF
@@ -3311,6 +3797,15 @@ function Canvas() {
             <button
               type="button"
               className="btn"
+              data-testid="transcript-toggle"
+              aria-expanded={transcriptOpen}
+              onClick={() => setTranscriptOpen((open) => !open)}
+            >
+              {transcriptOpen ? "HIDE TRANSCRIPT" : "TRANSCRIPT"}
+            </button>
+            <button
+              type="button"
+              className="btn"
               data-testid="dock-expand"
               aria-expanded={dockOpen}
               aria-label="Controls — host voice, sound, quick commands"
@@ -3326,12 +3821,45 @@ function Canvas() {
           DEMO ONLY · NOT LEGAL ADVICE · NOT A FILING · NOTHING SUBMITTED · NO EMAIL
         </p>
       </footer>
+
+      {transcriptOpen ? (
+        <section
+          className="transcript-panel"
+          data-testid="transcript-panel"
+          aria-label="Full conversation transcript"
+        >
+          <header className="transcript-head">
+            <div>
+              <span className="eyebrow">FULL TRANSCRIPT</span>
+              <h2>Everything said, both sides</h2>
+            </div>
+            <button type="button" className="btn" onClick={() => setTranscriptOpen(false)}>
+              CLOSE
+            </button>
+          </header>
+          <ol className="transcript-list" data-testid="transcript-list">
+            {log.length === 0 ? (
+              <li className="transcript-empty">Nothing said yet. Say “Enter the Bridge” or “Pick Mars”.</li>
+            ) : (
+              log.map((entry, index) => (
+                <li key={`${entry.at}-${index}`} className={`transcript-entry is-${entry.role}`}>
+                  <span className="transcript-who">{entry.role === "you" ? "YOU" : "HOST"}</span>
+                  <p>{entry.text}</p>
+                </li>
+              ))
+            )}
+          </ol>
+          <p className="transcript-foot">
+            Demo transcript. Nothing here is legal advice, a filing, or a submission.
+          </p>
+        </section>
+      ) : null}
     </main>
   );
 
 }
 
-export default function CanvasHost() {
+export default function CanvasHost(props: CanvasProps = {}) {
   return (
     <CopilotKit
       runtimeUrl="/api/copilotkit"
@@ -3341,7 +3869,7 @@ export default function CanvasHost() {
         "X-Voice-Turn": activeVoiceTurnRef.current ? "1" : "0",
       })}
     >
-      <Canvas />
+      <Canvas {...props} />
     </CopilotKit>
   );
 }

@@ -23,16 +23,26 @@ export function checklistHostLine(state: SharedState): string {
   const total = state.checklist.length;
   const built = state.checklist.filter((item) => item.done).length;
   const next = state.checklist.find((item) => !item.done);
-  if (beatProgress(state).nextBeat === "summary") {
-    return `All ${total} structures online. ${getHostQuestion(
-      "summary",
-      shortFounderNames(state.founders),
-      state.selectedJurisdiction,
-    )}`;
+  const nextBeat = beatProgress(state).nextBeat;
+  if (nextBeat === "name" || nextBeat === "rollover" || nextBeat === "summary") {
+    // The question itself carries the count ("five of five") where it
+    // matters; repeating it here would be a third sentence and the
+    // spoken-text cap would drop the actual question.
+    return getHostQuestion(nextBeat, shortFounderNames(state.founders), state.selectedJurisdiction);
+  }
+  if (nextBeat === "complete") {
+    return `All ${total} structures online. Mission complete.`;
   }
   return next
-    ? `${built} of ${total} structures online. Next: ${next.label}.`
+    ? `${built} of ${total} structures online. Next: ${next.label}. Say “Build the next structure”.`
     : `All ${total} structures online.`;
+}
+
+// The company-name approval line. The colony must be complete first, so
+// a founder never approves a name before the walk reaches that beat.
+export function nameApprovalLine(state: SharedState): string {
+  // One question, two sentences, so the spoken cap never drops it.
+  return getHostQuestion("name", shortFounderNames(state.founders), state.selectedJurisdiction);
 }
 
 // Equity/owner changes pause on a confirmation card before the cockpit
@@ -49,4 +59,21 @@ export function equityConfirmationLine(state: SharedState): string {
   // as speaker bleed. The visible confirmation card still shows the exact
   // "confirm"/"change" words. This keeps the 4972d2b echo guard strict.
   return `${owners} ${noun} — ${split}. Does this ownership look right? Say the percentages you want, pick a different owner count, or drag a slider.`;
+}
+
+// The host reads one grounded sentence from the s.85 pack; the card
+// carries the full verbatim fact and its pack/fact grounding. This keeps
+// the spoken line short enough for the speech cap without paraphrasing a
+// legal fact: the sentence is taken verbatim from the pack text.
+export function firstSentence(text: string): string {
+  const clean = (text ?? "").replace(/\s+/g, " ").trim();
+  if (!clean) return "";
+  const match = clean.match(/^.*?[.!?](?:\s|$)/);
+  return (match ? match[0] : clean).trim();
+}
+
+export function rolloverLearnLine(state: SharedState): string {
+  // Speak one grounded sentence verbatim. The card carries the rest and
+  // its pack/fact grounding; the mission banner carries the next step.
+  return firstSentence(state.rolloverCard?.answer ?? "");
 }

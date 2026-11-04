@@ -34,13 +34,21 @@ export function describeChange(before: SharedState, after: SharedState): string 
     parts.push(`Equity note: ${after.equityNote}`);
   }
 
+  if (before.companyName !== after.companyName) {
+    parts.push(
+      after.companyName
+        ? `Company name approved: ${after.companyName}.`
+        : "Company name approval cleared.",
+    );
+  }
+
   const ticked: string[] = [];
   const unticked: string[] = [];
   after.checklist.forEach((item, i) => {
     const was = before.checklist[i]?.done;
     if (item.done && !was) {
       if (item.id === "check-name") {
-        ticked.push(`${item.label} (confirmed as Galactic Bagels Inc. (fictional))`);
+        ticked.push(`${item.label} (name prepared; approval is its own step after 5/5)`);
       } else {
         ticked.push(item.label);
       }
@@ -91,6 +99,7 @@ export function describeChange(before: SharedState, after: SharedState): string 
     after.selectedJurisdiction === null &&
     before.selectedJurisdiction !== null &&
     doneCount === 0 &&
+    !after.companyName &&
     !after.lawyerPackage;
   if (parts.length === 0) {
     return `Confirmed: the canvas already matches that request, so it is done. Current state: ${currentStateSummary(after)}.`;

@@ -1,6 +1,6 @@
 # Visual Vocal Builder
 
-Incorporate a company by voice: a Meta AI hackathon entry where spoken words paint an interactive canvas — compare jurisdictions, split equity with a slider, and walk a filing checklist, all by voice.
+Build a fictional colony and incorporate a fictional company by voice, hands-free. Spoken words move an orbital foundry world: pick a home base, split equity, raise five structures, approve the company name, learn one grounded section 85 fact, and prepare a lawyer summary. A founder who cannot use a mouse, keyboard, or pointer can finish the whole journey on a headset.
 
 > **Demo data only. This is not legal advice, not a filing, and nothing here is submitted to any registry.**
 
@@ -13,10 +13,12 @@ git clone https://github.com/Quantumhurst/visual-vocal-builder.git
 cd visual-vocal-builder
 npm install
 cp .env.example .env   # fill in META_API_KEY (never commit .env)
-npm run dev
+node server.mjs        # unified Next + ASR WebSocket server on :3000
 ```
 
-Open http://localhost:3000, click **Enter the Bridge**, then press **TALK** (or Space), allow mic access, and speak.
+Open http://localhost:3000 and allow the microphone once. The landing page listens; say **“Enter the bridge”**. The cockpit opens the conversation and the mic itself — there is no TALK button to press. The visible button is only a fallback.
+
+The unified server matters: `/api/asr-stream` is a WebSocket owned by `server.mjs`. Plain `next dev` serves the page but returns 405 for that socket, so live turns fall back to buffered audio (still usable, but slower).
 
 `/api/transcribe` accepts only raw PCM16, 16 kHz mono. Arbitrary webm/wav uploads no longer work. To test-upload from a wav file:
 
@@ -30,35 +32,45 @@ Check the code with:
 ```bash
 npm test
 npm run typecheck
+npm run lint
+npm run build
 ```
+
+Run the voice-only headset walk (real audio in, no clicks, no injected text):
+
+```bash
+node scripts/headset-walk.mjs
+```
+
+It synthesizes a user voice with macOS `say`, feeds the waveform into a virtual microphone, lets the app's own AudioWorklet and Meta transcript path drive every step, and verifies the board, host line, and no-click count at each beat. Results land in `proof/headset-walk.json` (ignored by git) and screenshots in `.shots/`.
 
 Tests import TypeScript sources directly and need Node 22.18+ for type stripping; the app itself runs on Node 20.9+.
 
 ## How it works
 
-- Voice loop: Muse Voice Transcribe (STT only) → Muse Spark brain via the Meta Model API → CopilotKit `useCoAgent` shared state → canvas re-renders. Board interactions (e.g. clicking a table row) write shared state back without a new prompt.
-- Live flow (no dead air while speaking): partial transcripts paint a *live preview* the instant a command is recognisable — "Pick Mars" lights the planet mid-sentence — through the same state appliers the agent uses (`lib/live-intent.ts`), and a natural pause auto-sends the turn (client endpointing), so Stop recording is optional. The final Meta transcript is still the authority. Clear deterministic commands (jurisdiction, equity/owner count, checklist counts, summary) are confirmed locally from that transcript and speak a local host line, so they do not wait for the model; questions and ambiguous turns still go to Muse Spark. Equity/owner changes now pause on a confirmation card before the walk advances. Grounded fact cards are never painted locally, only by the agent from the knowledge packs. Browsers with a built-in speech recogniser use it for interim words; other browsers get no interim words, just the final Meta transcript.
-- Landing: `/` opens on a persistent Orbital Foundry landing screen — the orb with a contained cyan spin ring, the "Incorporate a company by voice" tagline, the demo-data disclaimer, and one **Enter the Bridge** button. The ring lives in the orb's own box (not a fixed overlay), so it cannot cover the wordmark or copy. Clicking Enter mounts the cockpit on the same route (no new page) and leaves the mic closed; you press **TALK** when you are ready. The same contained spin ring wraps the cockpit HUD's top-left brand orb.
-- First Speak: the first **TALK** press (Space also works) speaks the same home-base question the objective already shows ("Pick your home base — Mars, Europa, or Andromeda Galaxy?") once, then opens the mic. Later TALK presses do not repeat it. Enter alone does not speak or record; the sessionStorage marker gates the TALK path. The greeting writes no shared state and adds no fact.
-- Meta model choices (`lib/meta-models.ts`): brain is `muse-spark-1.3` (latest Spark, recommended for tight agentic tool loops — Muse Wonder targets long-horizon coding/computer use at higher latency, the wrong fit here); STT is `muse-voice-transcribe-1.0` with keyword biasing (Mars, Europa, section 85, owner counts, founder names, and fast-lane commands) and English language bias in the realtime handshake, which previously went unused. The fixed "is this actually going to file my company?" guard answer is answered locally (`lib/filing-guard.ts`), with no model turn and no state change.
-- Stack: Next.js + CopilotKit + AG-UI, with A2UI in contained mode. CopilotKit is the frontend SDK; the brain is Muse Spark. Spoken replies use the curated system voice (Meta has no TTS model): the app ranks the machine's English voices and speaks the host line with question/statement prosody. No voice model download. A **HOST VOICE** picker in Controls can pin a curated English browser/OS voice (stored by `voiceURI` in `localStorage`); a fresh session defaults to **Karen** when the OS exposes her, while **Auto** keeps the curated best-available pick. Novelty, low-confidence, and network-only voices are hidden because several of them are silent in Chrome; a stale or unreliable saved voice falls back to Karen (or Auto if Karen is unavailable) and is cleared. The talk bar shows a gold **VOX OFF** chip when muted, and a failed utterance writes a visible host-voice notice.
-- Required-task handoff: when a change completes a required beat, the cockpit opens the next one in the same handler — equity completion opens the five-step BUILD queue **after the split is confirmed, explicitly or implicitly by the next command**, and 5/5 opens LAUNCH. Clicking a build step updates the visible host line with the real count and the next step name, so the spoken question has visible answers instead of leaving the previous task's line on screen.
-- Pinned versions live in `package.json` + `package-lock.json`. Network destinations: the Meta Model API (agent brain + final transcripts), plus, in Chrome/Edge only, interim words from the browser's built-in speech recognition — a browser feature, not a Meta call and not local: the browser may send audio to its vendor's speech service. Final transcripts are always Meta. Voice-out uses the browser speechSynthesis and the OS voice; the app makes no voice-network call itself, but a selected system voice may be a network voice provided by the browser/OS.
-- No OpenRouter, no CLI subscription session, no pre-existing project code or private service called at runtime.
+- **Voice in:** Muse Voice Transcribe streams partials for live painting and sends an authoritative final transcript. A buffered `/api/transcribe` fallback retries the same audio when a streamed turn goes empty or silent, so a turn is not dropped. The brain is Muse Spark via the Meta Model API; deterministic commands take a local fast lane through the same state appliers.
+- **Voice out:** the curated system voice speaks every host line. Host speech is logged, replayable with “repeat that”, and never treated as user speech: the mic is gated during playback and a lexical echo filter tombstones self-echo. The mic reopens automatically after the host finishes.
+- **Voice-only entry:** the landing page listens for “Enter the bridge” (or “Resume” / “Start over” when a run is saved). Crossing the bridge mounts the cockpit and starts the conversation without a click.
+- **Always-available controls:** say **help**, **repeat that**, **stop**, **slower**, **faster**, **louder**, **quieter**, **volume 40**, **mute/unmute**, **show/hide transcript**, **save progress**, **start over**, **status**, **slow mode**, or **take your time**. All are parsed locally, before any model turn, in every state. “Stop” silences the host but keeps the mic listening for “continue”.
+- **Six required beats, in order:** home base → crew split (confirmed) → five structures → company-name approval → one grounded s.85 rollover fact → lawyer summary. The name is approved only after 5/5, and the s.85 card is required; the filing-steps/fees card remains the one optional archive system.
+- **Grounded facts only:** s.85 content is verbatim pack text (`lib/knowledge.ts`), with pack id and fact id on the card and a separate verifier checking it. The host reads one grounded sentence; the card carries the rest. Nothing legal is invented in prose.
+- **Audio/visual agreement:** each mission has one visible `SAY …` cue, and the same line is spoken. Sound cues mark listening, thinking, confirming, building, and launching, with a distinct cue for each. Cue and host volume are voice-controlled.
+- **Save/resume:** the full shared state, voice settings, transcript, and the current beat autosave to localStorage. A fresh reload offers “Resume” by voice, restores the board and settings, and does not lose the run.
+- **Slow/atypical speech:** the default silence window is generous, and **slow mode** switches to the buffered recogniser with a much longer local pause window so the model cannot cut a slow speaker off. “Slower” changes the host’s speaking rate independently.
+- **Visuals:** the orbital foundry is drawn with Pixi/CSS — planets, a colony that gains a structure per tick, equity-sized crew quarters, and a rocket that launches when the summary is prepared. Large type, high contrast, large targets, a full transcript, and one clear next step are part of the shell.
 
 ## Demo beats
 
-The page opens on the Orbital Foundry landing screen; **Enter the Bridge** swaps to the cockpit without starting the mic. Press **TALK** to start the voice loop before beat 1.
+The page opens on the Orbital Foundry landing screen, listening. Say **Enter the bridge**.
 
-1. Jurisdiction comparison (headline-level — enough to show the choice and why). Rows are fictional places (Mars, Europa, Andromeda Galaxy) with dummy values, for liability: nothing here resembles a real filing fact. Picking one plays a short rocket-travel cinematic before the colony view.
-2. Equity split for **1–5 owners**: a count control (growing defaults to an equal split, shrinking redistributes), draggable crew bars, and a hard 100% invariant enforced through the one shared-state update path in `lib/equity.ts` (invariant tests in `tests/equity.test.mjs`). Every owner/equity change shows a **CONFIRM CREW SPLIT** card with the normalized split; Confirm (or "yes") opens BUILD. Repeating the same owner count also confirms, and issuing another command accepts the visible split and keeps the walk moving instead of re-asking. "Change"/"no" keeps the card open for another owner count or slider drag. A short post-speech pause prevents the mic from hearing the host's own confirmation line.
-3. Filing checklist (guidance + grounded facts from the Corp Plan checklist pack; voice or click, never a filing). The build mission stays current until **5/5** structures are up, so a partly built colony cannot silently advance the walk. While BUILD is the current objective, the left rail shows the five steps and the running **0/5 → 5/5** count with the next step highlighted; clicking a step uses the same `updateChecklistItem` path as the full checklist and updates the host line. At 5/5 the cockpit hands off to LAUNCH.
-4. Grounded s.85 rollover and filing-steps/fees cards are **optional archive systems**, not required missions. The cockpit keeps the four required missions (HOME, CREW, BUILD, LAUNCH) in the open and tucks the optional S.85 / FEES tabs into a collapsed Archive, with the detailed plan and example chips behind disclosures. Fact text and grounding (pack id + fact id) come from the packs in `lib/knowledge.ts`, and ungrounded answers render no card. The required walk is jurisdiction → equity (1–5 owners) → build 5/5 → lawyer summary; the company callsign appears only at 5/5.
-5. "Send to a lawyer for a second opinion" — prepares a summary package (jurisdiction choice, equity split, checklist state) for the user to forward. The demo does NOT actually send email. Before 5/5 the package says the company name is not chosen yet.
+1. **Home base:** compare the three fictional places (Mars, Europa, Andromeda Galaxy) and pick one by voice. A short rocket-travel cinematic covers the switch to the colony.
+2. **Crew and equity:** choose 1–5 owners, set a split by voice or slider, then confirm the normalized split. The 100% invariant is enforced in `lib/equity.ts`; the walk does not advance until the visible split is confirmed.
+3. **Build 5/5:** tick structures by voice (“build the next structure”, “build all five”). The build mission stays current until the whole queue is done.
+4. **Approve the name:** at 5/5, the colony asks for the fictional company name. Say “Approve Galactic Bagels” or “Call it <your name>”; custom names are forced to carry “(fictional)”.
+5. **Grounded s.85:** say “Explain section 85”. The card shows verbatim pack text and pack/fact grounding; the host reads one grounded sentence.
+6. **Lawyer summary:** say “Prepare the lawyer summary”. The package carries the approved name, home base, split, 5/5 checklist, and s.85 grounding. Prep only — no email, no filing, no submission.
 
-Day 2 catalog: fresh entries in `lib/catalog.ts` for the jurisdiction table, equity slider, filing checklist, and rollover fact card, all written in-window and driven by CopilotKit shared state (A2UI contained mode).
-
-Day 3 catalog + knowledge extension (two components, both fresh in-window): a grounded filing-steps/fees knowledge pack (`corp-plan-filing-steps-fees-v1` in `lib/knowledge.ts`) rendered by the `FilingSteps` card (catalog `vvb-filing-steps-v1`) — pack text verbatim with pack/fact grounding, unknown ids show no card, every fee figure DEMO-labeled and fictional; and the lawyer-summary package display (catalog `vvb-lawyer-summary-v1`) — beat 5's package built by `lib/lawyer-summary.ts` from shared state and rendered on the canvas whether prepared by button or by the agent action `prepareLawyerSummary`. Prep only; no send path. Tests in `tests/day3.test.mjs` (12/12 with the Day 2 suite).
+The optional Filing Intel archive (steps and fees) remains available by voice but is not a required mission.
 
 ## Follow-ups
 

@@ -157,3 +157,16 @@ export function findFactById(
   }
   return null;
 }
+
+// Pick the grounded fact that best answers a spoken s.85 question. The
+// caller still looks the id up in S85_PACK; this only routes to a fact
+// that exists, never invents text. Unknown phrasings land on the
+// "what it is" fact, the required lesson.
+export function rolloverFactIdFor(question: string): string {
+  const q = (question ?? "").toLowerCase();
+  if (/\b(?:eligible|property|asset|inventory|capital property)\b/.test(q)) return "s85-eligible-property";
+  if (/\b(?:elected amount|elect(?:ed)?|proceeds|cost|fair market value|boot)\b/.test(q)) return "s85-elected-amount";
+  if (/\b(?:share consideration|shares|consideration|at least one share)\b/.test(q)) return "s85-share-consideration";
+  if (/\b(?:file|filed|filing|form|t2057|t2058|deadline|due date|penalty)\b/.test(q)) return "s85-filing";
+  return "s85-what-it-is";
+}

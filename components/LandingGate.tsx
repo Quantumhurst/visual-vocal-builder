@@ -2,44 +2,69 @@
 
 // Persistent landing screen for the same `/` route.
 //
-// The old boot fallback only flashed while the cockpit bundle loaded.
-// This is a real first screen: it stays until Enter the Bridge, then
-// mounts the cockpit and hands the click to the existing first-Speak
-// path (greeting once, then arm the mic). No new route.
+// Voice first: the page listens for "Enter the bridge" (or "Resume" when
+// a run is saved) and mounts the cockpit itself. The visible button is a
+// fallback only. Entering stops the landing mic, then the cockpit opens
+// the conversation and reopens its own mic without a click.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import CanvasHost from "./Canvas";
+import VoiceEntry from "./VoiceEntry";
+import {
+  clearSavedSession,
+  loadSavedSession,
+  type SavedSession,
+} from "../lib/persistence";
+import type { EntryMode } from "../lib/voice-entry";
+
+type Session = { mode: EntryMode; saved: SavedSession | null };
 
 export default function LandingGate() {
-  const [entered, setEntered] = useState(false);
+  const [saved, setSaved] = useState<SavedSession | null>(null);
+  const [ready, setReady] = useState(false);
+  const [session, setSession] = useState<Session | null>(null);
 
-  if (entered) return <CanvasHost />;
+  useEffect(() => {
+    // Deferred one tick: reading localStorage during the effect body and
+    // setting state synchronously causes a cascading render in React 19.
+    const timer = setTimeout(() => {
+      setSaved(loadSavedSession());
+      setReady(true);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
+
+  if (session) {
+    const resume = session.mode === "resume" && Boolean(session.saved);
+    return (
+      <CanvasHost
+        autoStart
+        resumed={resume}
+        initialState={resume ? session.saved?.state : undefined}
+        initialSettings={resume ? session.saved?.settings : undefined}
+        initialLog={resume ? session.saved?.log : undefined}
+      />
+    );
+  }
 
   return (
-    <main
-      className="boot-screen landing-screen"
-      aria-labelledby="landing-title"
-      aria-describedby="landing-disclaimer"
-    >
-      <div className="landing-orb-wrap" aria-hidden="true">
-        <span className="landing-spin" />
-        <span className="boot-orbit" />
-      </div>
-      <p className="eyebrow">VVB-01 · ORBITAL FOUNDRY</p>
-      <h1 id="landing-title">Visual Vocal Builder</h1>
-      <p className="landing-tagline">Incorporate a company by voice</p>
-      <p id="landing-disclaimer" className="landing-disclaimer">
-        Demo data only. This is not legal advice, not a filing, and nothing here is
-        submitted to any registry.
-      </p>
-      <button
-        type="button"
-        className="btn btn-primary landing-enter"
-        data-testid="enter-bridge"
-        onClick={() => setEntered(true)}
-      >
-        Enter the Bridge
-      </button>
+    <main className="boot-screen landing-screen" aria-labelledby="voice-gate-title">
+      {ready ? (
+        <VoiceEntry
+          saved={saved}
+          onEnter={(mode) => setSession({ mode, saved })}
+          onStartOver={() => {
+            clearSavedSession();
+            setSaved(null);
+            setSession({ mode: "fresh", saved: null });
+          }}
+        />
+      ) : (
+        <div className="landing-loading" role="status">
+          <span className="landing-spin" aria-hidden="true" />
+          <p>Opening the bridge…</p>
+        </div>
+      )}
     </main>
   );
 }

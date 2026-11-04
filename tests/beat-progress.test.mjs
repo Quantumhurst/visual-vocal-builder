@@ -36,5 +36,6 @@ test("checklist stays open until every item is ticked", () => {
     b,
   );
   assert.equal(beatProgress(all).done.checklist, true);
-  assert.equal(beatProgress(all).nextBeat, "summary");
+  // The name is approved as its own beat after 5/5.
+  assert.equal(beatProgress(all).nextBeat, "name");
 });

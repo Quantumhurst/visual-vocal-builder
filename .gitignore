@@ -157,3 +157,6 @@ proof/
 # Local QA screenshots and agent tooling state
 .shots/
 .commandcode/
+
+# Local headset walk audio (synthesized speech)
+.tmp-audio/

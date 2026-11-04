@@ -29,10 +29,11 @@ export function getHostQuestion(beat: Beat, founderNames: string[] = ["Nova", "O
         ? `${selected} locked in! Next up: how should ${who} ${verb} the 100% equity?`
         : `Home base pending. Next up: how should ${who} ${verb} the 100% equity?`;
     }
-    case "checklist": return "Equity set. Pick a filing step from the five on the left, or say “tick next step”.";
-    case "rollover": return "Checklist moving. Want the s.85 rollover fact card for this setup?";
-    case "filingsteps": return "Rollover noted. Ready to walk the filing steps and fees in order?";
-    case "summary": return "Everything's lined up — shall I prepare the lawyer summary package?";
+    case "checklist": return "Build the colony. Say “Build the next structure” or “Finish the build” — every tick raises one structure.";
+    case "name": return "Colony complete — five of five. Approve the company name by saying “Approve Galactic Bagels”, or “Call it <your name>”.";
+    case "rollover": return "Name approved. Say “Explain section 85” to bring up the grounded rollover fact.";
+    case "filingsteps": return "That filing card is optional. Say “Build the colony” to keep the required walk moving.";
+    case "summary": return "Everything's lined up — say “Prepare the lawyer summary”. Prep only; nothing is filed or sent.";
   }
 }
 

@@ -10,6 +10,7 @@ export type CatalogEntry = {
     | "jurisdiction"
     | "equity"
     | "checklist"
+    | "name"
     | "rollover"
     | "filingsteps"
     | "summary";
@@ -51,6 +52,17 @@ export const CATALOG: CatalogEntry[] = [
     grounding: "corp-plan-incorporation-checklist-v1 in lib/knowledge.ts",
     description:
       "Incorporation walk-through checklist. Guidance and grounded facts only — never a registry filing, no submission path.",
+  },
+  {
+    catalogId: "vvb-company-name-approval-v1",
+    component: "NameApprovalCard",
+    beat: "name",
+    stateSlice: "companyName",
+    drivenBy:
+      "useCoAgent shared state; the voice approval and the agent action approveCompanyName share applyCompanyName()",
+    grounding: "fictional demo name in lib/demo-data.ts; custom names are forced to carry '(fictional)'",
+    description:
+      "Company-name approval after the colony reaches 5/5. The screen asks for the exact spoken approval; the approved name feeds the lawyer summary.",
   },
   {
     catalogId: "vvb-filing-steps-v1",

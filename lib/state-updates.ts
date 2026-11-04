@@ -10,6 +10,7 @@ export const INITIAL_STATE: SharedState = {
   transcript: "",
   jurisdictions: DEMO_JURISDICTIONS,
   selectedJurisdiction: null,
+  companyName: "",
   founders: DEMO_FOUNDERS,
   equityNote: "",
   checklist: DEMO_CHECKLIST,
@@ -160,8 +161,9 @@ export function applyFocusJurisdiction(state: SharedState, name: string | null, 
 }
 
 export function applyStartOver(state: SharedState): SharedState {
-  // Canvas only (selection, equity, checklist, cards, lawyer package);
-  // chat history lives outside SharedState, and the transcript line is kept.
+  // Canvas only (selection, equity, checklist, name approval, cards,
+  // lawyer package); chat history lives outside SharedState, and the
+  // transcript line is kept.
   return { ...INITIAL_STATE, transcript: state.transcript };
 }
 
@@ -190,12 +192,54 @@ export function cheapestByNumber(rows: JurisdictionRow[]): {
   };
 }
 
-// The company is not named until the incorporation checklist is complete
-// (5/5). Before that, the prepared package must not present the demo name
-// as already chosen.
+// Company-name approval is its own required beat, after the colony is
+// 5/5. The user may keep the fictional demo name or name their own
+// fictional company. Custom names are cleaned and forced to carry the
+// "(fictional)" marker so a demo name can never be mistaken for a real
+// company. Never throws; an empty/whitespace name falls back to the
+// prepared demo name.
+export function normalizeCompanyName(raw?: string | null): string {
+  const clean = String(raw ?? "")
+    .replace(/\s+/g, " ")
+    .replace(/^["“”']+|["“”']+$/g, "")
+    .replace(/[.!?]+$/, "")
+    .trim()
+    .slice(0, 64)
+    .trim();
+  if (!clean) return DEMO_COMPANY_NAME;
+  if (/\(fictional\)$/i.test(clean)) return clean;
+  return `${clean} (fictional)`;
+}
+
+export function applyCompanyName(state: SharedState, rawName?: string | null): SharedState {
+  return {
+    ...state,
+    currentBeat: "name",
+    companyName: normalizeCompanyName(rawName),
+  };
+}
+
+// Parse a spoken custom company name from common phrasings. Approval
+// phrases ("yes", "approve Galactic Bagels") are handled by the caller;
+// this only returns a NEW name the user actually proposed. Conservative
+// on purpose: a bare short phrase is not a company name.
+export function parseSpokenCompanyName(raw: string): string | null {
+  const text = String(raw ?? "").trim();
+  if (!text) return null;
+  const prefixed = text.match(
+    /^(?:call it|name it|call the company|name the company|let'?s call it|let'?s name it|how about|use the name|the name is|company name is|make it)\s+(.+)$/i,
+  );
+  if (prefixed) {
+    const candidate = prefixed[1].replace(/[.!?]+$/, "").trim();
+    return candidate.length >= 2 ? candidate : null;
+  }
+  return null;
+}
+
+// The package presents the name the founder actually approved. Before
+// the approval beat the package must say the name is not chosen yet.
 export function companyNameFor(state: SharedState): string {
-  const complete = state.checklist.length > 0 && state.checklist.every((item) => item.done);
-  return complete ? DEMO_COMPANY_NAME : "(company name not chosen yet)";
+  return state.companyName.trim() !== "" ? state.companyName : "(company name not chosen yet)";
 }
 
 export function applyLawyerSummary(state: SharedState): SharedState {

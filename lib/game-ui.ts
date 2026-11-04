@@ -6,10 +6,7 @@
 // agent's next-beat question in agreement.
 
 import { beatProgress, type Beat } from "./beat-progress.ts";
-import { DEMO_COMPANY_NAME } from "./demo-data.ts";
 import type { SharedState } from "./state.ts";
-
-const SHIP_NAME = DEMO_COMPANY_NAME.replace(/\s+Inc\..*$/i, "").toUpperCase();
 
 export type ModuleMeta = {
   id: Beat;
@@ -21,14 +18,16 @@ export type ModuleMeta = {
   optional: boolean; // archive system, never required for launch
 };
 
-// Display order matches the six-beat walk in lib/agent-prompt.ts.
+// Display order follows the six-beat walk. The filing card is the only
+// optional archive system; every other system is required for launch.
 export const MODULES: ModuleMeta[] = [
   { id: "jurisdiction", code: "01", label: "Home base", short: "HOME", glyph: "◎", blurb: "Pick a world", optional: false },
   { id: "equity", code: "02", label: "Crew manifest", short: "CREW", glyph: "◐", blurb: "Split the equity", optional: false },
-  { id: "checklist", code: "03", label: "Build queue", short: "BUILD", glyph: "▤", blurb: "Raise structures", optional: false },
-  { id: "rollover", code: "04", label: "Rollover archive", short: "S.85", glyph: "◇", blurb: "Optional grounded fact", optional: true },
-  { id: "filingsteps", code: "05", label: "Filing intel", short: "FEES", glyph: "▥", blurb: "Optional steps & fees", optional: true },
-  { id: "summary", code: "06", label: "Launch package", short: "LAUNCH", glyph: "▲", blurb: "Lawyer summary", optional: false },
+  { id: "checklist", code: "03", label: "Build queue", short: "BUILD", glyph: "▤", blurb: "Raise five structures", optional: false },
+  { id: "name", code: "04", label: "Company name", short: "NAME", glyph: "✦", blurb: "Approve the callsign", optional: false },
+  { id: "rollover", code: "05", label: "Rollover lesson", short: "S.85", glyph: "◇", blurb: "Grounded rollover fact", optional: false },
+  { id: "filingsteps", code: "06", label: "Filing intel", short: "FEES", glyph: "▥", blurb: "Optional steps & fees", optional: true },
+  { id: "summary", code: "07", label: "Launch package", short: "LAUNCH", glyph: "▲", blurb: "Lawyer summary", optional: false },
 ];
 
 export function moduleFor(id: Beat): ModuleMeta {
@@ -92,8 +91,11 @@ export function flightPlan(state: SharedState, active: Beat): FlightStep[] {
       case "checklist":
         detail = `${built}/${total} built`;
         break;
+      case "name":
+        detail = state.companyName || "not approved";
+        break;
       case "rollover":
-        detail = state.rolloverCard ? "fact online" : "no fact yet";
+        detail = state.rolloverCard ? "fact online" : "lesson pending";
         break;
       case "filingsteps":
         detail = state.filingStepsCard ? `${facts} fact${facts === 1 ? "" : "s"} online` : "no facts yet";
@@ -122,11 +124,15 @@ export function flightStatusLabel(status: FlightStatus): string {
   }
 }
 
-// The ship/company name is not established at page load, or even after
-// the name-approval step alone. The callsign appears only when the whole
-// incorporation checklist is at 5/5 — the company is not named until it
-// is actually formed.
+// The ship/company name appears only after the founder explicitly
+// approves the name beat. Building the "pick a name" structure does not
+// name the company; approval does.
 export function shipLabel(state: SharedState): string {
-  const complete = state.checklist.length > 0 && state.checklist.every((item) => item.done);
-  return complete ? SHIP_NAME : "CALLSIGN PENDING";
+  return state.companyName.trim() !== ""
+    ? state.companyName
+        .replace(/\s*\(fictional\)\s*$/i, "")
+        .replace(/\s+Inc\.?.*$/i, "")
+        .trim()
+        .toUpperCase()
+    : "CALLSIGN PENDING";
 }

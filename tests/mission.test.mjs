@@ -4,34 +4,52 @@ import { missionFor } from "../lib/mission.ts";
 import { spokenHostText } from "../lib/spoken-text.ts";
 import {
   applyChecklistItem,
+  applyCompanyName,
   applyEquity,
-  applyFilingSteps,
   applyJurisdiction,
   applyLawyerSummary,
   applyRolloverFact,
   withDefaults,
 } from "../lib/state-updates.ts";
-import { CHECKLIST_PACK, FILING_STEPS_PACK } from "../lib/knowledge.ts";
+import { CHECKLIST_PACK } from "../lib/knowledge.ts";
 
 const base = () => withDefaults(null);
+const allChecklist = () => CHECKLIST_PACK.facts.map((fact) => fact.factId);
 
 test("mission follows the next incomplete beat", () => {
   const m1 = missionFor(base());
   assert.equal(m1.beat, "jurisdiction");
   assert.equal(m1.step, 1);
+  assert.equal(m1.total, 6);
+  assert.equal(m1.voiceCue, "Pick Mars");
   assert.ok(m1.chips.some((c) => /Mars/.test(c.command)));
   const s2 = applyEquity(applyJurisdiction(base(), "Mars"), 1, 70, "test");
   const m2 = missionFor(s2);
   assert.equal(m2.beat, "checklist");
+  assert.match(m2.voiceCue, /Build the next structure/);
   assert.ok(m2.chips.length >= 1);
 });
 
-test("every mission has a sayable prompt and at least one chip", () => {
-  const m = missionFor(base());
-  assert.ok(m.prompt.length > 10);
-  assert.ok(m.total, 6);
-  for (const chip of m.chips) {
-    assert.ok(chip.label && chip.command);
+test("every mission has a sayable cue, a prompt, and at least one chip", () => {
+  for (const state of [
+    base(),
+    applyJurisdiction(base(), "Mars"),
+    applyEquity(applyJurisdiction(base(), "Mars"), 0, 70, "test"),
+    (() => {
+      let s = applyEquity(applyJurisdiction(base(), "Mars"), 0, 70, "test");
+      for (const id of allChecklist()) s = applyChecklistItem(s, id, true);
+      return s;
+    })(),
+    applyCompanyName(base()),
+    applyRolloverFact(base(), "s85-what-it-is", "what is s.85?"),
+  ]) {
+    const m = missionFor(state);
+    assert.ok(m.prompt.length > 10);
+    assert.ok(m.voiceCue.length > 3);
+    assert.equal(m.total, 6);
+    for (const chip of m.chips) {
+      assert.ok(chip.label && chip.command);
+    }
   }
 });
 
@@ -39,8 +57,8 @@ function completeChain(checklistIds) {
   let s = applyJurisdiction(base(), "Mars");
   s = applyEquity(s, 0, 70, "test");
   for (const id of checklistIds) s = applyChecklistItem(s, id, true);
+  s = applyCompanyName(s);
   s = applyRolloverFact(s, "s85-what-it-is", "what is s.85?");
-  s = applyFilingSteps(s, [FILING_STEPS_PACK.facts[0].factId], "steps?");
   s = applyLawyerSummary(s);
   return s;
 }
@@ -55,12 +73,21 @@ test("a half-built colony stays on the build mission, not the next beat", () => 
   assert.doesNotMatch(m.title, /founded/i);
 });
 
-test("a fully built colony is called founded", () => {
+test("a fully built and approved colony is called founded", () => {
   const all = CHECKLIST_PACK.facts.map((fact) => fact.factId);
   const m = missionFor(completeChain(all));
   assert.equal(m.beat, "complete");
   assert.match(m.title, /founded/i);
-  assert.match(m.prompt, /fully built/i);
+  assert.match(m.prompt, /nothing was filed/i);
+  assert.match(m.voiceCue, /Show transcript/i);
+});
+
+test("spoken text keeps Inc. and s.85 from being split as sentences", () => {
+  const nameLine = "Company name approved as Galactic Bagels Inc. (fictional). Say “Explain section 85” to see the grounded rollover fact.";
+  assert.match(spokenHostText(nameLine), /Explain section 85/);
+  const fact = "Under s.85(1) of the Canada Income Tax Act, a taxpayer and a taxable Canadian corporation can jointly elect to transfer eligible property to the corporation on a tax-deferred (rollover) basis, so tax on the accrued gain is deferred rather than triggered on the transfer.";
+  assert.match(spokenHostText(fact), /^Under s\.85\(1\)/);
+  assert.match(spokenHostText(fact), /on the transfer\.$/);
 });
 
 test("spoken text is capped to two short sentences", () => {
@@ -71,15 +98,14 @@ test("spoken text is capped to two short sentences", () => {
   assert.ok(spokenHostText("x".repeat(400)).length <= 283);
 });
 
-test("the optional s.85/filing archive is not required to finish", () => {
+test("the grounded s.85 lesson is a required beat, not an archive", () => {
   let state = applyJurisdiction(base(), "Mars");
   state = applyEquity(state, 0, 70, "test");
   for (const fact of CHECKLIST_PACK.facts) {
     state = applyChecklistItem(state, fact.factId, true);
   }
-  state = applyLawyerSummary(state);
-  const m = missionFor(state);
-  assert.equal(m.beat, "complete");
-  assert.match(m.title, /founded/i);
-  assert.equal(m.total, 4);
+  state = applyCompanyName(state);
+  assert.equal(missionFor(state).beat, "rollover");
+  assert.match(missionFor(state).voiceCue, /Explain section 85/);
+  assert.equal(missionFor(state).total, 6);
 });

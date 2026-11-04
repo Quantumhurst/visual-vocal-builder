@@ -75,20 +75,20 @@ test("auto-stop only after real speech plus a real pause", () => {
   a = nextVoiceActivity(a, 0.2, t0 + 200, 200); // 400ms of speech
   assert.equal(a.hasSpoken, true);
   assert.equal(shouldAutoStop(a, t0 + 400 + 400), false); // brief pause: keep listening
-  assert.equal(shouldAutoStop(a, t0 + 400 + 1200), true); // natural pause: send it
+  assert.equal(shouldAutoStop(a, t0 + 400 + 1500), true); // natural pause: send it
 });
 
-test("adaptive endpointing: intent-matched stops at 600ms, unmatched waits for 1100ms", () => {
-  assert.equal(SILENCE_TO_STOP_MS, 1100);
-  assert.equal(INTENT_SILENCE_TO_STOP_MS, 600);
+test("adaptive endpointing: intent-matched stops at 900ms, unmatched waits for 1400ms", () => {
+  assert.equal(SILENCE_TO_STOP_MS, 1400);
+  assert.equal(INTENT_SILENCE_TO_STOP_MS, 900);
   const t0 = 20_000;
   let a = nextVoiceActivity(IDLE_ACTIVITY, 0.2, t0, 200);
   a = nextVoiceActivity(a, 0.2, t0 + 200, 200); // 400ms of speech
-  const silence600 = t0 + 200 + 600;
+  const silence600 = t0 + 200 + 900;
   assert.equal(shouldAutoStop(a, silence600, INTENT_SILENCE_TO_STOP_MS), true);
   assert.equal(shouldAutoStop(a, silence600, SILENCE_TO_STOP_MS), false);
   assert.equal(shouldAutoStop(a, silence600), false); // default is the full pause
-  assert.equal(shouldAutoStop(a, t0 + 200 + 1100, SILENCE_TO_STOP_MS), true);
+  assert.equal(shouldAutoStop(a, t0 + 200 + 1400, SILENCE_TO_STOP_MS), true);
 });
 
 test("adaptive endpointing: speech under MIN_SPEECH_MS never stops, even intent-matched", () => {
