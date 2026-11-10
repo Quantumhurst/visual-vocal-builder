@@ -2,13 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  CopilotKit,
-  useCoAgent,
-  useCopilotAction,
-  useCopilotChatInternal,
-  useCopilotReadable,
-} from "@copilotkit/react-core";
-import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
+  CopilotKitProvider,
+  UseAgentUpdate,
+  useAgent,
+  useAgentContext,
+  useCopilotKit,
+  useFrontendTool,
+} from "@copilotkit/react-core/v2";
+import { z } from "zod";
 import dynamic from "next/dynamic";
 import JurisdictionTable from "./JurisdictionTable";
 
@@ -128,9 +129,8 @@ const EXAMPLE_COMMANDS = [
 // lib/voice-select.ts so the picker and the speech path agree.
 
 // The canvas is the interface: tool calls do not need a second chat card.
-// Registering an empty renderer keeps CopilotKit from warning about each
-// tool call while leaving the visible cockpit untouched.
-const renderNothing = () => <></>;
+// v2 frontend tools render nothing unless a renderer is registered, so no
+// placeholder renderer is needed — the visible cockpit stays untouched.
 
 // Clear, deterministic commands are handled locally. They still use the
 // exact same state appliers as the agent; skipping the model only removes
@@ -162,19 +162,43 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const [bootSettings] = useState<VoiceSettings>(() =>
     normalizeVoiceSettings(initialSettings ?? DEFAULT_VOICE_SETTINGS),
   );
-  const { state, setState } = useCoAgent<SharedState>({
-    name: "vvb",
-    initialState: bootState,
+  const { agent, isReady: agentReady } = useAgent({
+    agentId: "vvb",
+    updates: [
+      UseAgentUpdate.OnStateChanged,
+      UseAgentUpdate.OnMessagesChanged,
+      UseAgentUpdate.OnRunStatusChanged,
+    ],
   });
-  // The canvas renders from a local authoritative copy. CopilotKit's
-  // initial co-agent state can land a beat after mount; in a voice-first
-  // flow the user may already have spoken, and that late initial sync
-  // must never erase a real selection (the "Mars locked in" line with an
-  // UNSET board bug). Once this session writes locally, the local copy
-  // wins and the agent is kept in sync through setState.
+  const { copilotkit } = useCopilotKit();
+  // v2 has no useCoAgent initialState: seed the runtime copy once the real
+  // agent is ready, retrying across renders until the seed lands.
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (seededRef.current || !agentReady || !agent) return;
+    try {
+      agent.setState(bootState as unknown as Record<string, unknown>);
+      seededRef.current = true;
+    } catch {
+      // Provisional agent or a mid-connect swap — retry on the next render.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent, agentReady]);
+  const state = (
+    agent?.state as unknown as SharedState | undefined
+  ) ?? undefined;
+  function setState(next: SharedState) {
+    agent?.setState(next as unknown as Record<string, unknown>);
+  }
+  // The canvas renders from a local authoritative copy. The runtime
+  // agent state can land a beat after mount; in a voice-first flow the
+  // user may already have spoken, and that late initial sync must never
+  // erase a real selection (the "Mars locked in" line with an UNSET board
+  // bug). Once this session writes locally, the local copy wins and the
+  // agent is kept in sync through setState.
   const [localState, setLocalState] = useState<SharedState>(bootState);
   // A resumed boot is already authoritative: do not let a late initial
-  // co-agent sync replace the saved run with an empty starting state.
+  // agent sync replace the saved run with an empty starting state.
   const localTouchedRef = useRef(Boolean(initialState));
   const view = localState;
   useEffect(() => {
@@ -197,7 +221,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       checklistFlags[v.cardId] = `${v.reason}: ${v.detail}`;
     }
   }
-  const { appendMessage, isLoading, messages, stopGeneration } = useCopilotChatInternal();
+  // v2 agent wire: messages and run status come straight off the bound
+  // agent; sending is addMessage + copilotkit.runAgent (which also runs
+  // the registered frontend tools), stopping is abortRun.
+  const messages = agent?.messages ?? [];
+  const isLoading = agent?.isRunning ?? false;
+  function stopGeneration() {
+    agent?.abortRun();
+  }
   const [recording, setRecording] = useState(false);
   const [typed, setTyped] = useState("");
   const [notice, setNotice] = useState("");
@@ -1212,7 +1243,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
   // Grounding for the agent: fictional company/places, current equity and
   // checklist state, and the optional filing pack's fact ids + topics.
-  useCopilotReadable({
+  useAgentContext({
     description:
       "Fictional demo company, places, equity split, checklist state, and optional filing knowledge-pack fact index for the incorporation demo",
     value: {
@@ -1364,20 +1395,15 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // Beat 1 action: the agent's authoritative jurisdiction write. It
   // lands on the same applyJurisdiction path as the live preview, so
   // confirming a preview changes nothing twice.
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.showJurisdictionComparison,
     description:
       "Show the fictional jurisdiction comparison table and optionally select one of the fictional places (Mars, Europa, Andromeda Galaxy). Call this when the user asks to compare jurisdictions, choose a place to incorporate, or start incorporating the fictional company.",
-    parameters: [
-      {
-        name: "jurisdiction",
-        type: "string",
-        description:
-          "Name of the fictional place the user picked, if they named one.",
-        required: false,
-      },
-    ],
+    parameters: z.object({
+      jurisdiction: z.string().optional().describe(
+        "Name of the fictional place the user picked, if they named one.",
+      ),
+    }),
     handler: async ({ jurisdiction }) =>
       runTool("showJurisdictionComparison", () =>
         commit("jurisdiction", (s) => applyJurisdiction(s, jurisdiction ?? null)),
@@ -1386,25 +1412,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
   // Beat 2 voice path: "make me 70%" -> same updateEquity() the slider
   // drags use, so 60/40 with a 70% request lands on 70/30, total 100%.
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.setFounderEquity,
     description:
       "Set one DEMO owner's equity percent (e.g. the user says 'make me 70%'). The other owner(s) auto-adjust so the split always totals 100%. Owners are the readable founders list; there may be 1–5.",
-    parameters: [
-      {
-        name: "founder",
-        type: "string",
-        description: "Founder name, or 'me' for the first founder.",
-        required: true,
-      },
-      {
-        name: "percent",
-        type: "number",
-        description: "Target percent for that founder, 0-100.",
-        required: true,
-      },
-    ],
+    parameters: z.object({
+      founder: z.string().describe("Founder name, or 'me' for the first founder."),
+      percent: z.number().describe("Target percent for that founder, 0-100."),
+    }),
     handler: async ({ founder, percent }) =>
       runTool("setFounderEquity", () => {
         const base = withDefaults(stateRef.current);
@@ -1416,47 +1431,40 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }),
   });
 
-  useCopilotAction({
+  useFrontendTool({
     name: AGENT_ACTIONS.setOwnerCount,
     description:
       "Set the number of fictional company owners (1-5). Shrinking the team redistributes the removed share; growing adds owners at 0%; the equity split always totals 100%. Use when the user says it is just them, or names a number of owners/founders.",
-    parameters: [
-      {
-        name: "count",
-        type: "number",
-        description: "Number of owners, 1 to 5.",
-        required: true,
-      },
-    ],
+    parameters: z.object({
+      count: z.number().describe("Number of owners, 1 to 5."),
+    }),
     handler: async ({ count }) =>
       runTool("setOwnerCount", () => commit("owners", (s) => applyOwnerCount(s, Number(count)))),
   });
 
   // Beat 3 voice paths: check/uncheck one item, or advance the walk.
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.setChecklistItem,
     description:
       "Check or uncheck one filing-checklist item by its id (ids are in the readable checklist state). Use when the user answers a checklist step or asks to mark one done/not done.",
-    parameters: [
-      { name: "itemId", type: "string", description: "Checklist item id.", required: true },
-      { name: "done", type: "boolean", description: "True to check, false to uncheck.", required: true },
-    ],
+    parameters: z.object({
+      itemId: z.string().describe("Checklist item id."),
+      done: z.boolean().describe("True to check, false to uncheck."),
+    }),
     handler: async ({ itemId, done }) =>
       runTool("setChecklistItem", () =>
         commit("checklist", (s) => applyChecklistItem(s, itemId, Boolean(done))),
       ),
   });
 
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.setChecklistItems,
     description:
       "Check or uncheck several filing-checklist items at once by their ids (ids are in the readable checklist state). Use when the user asks to tick off multiple items in one command.",
-    parameters: [
-      { name: "itemIds", type: "string[]", description: "Checklist item ids.", required: true },
-      { name: "done", type: "boolean", description: "True to check, false to uncheck.", required: true },
-    ],
+    parameters: z.object({
+      itemIds: z.array(z.string()).describe("Checklist item ids."),
+      done: z.boolean().describe("True to check, false to uncheck."),
+    }),
     handler: async ({ itemIds, done }) =>
       runTool("setChecklistItems", () => {
         const ids = Array.isArray(itemIds) ? itemIds.map(String) : [];
@@ -1464,21 +1472,17 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }),
   });
 
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.undoLastChange,
     description:
       "Reverse the last canvas change (voice, slider, or click). Call when the user says undo that, revert, or go back. Never claim an undo without calling this.",
-    parameters: [],
     handler: async () => runTool("undoLastChange", () => undoLast()),
   });
 
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.startOver,
     description:
       "Reset the canvas only (selection, equity, checklist, cards, lawyer package) and keep the chat history. Call when the user says start over or fresh start. Never claim a reset without calling this.",
-    parameters: [],
     handler: async () =>
       runTool("startOver", () => {
         cancelSummaryBuild();
@@ -1486,15 +1490,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }),
   });
 
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.compareJurisdictions,
     description:
       "Answer a comparison question about the three fictional places (Mars, Europa, Andromeda Galaxy) from the DEMO rows and set a DEMO highlight. The highlight never changes the user's selected jurisdiction. DEMO values may be quoted verbatim, labeled DEMO, for these three fictional places only.",
-    parameters: [
-      { name: "question", type: "string", description: "The user's comparison question.", required: false },
-      { name: "focus", type: "string", description: "Fictional place to DEMO-highlight, if one fits; otherwise omit.", required: false },
-    ],
+    parameters: z.object({
+      question: z.string().optional().describe("The user's comparison question."),
+      focus: z.string().optional().describe("Fictional place to DEMO-highlight, if one fits; otherwise omit."),
+    }),
     handler: async ({ question, focus }) =>
       runTool("compareJurisdictions", () => {
         const cheapest = cheapestByNumber(DEMO_JURISDICTIONS);
@@ -1509,12 +1512,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }),
   });
 
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.advanceChecklist,
     description:
       "Mark the first not-yet-done filing-checklist item done and move the walk forward. Use as the user answers each checklist step.",
-    parameters: [],
     handler: async () =>
       runTool("advanceChecklist", () => commit("checklist", (s) => applyAdvanceChecklist(s))),
   });
@@ -1522,20 +1523,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // Day 3: grounded filing-steps/fees card. The handler looks every
   // fact up in the filing-steps pack — card text is pack text verbatim
   // with pack/fact grounding. Any unknown factId renders NO card.
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.showFilingSteps,
     description:
       "Show grounded filing steps and fees facts. Call with factIds from the readable filingStepsFacts index when the user asks about filing steps, process order, or fees. Never invent steps or fees; only pack facts become cards.",
-    parameters: [
-      {
-        name: "factIds",
-        type: "string[]",
-        description: "Fact ids from the filingStepsFacts index.",
-        required: true,
-      },
-      { name: "question", type: "string", description: "The user's question.", required: false },
-    ],
+    parameters: z.object({
+      factIds: z.array(z.string()).describe("Fact ids from the filingStepsFacts index."),
+      question: z.string().optional().describe("The user's question."),
+    }),
     handler: async ({ factIds, question }) =>
       runTool("showFilingSteps", () => {
         const ids = Array.isArray(factIds) ? factIds.map(String) : [];
@@ -1656,12 +1651,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     summaryBuildRef.current = { token, timer: setTimeout(step, SUMMARY_STEP_MS) };
   }
 
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.prepareLawyerSummary,
     description:
       "Prepare the lawyer-summary package (jurisdiction choice, equity split, checklist state) and display it on the canvas. Use when the user asks to prepare, show, or send-to-lawyer the summary. This only prepares the package for the user to forward; it never sends email.",
-    parameters: [],
     handler: async () =>
       runTool("prepareLawyerSummary", () => {
         prepareLawyerPackage(true);
@@ -2344,13 +2337,12 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     messageIdRef.current += 1;
     activeVoiceTurnRef.current = fromVoice;
     try {
-      await appendMessage(
-        new TextMessage({
-          id: `msg-${messageIdRef.current}`,
-          role: Role.User,
-          content: trimmed,
-        }),
-      );
+      agent?.addMessage({
+        id: `msg-${messageIdRef.current}`,
+        role: "user",
+        content: trimmed,
+      });
+      if (agent) await copilotkit.runAgent({ agent });
     } catch (error) {
       const detail = error instanceof Error ? error.message : "the agent run failed";
       setTurnError(`Agent error: ${detail}. Nothing was changed by that turn — say the command again.`);
@@ -4617,15 +4609,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
 export default function CanvasHost(props: CanvasProps = {}) {
   return (
-    <CopilotKit
+    <CopilotKitProvider
       runtimeUrl="/api/copilotkit"
-      showDevConsole={false}
-      enableInspector={false}
+      agentId="vvb"
       headers={() => ({
         "X-Voice-Turn": activeVoiceTurnRef.current ? "1" : "0",
       })}
     >
       <Canvas {...props} />
-    </CopilotKit>
+    </CopilotKitProvider>
   );
 }

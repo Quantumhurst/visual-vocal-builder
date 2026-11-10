@@ -1,10 +1,9 @@
 import {
+  BuiltInAgent,
   CopilotRuntime,
-  OpenAIAdapter,
-  copilotRuntimeNextJSAppRouterEndpoint,
-} from "@copilotkit/runtime";
-import { BuiltInAgent } from "@copilotkit/runtime/v2";
-import OpenAI from "openai";
+  createCopilotRuntimeHandler,
+} from "@copilotkit/runtime/v2";
+import { createOpenAI } from "@ai-sdk/openai";
 import { checkOrigin, clientKey, createRateLimiter } from "../../../../lib/request-guard";
 import { VVB_SYSTEM_PROMPT } from "../../../../lib/agent-prompt";
 import { BRAIN_MODEL } from "../../../../lib/meta-models";
@@ -19,52 +18,52 @@ function guard(req: Request): Response | null {
 }
 
 // Server-only route. The key is read from the server environment and never
-// leaves the server. CopilotKit is the frontend SDK; the brain is Muse Spark
-// via the Meta Model API (OpenAI-compatible surface, baseURL api.meta.ai).
-// The adapter and endpoint are constructed per request, after the key check,
-// so importing this route never throws in a keyless dev boot.
+// leaves the server. The brain is Muse Spark via the Meta Model API
+// (OpenAI-compatible surface, baseURL api.meta.ai). The runtime and its
+// agents are constructed per request, after the key check, so importing
+// this route never throws in a keyless dev boot.
 //
-// Note: the installed 1.81.0 default import path is the v1 SDK, marked
-// deprecated since 1.68.2 in favor of v2. The v1 path is still shipped and
-// typed in the pinned version, and it matches this brief's specified wiring
-// (provider + useCoAgent + frontend actions). A v2 migration is a later
-// decision, not Day 1 scope.
+// v2 SDK: CopilotRuntime holds BuiltInAgents built on an AI SDK language
+// model (createOpenAI pointed at api.meta.ai, the same Responses-API
+// callable form the old OpenAIAdapter.getLanguageModel() produced), and
+// createCopilotRuntimeHandler serves the multi-route protocol (including
+// GET /info agent discovery) under the /api/copilotkit base path.
 function buildHandler(isVoiceTurn = false) {
   const apiKey = process.env.META_API_KEY;
   if (!apiKey) return null;
+  const debugWire = process.env.DEBUG_META_WIRE === "1";
   const wireFetch: typeof fetch = async (url, init) => {
-    try {
-      const parsedBody = init?.body && typeof init.body === "string" ? JSON.parse(init.body) : null;
-      console.log("[META WIRE INSPECT]", JSON.stringify({
-        url: String(url),
-        method: init?.method,
-        isVoiceTurn,
-        reasoning_effort: parsedBody?.reasoning_effort,
-        reasoning: parsedBody?.reasoning,
-        model: parsedBody?.model,
-        hasTools: Boolean(parsedBody?.tools?.length),
-        bodyKeys: parsedBody ? Object.keys(parsedBody) : [],
-      }, null, 2));
-    } catch (e) {
-      console.log("[META WIRE INSPECT ERROR]", e);
+    if (debugWire) {
+      try {
+        const parsedBody = init?.body && typeof init.body === "string" ? JSON.parse(init.body) : null;
+        console.log("[META WIRE INSPECT]", JSON.stringify({
+          url: String(url),
+          method: init?.method,
+          isVoiceTurn,
+          reasoning_effort: parsedBody?.reasoning_effort,
+          reasoning: parsedBody?.reasoning,
+          model: parsedBody?.model,
+          hasTools: Boolean(parsedBody?.tools?.length),
+          bodyKeys: parsedBody ? Object.keys(parsedBody) : [],
+        }, null, 2));
+      } catch (e) {
+        console.log("[META WIRE INSPECT ERROR]", e);
+      }
     }
     return fetch(url, init);
   };
-  const serviceAdapter = new OpenAIAdapter({
-    openai: new OpenAI({
-      baseURL: "https://api.meta.ai/v1",
-      apiKey,
-      fetch: wireFetch,
-    }),
-    model: BRAIN_MODEL,
-  });
+  const model = createOpenAI({
+    baseURL: "https://api.meta.ai/v1",
+    apiKey,
+    fetch: wireFetch,
+  })(BRAIN_MODEL);
 
   // For voice turns only, configure reasoning effort to "low".
-  // Using forceReasoning: true ensures the AI SDK treats muse-spark-1.3 as a
-  // reasoning model and transmits reasoning: { effort: "low" } on the wire to
-  // Meta's Responses API instead of dropping it as an unsupported non-reasoning model.
+  // forceReasoning: true makes the AI SDK treat muse-spark-1.3 as a
+  // reasoning model and transmit reasoning effort on the wire to Meta's
+  // API instead of dropping it as an unsupported non-reasoning model.
   const agentConfig = {
-    model: serviceAdapter.getLanguageModel(),
+    model,
     prompt: VVB_SYSTEM_PROMPT,
     ...(isVoiceTurn
       ? {
@@ -77,21 +76,16 @@ function buildHandler(isVoiceTurn = false) {
         }
       : {}),
   };
-  // Register the agent the UI binds to (useCoAgent name "vvb") alongside
-  // "default" (useCopilotChat's implicit agent). Both use the same model
-  // construction the runtime itself uses for its auto-created default.
+  // Register the agent the UI binds to (useAgent agentId "vvb") alongside
+  // "default" (the provider default). Both share the same model
+  // construction and prompt.
   const runtime = new CopilotRuntime({
     agents: {
       default: new BuiltInAgent(agentConfig),
       vvb: new BuiltInAgent(agentConfig),
     },
   });
-  const { handleRequest } = copilotRuntimeNextJSAppRouterEndpoint({
-    runtime,
-    serviceAdapter,
-    endpoint: "/api/copilotkit",
-  });
-  return handleRequest;
+  return createCopilotRuntimeHandler({ runtime, basePath: "/api/copilotkit" });
 }
 
 const KEY_MISSING = () =>
@@ -108,10 +102,8 @@ export async function POST(req: Request) {
   return handleRequest(req);
 }
 
-// The 1.81 client probes GET /api/copilotkit/info for agent discovery.
-// This catch-all segment forwards that probe (and every other subpath)
-// to the same runtime handler; the runtime answers discovery via its
-// single-route POST envelope, which the client falls back to on non-2xx.
+// Agent discovery (GET /api/copilotkit/info) and every other subpath of
+// this catch-all segment are served by the same multi-route handler.
 export async function GET(req: Request) {
   const blocked = guard(req); if (blocked) return blocked;
   const handleRequest = buildHandler(false);

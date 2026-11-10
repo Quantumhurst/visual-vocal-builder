@@ -89,7 +89,6 @@ The optional Filing Intel archive (steps and fees) remains available by voice bu
 
 ## Follow-ups
 
-- CopilotKit v2 migration.
 - Shared rate-limit store (e.g. Upstash/Redis) instead of per-instance in-memory counts.
 
 ## Provenance & Hackathon Disclosure
