@@ -242,15 +242,61 @@ export default function VoiceEntry({ saved, onEnter, onStartOver }: Props) {
     };
     let promptStarted = false;
     try {
-      if (typeof window !== "undefined" && window.speechSynthesis) {
-        const utter = new SpeechSynthesisUtterance(prompt);
-        utter.rate = 0.95;
-        utter.onstart = () => {
-          promptStarted = true;
-        };
-        utter.onend = begin;
-        utter.onerror = begin;
-        window.speechSynthesis.speak(utter);
+      if (typeof window !== "undefined") {
+        fetch("/api/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: prompt, voice: "Aoede" }),
+        })
+          .then(async (res) => {
+            if (!res.ok) throw new Error("TTS failed");
+            const data = (await res.json()) as { audio?: string };
+            if (!data.audio || doneRef.current || began) return;
+            const AudioCtx =
+              window.AudioContext ||
+              (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+            if (AudioCtx) {
+              const ctx = new AudioCtx({ sampleRate: 24000 });
+              if (ctx.state === "suspended") {
+                throw new Error("AudioContext suspended");
+              }
+              promptStarted = true;
+              const binary = atob(data.audio);
+              const len = binary.length / 2;
+              const pcm16 = new Int16Array(len);
+              for (let i = 0; i < len; i++) {
+                pcm16[i] = binary.charCodeAt(i * 2) | (binary.charCodeAt(i * 2 + 1) << 8);
+              }
+              const float32 = new Float32Array(len);
+              for (let i = 0; i < len; i++) {
+                float32[i] = pcm16[i] / 32768.0;
+              }
+              const buffer = ctx.createBuffer(1, len, 24000);
+              buffer.copyToChannel(float32, 0);
+              const src = ctx.createBufferSource();
+              src.buffer = buffer;
+              src.connect(ctx.destination);
+              src.onended = () => {
+                begin();
+                try { void ctx.close(); } catch { /* ignore */ }
+              };
+              src.start(0);
+              return;
+            }
+            throw new Error("No AudioContext");
+          })
+          .catch(() => {
+            if (typeof window !== "undefined" && window.speechSynthesis && !began) {
+              const utter = new SpeechSynthesisUtterance(prompt);
+              utter.rate = 0.95;
+              utter.onstart = () => {
+                promptStarted = true;
+              };
+              utter.onend = begin;
+              utter.onerror = begin;
+              window.speechSynthesis.speak(utter);
+            }
+          });
       }
     } catch {
       // ignore
