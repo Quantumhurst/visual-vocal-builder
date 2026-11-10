@@ -185,6 +185,42 @@ export default function VoiceEntry({ saved, onEnter, onStartOver }: Props) {
       const source = ctx.createMediaStreamSource(stream);
       source.connect(node);
       if (ctx.state === "suspended") await ctx.resume();
+
+      if (typeof window !== "undefined") {
+        const w = window as unknown as Record<string, unknown>;
+        const Ctor = (w.SpeechRecognition ?? w.webkitSpeechRecognition) as
+          | (new () => { lang: string; continuous: boolean; interimResults: boolean; start: () => void; stop: () => void; onresult: unknown; onerror: unknown })
+          | undefined;
+        if (Ctor) {
+          try {
+            const rec = new Ctor();
+            rec.lang = "en-US";
+            rec.interimResults = true;
+            rec.continuous = true;
+            rec.onresult = (ev: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal?: boolean }> }) => {
+              if (doneRef.current) return;
+              let text = "";
+              for (let i = 0; i < ev.results.length; i++) {
+                text += ev.results[i][0]?.transcript ?? "";
+              }
+              const clean = text.trim();
+              if (clean) {
+                setHeard(clean);
+                const intent = parseEntryIntent(clean);
+                if (intent) {
+                  try { rec.stop(); } catch { /* ignore */ }
+                  handleTranscript(clean);
+                }
+              }
+            };
+            rec.onerror = () => {};
+            rec.start();
+          } catch {
+            // ignore
+          }
+        }
+      }
+
       setStatus("listening");
     } catch (err) {
       setStatus("error");

@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { parse } from "node:url";
 import next from "next";
 import { WebSocketServer } from "ws";
-import { handleStreamClient } from "./lib/meta-stream-relay.ts";
+import { handleStreamClient } from "./lib/gemini-live-relay.ts";
 import { checkOrigin } from "./lib/request-guard.ts";
 
 process.env.WS_NO_BUFFER_UTIL = "true";
@@ -46,7 +46,7 @@ const nextUpgrade = app.getUpgradeHandler();
 
 server.on("upgrade", (req, socket, head) => {
   const { pathname } = parse(req.url || "");
-  if (pathname === "/api/asr-stream") {
+  if (pathname === "/api/asr-stream" || pathname === "/api/live-stream") {
     const origin = req.headers.origin;
     const host = req.headers.host;
     if (!checkOrigin(origin, host)) {

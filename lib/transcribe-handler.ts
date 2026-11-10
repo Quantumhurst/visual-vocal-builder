@@ -10,7 +10,7 @@ const defaultLimiter = createRateLimiter({ limit: 20, windowMs: 60_000 });
 
 export async function handleTranscribe(req: Request, deps: TranscribeDeps): Promise<Response> {
   const limiter = deps.limiter ?? defaultLimiter;
-  const log = deps.log ?? ((entry: { audioBytes: number; transcriptLength: number }) => console.log("api.meta.ai asr call", entry));
+  const log = deps.log ?? ((entry: { audioBytes: number; transcriptLength: number }) => console.log("gemini asr call", entry));
 
   if (!checkOrigin(req.headers.get("origin"), req.headers.get("host"))) {
     return Response.json({ error: "forbidden origin" }, { status: 403 });

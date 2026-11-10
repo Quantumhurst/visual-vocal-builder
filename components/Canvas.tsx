@@ -278,6 +278,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const listeningStallShownRef = useRef(false);
   const noSpeechAttemptsRef = useRef(0);
   const asrSocketRef = useRef<WebSocket | null>(null);
+  const liveAudioCtxRef = useRef<AudioContext | null>(null);
+  const liveNextPlayTimeRef = useRef<number>(0);
+  const liveActiveSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const streamingReadyRef = useRef(false);
   const activeTurnIdRef = useRef(0);
   const asrLastEventAtRef = useRef(0);
@@ -288,6 +291,69 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const announcementIdRef = useRef(0);
   const announceTurnRef = useRef(0);
   const lastAnnouncedOutcomeRef = useRef("");
+
+  function stopLiveAudio() {
+    for (const src of liveActiveSourcesRef.current) {
+      try {
+        src.stop();
+        src.disconnect();
+      } catch {
+        // ignore
+      }
+    }
+    liveActiveSourcesRef.current = [];
+    if (liveAudioCtxRef.current) {
+      liveNextPlayTimeRef.current = liveAudioCtxRef.current.currentTime;
+    }
+  }
+
+  function playLiveAudioChunk(base64Data: string) {
+    try {
+      if (typeof window === "undefined") return;
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+      if (!liveAudioCtxRef.current) {
+        liveAudioCtxRef.current = new AudioCtx({ sampleRate: 24000 });
+      }
+      const ctx = liveAudioCtxRef.current;
+      if (ctx.state === "suspended") {
+        void ctx.resume();
+      }
+      const binary = atob(base64Data);
+      const len = binary.length / 2;
+      const pcm16 = new Int16Array(len);
+      for (let i = 0; i < len; i++) {
+        pcm16[i] = binary.charCodeAt(i * 2) | (binary.charCodeAt(i * 2 + 1) << 8);
+      }
+      const float32 = new Float32Array(len);
+      for (let i = 0; i < len; i++) {
+        float32[i] = pcm16[i] / 32768.0;
+      }
+      const buffer = ctx.createBuffer(1, len, 24000);
+      buffer.copyToChannel(float32, 0);
+
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+
+      const now = ctx.currentTime;
+      if (liveNextPlayTimeRef.current < now) {
+        liveNextPlayTimeRef.current = now;
+      }
+      source.start(liveNextPlayTimeRef.current);
+      liveNextPlayTimeRef.current += buffer.duration;
+
+      liveActiveSourcesRef.current.push(source);
+      source.onended = () => {
+        const idx = liveActiveSourcesRef.current.indexOf(source);
+        if (idx >= 0) liveActiveSourcesRef.current.splice(idx, 1);
+      };
+    } catch (err) {
+      console.warn("[gemini-audio] playback error:", err);
+    }
+  }
 
   function clearConfirmationTimer() {
     if (confirmationTimerRef.current !== null) {
@@ -760,6 +826,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     clearSpeechWatchdog();
     clearHostStartTimer();
     clearRearmTimer();
+    stopLiveAudio();
     utteranceRef.current = null;
     hostSpeakingRef.current = false;
     setHostSpeaking(false);
@@ -2376,7 +2443,84 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
           const msg = JSON.parse(raw) as Record<string, unknown>;
           const type = msg.type as string | undefined;
 
-          if (type === "speechStart") {
+          if (type === "audio") {
+            const audioData = msg.data as string | undefined;
+            if (audioData) {
+              playLiveAudioChunk(audioData);
+            }
+          } else if (type === "interrupted") {
+            stopLiveAudio();
+          } else if (type === "toolCall") {
+            const toolName = (msg.name as string) || "";
+            const toolId = (msg.id as string) || "";
+            const toolArgs = (msg.args as Record<string, unknown>) ?? {};
+            logEvent(`gemini toolCall ${toolName} ${JSON.stringify(toolArgs)}`);
+
+            let toolResult: Record<string, unknown> = { success: true };
+            try {
+              if (toolName === "showJurisdictionComparison" || toolName === "selectJurisdiction") {
+                const jur = (toolArgs.jurisdiction as string) || (toolArgs.targetJurisdiction as string) || null;
+                commit("jurisdiction", (s) => applyJurisdiction(s, jur));
+                toolResult = { success: true, jurisdiction: jur };
+              } else if (toolName === "setFounderEquity") {
+                const founder = (toolArgs.founder as string) ?? "";
+                const percent = Number(toolArgs.percent ?? 50);
+                const base = withDefaults(stateRef.current);
+                const index = resolveFounderIndex(base.founders, founder);
+                if (index >= 0) {
+                  commit("equity", (s) => applyEquity(s, index, percent, "voice"));
+                  toolResult = { success: true, founder, percent };
+                } else {
+                  toolResult = { error: `Founder ${founder} not found` };
+                }
+              } else if (toolName === "setOwnerCount") {
+                const count = Number(toolArgs.count ?? 2);
+                commit("owners", (s) => applyOwnerCount(s, count));
+                toolResult = { success: true, count };
+              } else if (toolName === "setChecklistItem") {
+                const itemId = String(toolArgs.itemId ?? "");
+                const done = Boolean(toolArgs.done);
+                commit("checklist", (s) => applyChecklistItem(s, itemId, done));
+                toolResult = { success: true, itemId, done };
+              } else if (toolName === "setChecklistItems") {
+                const ids = Array.isArray(toolArgs.itemIds) ? (toolArgs.itemIds as string[]) : [];
+                const done = Boolean(toolArgs.done);
+                commit("checklist", (s) => applyChecklistItems(s, ids, done));
+                toolResult = { success: true, itemIds: ids, done };
+              } else if (toolName === "advanceChecklist") {
+                commit("checklist", (s) => applyAdvanceChecklist(s));
+                toolResult = { success: true };
+              } else if (toolName === "approveCompanyName") {
+                const name = (toolArgs.name as string) || DEMO_COMPANY_NAME;
+                approveCompanyName(name);
+                toolResult = { success: true, name };
+              } else if (toolName === "showFilingSteps") {
+                const ids = Array.isArray(toolArgs.factIds) ? (toolArgs.factIds as string[]) : [];
+                commit("filingsteps", (s) => applyFilingSteps(s, ids, toolArgs.question as string | undefined));
+                toolResult = { success: true, factIds: ids };
+              } else if (toolName === "prepareLawyerSummary") {
+                prepareLawyerPackage(true);
+                toolResult = { success: true };
+              } else if (toolName === "undoLastChange") {
+                undoLast();
+                toolResult = { success: true };
+              } else if (toolName === "startOver") {
+                cancelSummaryBuild();
+                commit("start-over", (s) => applyStartOver(s));
+                toolResult = { success: true };
+              } else if (toolName === "compareJurisdictions") {
+                const focus = (toolArgs.focus as string) || "Europa";
+                commit("compare", (s) => applyFocusJurisdiction(s, focus, (toolArgs.question as string) ?? "comparison"));
+                toolResult = { success: true, focus };
+              }
+            } catch (err) {
+              toolResult = { error: String(err) };
+            }
+
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "toolResponse", id: toolId, output: toolResult }));
+            }
+          } else if (type === "speechStart") {
             asrLastEventAtRef.current = performance.now();
             logEvent(`asr speechStart ${String(msg.turnId)}`);
             const turnId = msg.turnId as number | undefined;
@@ -2657,15 +2801,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       };
       rec.onend = () => {
         recognitionRef.current = null;
-        if (streamingReadyRef.current) {
-          // Streaming ASR is active: Meta endpointing and HybridEndpointer are the authority.
-          // Web Speech must never prematurely tear down the active streaming session.
-          return;
-        }
         if (
           recordingRef.current &&
           !finishingRef.current &&
-          (intentMatchedRef.current || (equityConfirm && isConfirmationAnswer(liveTranscriptRef.current)))
+          liveTranscriptRef.current.trim().length > 0
         ) {
           void finishRecording();
           return;
@@ -2814,67 +2953,27 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (finishingRef.current) return;
     finishingRef.current = true;
 
-    // If streaming ASR is active, check if there's a pending fast-commit to fire
-    if (streamingReadyRef.current) {
-      if (endpointerRef.current?.forceFastCommitNow(liveTranscriptRef.current)) {
-        finishingRef.current = false;
-        return;
-      }
-      recordingRef.current = false;
-      isTurnListeningRef.current = false;
-      stopWebSpeech();
-      setMicLevel(0);
-      setRecording(false);
-      // Streaming never delivered this turn. Keep the audio usable: send
-      // the buffered utterance through the batch recogniser. Tombstone the
-      // streamed turn so a late Meta final cannot run the command twice.
-      bufferedFallbackTurnRef.current = activeTurnIdRef.current;
-      completedStreamingTurnRef.current = activeTurnIdRef.current;
+    recordingRef.current = false;
+    isTurnListeningRef.current = false;
+    stopWebSpeech();
+    setMicLevel(0);
+    setRecording(false);
+
+    bufferedFallbackTurnRef.current = activeTurnIdRef.current;
+    completedStreamingTurnRef.current = activeTurnIdRef.current;
+
+    const recognized = liveTranscriptRef.current.trim();
+    if (recognized) {
       try {
-        await sendBufferedChunks();
+        await sendToAgent(recognized, true);
       } finally {
         finishingRef.current = false;
       }
       return;
     }
 
-    recordingRef.current = false;
-    isTurnListeningRef.current = false;
-    stopWebSpeech();
-    setMicLevel(0);
-    setRecording(false);
-    const ctx = audioContextRef.current;
-    const inputRate = ctx?.sampleRate ?? 0;
-    const chunks = chunksRef.current;
-    chunksRef.current = [];
     try {
-      if (!inputRate || inputRate <= 0) {
-        setTranscribeFailure(makeTranscribeFailure("microphone capture failed (no audio context)"));
-        return;
-      }
-      const samples = concatFloat32(chunks);
-      if (samples.length === 0) {
-        setTranscribeFailure(makeTranscribeFailure("no audio captured"));
-        return;
-      }
-      const pcm = toPcm16k(samples, inputRate);
-      const byteLength = pcm.byteLength;
-      if (byteLength === 0 || byteLength % 2 !== 0) {
-        setTranscribeFailure(makeTranscribeFailure("invalid PCM audio"));
-        return;
-      }
-      if (byteLength > MAX_PCM_BYTES) {
-        setTranscribeFailure(makeTranscribeFailure("recording too long (60s max)"));
-        return;
-      }
-      const buf = new ArrayBuffer(pcm.byteLength);
-      new Int16Array(buf).set(pcm);
-      lastAudioRef.current = buf;
-      setHasLastAudio(true);
-      console.info(
-        `[vvb-timing] turn ended, peak RMS: ${peakLevelRef.current.toFixed(4)}, speechMs: ${activityRef.current.speechMs.toFixed(0)}ms`,
-      );
-      await transcribeAndSend(buf);
+      await sendBufferedChunks();
     } finally {
       finishingRef.current = false;
     }
@@ -3161,9 +3260,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }
       setRecording(true);
       playCue("listen");
-      if (!streamingReadyRef.current) {
-        startWebSpeech();
-      }
+      startWebSpeech();
     } catch (error) {
       cleanupAudio();
       recordingRef.current = false;

@@ -10,20 +10,20 @@ Build a fictional colony and incorporate a fictional company by voice, hands-fre
 
 ## Run it locally
 
-Requirements: use Node 22.18+ to run everything; the app itself also runs on Node 20.9+. You also need npm, Git, and a Meta Model API key.
+Requirements: use Node 22.18+ to run everything; the app itself also runs on Node 20.9+. You also need npm, Git, and a Gemini API key.
 
 ```bash
 git clone https://github.com/Quantumhurst/visual-vocal-builder.git
 cd visual-vocal-builder
 npm install
-cp .env.example .env   # fill in META_API_KEY (never commit .env)
+cp .env.example .env   # fill in GEMINI_API_KEY (never commit .env)
 npm run build
-NODE_ENV=production node server.mjs   # unified Next + ASR WebSocket server on :3000
+NODE_ENV=production node server.mjs   # unified Next + Gemini Live WebSocket server on :3000
 ```
 
 Windows: use Git Bash, or replace cp with Copy-Item.
 
-This repository includes no Meta API key — you must supply your own. Get one at [dev.meta.ai/platform](https://dev.meta.ai/platform), then put it in `.env` as `META_API_KEY`.
+This repository requires a Gemini API key — supply your own from [Google AI Studio](https://aistudio.google.com), then put it in `.env` as `GEMINI_API_KEY`.
 
 Open http://localhost:3000 and allow the microphone once. The landing page listens; say **“Enter the bridge”**. The cockpit opens the conversation and the mic itself — there is no TALK button to press. The visible button is only a fallback.
 
@@ -57,8 +57,8 @@ Tests import TypeScript sources directly and need Node 22.18+ for type stripping
 
 ## How it works
 
-- **Voice in:** Muse Voice Transcribe streams partials for live painting and sends an authoritative final transcript. A buffered `/api/transcribe` fallback retries the same audio when a streamed turn goes empty or silent, so a turn is not dropped. The brain is Muse Spark via the Meta Model API; deterministic commands take a local fast lane through the same state appliers.
-- **Voice out:** the curated system voice speaks every host line. Host speech is logged, replayable with “repeat that”, and never treated as user speech: the mic is gated during playback and a lexical echo filter tombstones self-echo. The mic reopens automatically after the host finishes.
+- **Voice in & Voice out:** Powered by the **Gemini Multimodal Live API** (`models/gemini-3.8-live`) over bidirectional WebSockets (`server.mjs`). Raw 16kHz PCM audio streams up from the browser mic, and Gemini streams natural spoken voice chunks back at 24kHz directly to the client's Web Audio player. Mid-conversation, Gemini calls the 12 canvas tools directly to manipulate the orbital foundry, update equity, and advance the build. A buffered `/api/transcribe` fallback uses `gemini-2.5-flash` audio processing when needed. The CopilotKit agent brain runs on `gemini-2.5-flash` via `@ai-sdk/google`. Deterministic commands take a local fast lane through the same state appliers.
+- **Natural barge-in:** If you speak while Gemini is talking, Gemini detects interruption in real-time, cancels playback immediately, and listens to your new turn.
 - **Commander address:** the host says “Commander” at the journey start and at milestones only (home base, name, confirmed split, 5/5 build, summary ready). It is deliberately absent from split adjustments, individual structures 1–4, utility replies, and the lawyer-summary file, which stays formal.
 - **Voice-only entry:** the landing page listens for “Enter the bridge” (or “Resume” / “Start over” when a run is saved). Crossing the bridge mounts the cockpit and starts the conversation without a click.
 - **Always-available controls:** say **help**, **repeat that**, **stop**, **slower**, **faster**, **louder**, **quieter**, **volume 40**, **mute/unmute**, **show/hide transcript**, **save progress**, **start over**, **status**, **test voice**, **slow mode**, or **take your time**. All are parsed locally, before any model turn, in every state. “Stop” silences the host but keeps the mic listening for “continue”. The cockpit shows HOST AUDIO READY/SPEAKING/OFF/SILENT; if a voice never starts, it retries the system default once and then says so visibly rather than continuing in silence.
