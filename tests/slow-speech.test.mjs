@@ -57,6 +57,13 @@ test("held text and the next final merge into one utterance", () => {
   assert.equal(mergeContinuation("I want to", "to pick Mars"), "I want to pick Mars");
   assert.equal(mergeContinuation("", "Pick Mars"), "Pick Mars");
   assert.equal(mergeContinuation("Pick", ""), "Pick");
+  // Recognizers end a paused fragment with a period; it is not the speaker's.
+  assert.equal(
+    mergeContinuation("The planet I want is.", "Mars is our home base."),
+    "The planet I want is Mars is our home base.",
+  );
+  assert.equal(mergeContinuation("I want...", "Mars"), "I want Mars");
+  assert.equal(mergeContinuation("I want to…", "to pick Mars"), "I want to pick Mars");
 });
 
 test("the continuation grace is long enough for slow speech", () => {

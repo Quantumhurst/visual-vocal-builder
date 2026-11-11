@@ -153,10 +153,14 @@ export function looksUnfinishedTranscript(text: string): boolean {
 
 /**
  * Join the held beginning and the new final into one utterance.
- * Trailing pause punctuation is dropped; a doubled seam word is not.
+ * Trailing punctuation on the held half is dropped; a doubled seam word
+ * is not repeated.
  */
 export function mergeContinuation(first: string, second: string): string {
-  const a = stripAsrAnnotations(first).replace(/[,;:\-–—]+$/g, "").trim();
+  // The held half is unfinished by definition, so a trailing period or
+  // ellipsis on it is the recognizer's, not the speaker's ("The planet I
+  // want is." + "Mars" must not read "is. Mars").
+  const a = stripAsrAnnotations(first).replace(/[.…,;:\-–—\s]+$/g, "").trim();
   let b = stripAsrAnnotations(second).trim();
   if (!a) return b;
   if (!b) return a;
