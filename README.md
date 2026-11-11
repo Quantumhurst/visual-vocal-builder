@@ -10,24 +10,41 @@ Build a fictional colony and incorporate a fictional company by voice, hands-fre
 
 ## Run it locally
 
-Requirements: use Node 22.18+ to run everything; the app itself also runs on Node 20.9+. You also need npm, Git, and a Gemini API key.
+Requirements: use Node 22.18+ to run everything; the app itself also runs on Node 20.9+. You also need npm, Git, and an API key for Google Gemini or Meta Muse (either one, or both).
 
 ```bash
 git clone https://github.com/Quantumhurst/visual-vocal-builder.git
 cd visual-vocal-builder
 npm install
-cp .env.example .env   # fill in GEMINI_API_KEY (never commit .env)
+cp .env.example .env   # fill in GEMINI_API_KEY and/or META_API_KEY (never commit .env)
 npm run build
-NODE_ENV=production node server.mjs   # unified Next + Gemini Live WebSocket server on :3000
+NODE_ENV=production node server.mjs   # unified Next + speech WebSocket server on :3000
 ```
 
 Windows: use Git Bash, or replace cp with Copy-Item.
 
-This repository requires a Gemini API key — supply your own from [Google AI Studio](https://aistudio.google.com), then put it in `.env` as `GEMINI_API_KEY`.
+### Choosing Gemini or Meta
+
+The app runs the same guided voice loop on either provider. Put the key for the one you want in `.env`:
+
+| In `.env` | Provider used |
+| --- | --- |
+| `GEMINI_API_KEY` only | Gemini |
+| `META_API_KEY` only | Meta |
+| both keys | Gemini, unless `VOICE_PROVIDER=meta` |
+| `VOICE_PROVIDER=gemini` or `meta` | that provider (its key must be set) |
+
+Get a Gemini key from [Google AI Studio](https://aistudio.google.com) and a Meta key from the Meta Model API. The server prints the provider it chose when it starts. Restart the server after changing `.env`.
+
+| | Gemini | Meta |
+| --- | --- | --- |
+| Speech-to-text | The browser's speech recogniser (Chrome, Edge) for live words; `gemini-2.5-flash` transcribes the buffered utterance in other browsers | Muse Voice Transcribe (`muse-voice-transcribe-1.0`), realtime streaming with a buffered fallback |
+| Brain | `gemini-2.5-flash` | Muse Spark (`muse-spark-1.3`) |
+| Host voice | Gemini neural voice (`gemini-2.5-flash-preview-tts`, Aoede), browser voice as fallback | Browser / OS system voice |
 
 Open http://localhost:3000 and allow the microphone once. The landing page listens; say **“Enter the bridge”**. The cockpit opens the conversation and the mic itself — there is no TALK button to press. The visible button is only a fallback.
 
-The unified server matters: `/api/asr-stream` is a WebSocket owned by `server.mjs`. Plain `next dev` serves the page but returns 405 for that socket, so live turns fall back to buffered audio (still usable, but slower).
+The unified server matters in Meta mode: `/api/asr-stream` is a WebSocket owned by `server.mjs`. Plain `next dev` serves the page but returns 405 for that socket, so live turns fall back to buffered audio (still usable, but slower). Gemini mode does not use that socket.
 
 `/api/transcribe` accepts only raw PCM16, 16 kHz mono. Arbitrary webm/wav uploads no longer work. To test-upload from a wav file:
 
@@ -51,14 +68,15 @@ Run the voice-only headset walk (real audio in, no clicks, no injected text):
 node scripts/headset-walk.mjs
 ```
 
-It synthesizes a user voice with macOS `say`, feeds the waveform into a virtual microphone, lets the app's own AudioWorklet and Meta transcript path drive every step, and verifies the board, host line, and no-click count at each beat. It also checks host *and* heard caption agreement on every turn, the single SAY cue per mission, a two-part slow-speech turn (the first final is held and merged), the async summary progress + spoken completion, the caption scroll lock and new-turn release, host-audio silence recovery, no-speech recovery, tool-timeout recovery, the short resume line, Commander at start/milestones only, and live Chrome voice downloads (company-named summary and transcript files with the in-file disclaimer, generic vs explicit download, safe close, and the nothing-to-download notice). Results land in `proof/headset-walk.json` (ignored by git) and screenshots in `.shots/`.
+It runs against the Meta provider (`VOICE_PROVIDER=meta`). It synthesizes a user voice with macOS `say`, feeds the waveform into a virtual microphone, lets the app's own AudioWorklet and Meta transcript path drive every step, and verifies the board, host line, and no-click count at each beat. It also checks host *and* heard caption agreement on every turn, the single SAY cue per mission, a two-part slow-speech turn (the first final is held and merged), the async summary progress + spoken completion, the caption scroll lock and new-turn release, host-audio silence recovery, no-speech recovery, tool-timeout recovery, the short resume line, Commander at start/milestones only, and live Chrome voice downloads (company-named summary and transcript files with the in-file disclaimer, generic vs explicit download, safe close, and the nothing-to-download notice). Results land in `proof/headset-walk.json` (ignored by git) and screenshots in `.shots/`.
 
 Tests import TypeScript sources directly and need Node 22.18+ for type stripping; the app itself runs on Node 20.9+.
 
 ## How it works
 
-- **Voice in & Voice out:** Powered by the **Gemini Multimodal Live API** (`models/gemini-3.8-live`) over bidirectional WebSockets (`server.mjs`). Raw 16kHz PCM audio streams up from the browser mic, and Gemini streams natural spoken voice chunks back at 24kHz directly to the client's Web Audio player. Mid-conversation, Gemini calls the 12 canvas tools directly to manipulate the orbital foundry, update equity, and advance the build. A buffered `/api/transcribe` fallback uses `gemini-2.5-flash` audio processing when needed. The CopilotKit agent brain runs on `gemini-2.5-flash` via `@ai-sdk/google`. Deterministic commands take a local fast lane through the same state appliers.
-- **Natural barge-in:** If you speak while Gemini is talking, Gemini detects interruption in real-time, cancels playback immediately, and listens to your new turn.
+- **One guided loop, two providers:** your speech is transcribed, a local fast lane handles deterministic commands, the agent brain handles the rest through the 12 canvas tools, and the host speaks its scripted line. Gemini and Meta each supply the three engines (speech-to-text, brain, host voice) — see the table above. `lib/provider.ts` picks the provider; `/api/provider` tells the browser which speech path to open. Only one system ever answers a turn.
+- **No waiting on the host voice (Gemini):** the host's next line is known before it is due, so its audio is fetched ahead of time and cached (`lib/host-tts.ts`). If neural audio is not ready within 2.5 seconds, the browser voice says the line instead of leaving a silence. “Louder”, “quieter”, “slower” and “faster” apply to the neural voice too.
+- **Barge-in:** opening a new turn cancels whatever the host is saying. The mic is gated while the host speaks, so the host never hears itself.
 - **Commander address:** the host says “Commander” at the journey start and at milestones only (home base, name, confirmed split, 5/5 build, summary ready). It is deliberately absent from split adjustments, individual structures 1–4, utility replies, and the lawyer-summary file, which stays formal.
 - **Voice-only entry:** the landing page listens for “Enter the bridge” (or “Resume” / “Start over” when a run is saved). Crossing the bridge mounts the cockpit and starts the conversation without a click.
 - **Always-available controls:** say **help**, **repeat that**, **stop**, **slower**, **faster**, **louder**, **quieter**, **volume 40**, **mute/unmute**, **show/hide transcript**, **save progress**, **start over**, **status**, **test voice**, **slow mode**, or **take your time**. All are parsed locally, before any model turn, in every state. “Stop” silences the host but keeps the mic listening for “continue”. The cockpit shows HOST AUDIO READY/SPEAKING/OFF/SILENT; if a voice never starts, it retries the system default once and then says so visibly rather than continuing in silence.
@@ -100,7 +118,9 @@ The optional Filing Intel archive (steps and fees) remains available by voice bu
   - **Muse Voice Transcribe (`muse-voice-transcribe-1.0`)**: Realtime streaming speech-to-text with WebSocket chunk pacing, keyword biasing (fictional jurisdictions, founder names, legal concepts), and English language biasing via Meta Model API.
   - **Muse Spark (`muse-spark-1.3`)**: Cognitive agent brain driving multi-turn tool calling, invariant validation, and co-agent state synchronization via Meta Model API.
 
-  The openai package is a client library only, pointed at api.meta.ai; no OpenAI model is called. Speech-out is the OS system voice, not an AI model call, and no other AI model, local or otherwise, is called at runtime.
+  The openai packages are client libraries only, pointed at api.meta.ai; no OpenAI model is called. With the Meta provider, speech-out is the OS system voice, not an AI model call, and no other AI model, local or otherwise, is called at runtime.
+
+- **Added after the hackathon window:** an optional Google Gemini provider (`gemini-2.5-flash` for transcription and the brain, `gemini-2.5-flash-preview-tts` for the host voice), first committed on November 9, 2026. It is used only when selected as described under "Choosing Gemini or Meta"; set `VOICE_PROVIDER=meta` to run the app exactly on the Meta models above.
 
 - **Code & Planning Disclosure:**
   - Written planning only was developed prior to the event; zero code, datasets, or UI components were carried over.

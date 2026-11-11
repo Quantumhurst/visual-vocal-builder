@@ -3,14 +3,18 @@ import { MAX_PCM_BYTES, checkOrigin, clientKey, createRateLimiter } from "./requ
 export type TranscribeDeps = {
   transcribe: (pcm: Buffer) => Promise<string>;
   limiter?: ReturnType<typeof createRateLimiter>;
+  // Which provider did the work; only used to label the server log line.
+  provider?: string;
   log?: (entry: { audioBytes: number; transcriptLength: number }) => void;
+  logError?: (message: string) => void;
 };
 
 const defaultLimiter = createRateLimiter({ limit: 20, windowMs: 60_000 });
 
 export async function handleTranscribe(req: Request, deps: TranscribeDeps): Promise<Response> {
   const limiter = deps.limiter ?? defaultLimiter;
-  const log = deps.log ?? ((entry: { audioBytes: number; transcriptLength: number }) => console.log("gemini asr call", entry));
+  const log = deps.log ?? ((entry: { audioBytes: number; transcriptLength: number }) => console.log(`${deps.provider ?? "asr"} transcribe call`, entry));
+  const logError = deps.logError ?? ((message: string) => console.warn(`[transcribe] ${message}`));
 
   if (!checkOrigin(req.headers.get("origin"), req.headers.get("host"))) {
     return Response.json({ error: "forbidden origin" }, { status: 403 });
@@ -48,7 +52,8 @@ export async function handleTranscribe(req: Request, deps: TranscribeDeps): Prom
     log({ audioBytes: buf.length, transcriptLength: transcript.length });
     return Response.json({ transcript });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "transcription failed";
-    return Response.json({ error: message }, { status: 502 });
+    // Upstream detail stays in the server log; the browser gets a plain line.
+    logError(error instanceof Error ? error.message : String(error));
+    return Response.json({ error: "transcription failed" }, { status: 502 });
   }
 }

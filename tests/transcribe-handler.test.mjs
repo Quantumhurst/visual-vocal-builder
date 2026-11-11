@@ -53,3 +53,15 @@ test("200 with stubbed transcribe, no transcript text in log", async () => {
   assert.deepEqual(Object.keys(logs[0]).sort(), ["audioBytes", "transcriptLength"]);
   assert.equal(logs[0].transcriptLength, "SECRET_TRANSCRIPT_TEXT".length);
 });
+
+test("502 hides upstream detail from the browser and logs it on the server", async () => {
+  const errors = [];
+  const res = await handleTranscribe(makeReq({ audio: new Blob([new Uint8Array([0,0,1,0])]) }), {
+    transcribe: async () => { throw new Error("upstream body with SECRET_DETAIL"); },
+    log: () => {},
+    logError: (m) => errors.push(m),
+  });
+  assert.equal(res.status, 502);
+  assert.deepEqual(await res.json(), { error: "transcription failed" });
+  assert.equal(errors.length, 1);
+});

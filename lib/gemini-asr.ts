@@ -1,4 +1,13 @@
-// Gemini audio transcription fallback for buffered PCM audio.
+// Gemini transcription of one buffered PCM utterance.
+
+import { ASR_MODEL } from "./gemini-models.ts";
+import { ASR_KEYWORDS } from "./meta-models.ts";
+
+// The same demo vocabulary the Meta recogniser is biased toward, so
+// "Europa" and "Galactic Bagels" are spelled the way the app expects.
+export const TRANSCRIBE_PROMPT =
+  "Transcribe the spoken English in this audio recording verbatim. Output ONLY the transcribed words, without any commentary, preamble, or quotes. If there is no audible speech or only noise, output an empty string. " +
+  `Words that are likely when they fit the audio (never add them otherwise): ${ASR_KEYWORDS.slice(0, 11).join(", ")}.`;
 
 export interface TranscribePcmOptions {
   model?: string;
@@ -44,7 +53,7 @@ export async function transcribePcm(
     return "";
   }
 
-  const model = options.model ?? "gemini-2.5-flash";
+  const model = options.model ?? ASR_MODEL;
   const timeoutMs = options.timeoutMs ?? 15_000;
   const wav = pcmToWav(pcm);
 
@@ -52,17 +61,19 @@ export async function transcribePcm(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      // The key travels in a header, never in the URL, so it cannot end up
+      // in an error message or a proxy log.
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
       signal: controller.signal,
       body: JSON.stringify({
         contents: [
           {
             parts: [
               {
-                text: "Transcribe the spoken English in this audio recording verbatim. Output ONLY the transcribed words, without any commentary, preamble, or quotes. If there is no audible speech or only noise, output an empty string.",
+                text: TRANSCRIBE_PROMPT,
               },
               {
                 inlineData: {
@@ -73,12 +84,14 @@ export async function transcribePcm(
             ],
           },
         ],
+        // A transcript needs no reasoning pass; skipping it is most of the
+        // latency of a buffered turn.
+        generationConfig: { temperature: 0, thinkingConfig: { thinkingBudget: 0 } },
       }),
     });
 
     if (!res.ok) {
-      const errBody = await res.text();
-      throw new Error(`Gemini ASR HTTP ${res.status}: ${errBody}`);
+      throw new Error(`Gemini ASR HTTP ${res.status}`);
     }
 
     const data = (await res.json()) as {

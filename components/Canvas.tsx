@@ -107,6 +107,8 @@ import { summarizeTimings, type TurnTimings } from "../lib/turn-timing";
 import { HybridEndpointer } from "../lib/voice/hybrid-endpointer";
 import { speechQueue } from "../lib/voice/surviving-speech-queue";
 import { echoFilter } from "../lib/voice/echo-filter";
+import { currentProviderInfo, loadProviderInfo } from "../lib/provider-client";
+import { NEURAL_VOICE_WAIT_MS, hostTts, pcm16Base64ToFloat32, withDeadline } from "../lib/host-tts";
 
 
 
@@ -278,10 +280,12 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const listeningStallShownRef = useRef(false);
   const noSpeechAttemptsRef = useRef(0);
   const asrSocketRef = useRef<WebSocket | null>(null);
-  const liveAudioCtxRef = useRef<AudioContext | null>(null);
-  const liveNextPlayTimeRef = useRef<number>(0);
-  const liveActiveSourcesRef = useRef<AudioBufferSourceNode[]>([]);
-  const ttsAbortRef = useRef<AbortController | null>(null);
+  // Which engines the server is configured for (lib/provider.ts). Until
+  // the answer arrives this is the safe default that works with either.
+  const providerRef = useRef(currentProviderInfo());
+  const neuralCtxRef = useRef<AudioContext | null>(null);
+  const neuralGainRef = useRef<GainNode | null>(null);
+  const neuralSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const streamingReadyRef = useRef(false);
   const activeTurnIdRef = useRef(0);
   const asrLastEventAtRef = useRef(0);
@@ -293,73 +297,84 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const announceTurnRef = useRef(0);
   const lastAnnouncedOutcomeRef = useRef("");
 
-  function stopLiveAudio() {
-    for (const src of liveActiveSourcesRef.current) {
+  useEffect(() => {
+    let alive = true;
+    void loadProviderInfo().then((info) => {
+      if (alive) providerRef.current = info;
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  function stopNeuralAudio() {
+    const sources = neuralSourcesRef.current;
+    neuralSourcesRef.current = [];
+    for (const src of sources) {
       try {
+        src.onended = null;
         src.stop();
         src.disconnect();
       } catch {
         // ignore
       }
     }
-    liveActiveSourcesRef.current = [];
-    if (liveAudioCtxRef.current) {
-      liveNextPlayTimeRef.current = liveAudioCtxRef.current.currentTime;
-    }
   }
 
-  function playLiveAudioChunk(base64Data: string, onEnded?: () => void) {
+  // Plays one synthesised host line through Web Audio, honouring the
+  // spoken volume and speed controls. Resolves with the playing time in
+  // ms, null when audio cannot start (no AudioContext, or the browser kept
+  // it suspended) so the caller can use the browser voice instead of
+  // sitting in silence, or -1 when the line was superseded while waiting.
+  async function playNeuralLine(
+    base64Data: string,
+    onEnded: () => void,
+    stillWanted: () => boolean,
+  ): Promise<number | null> {
     try {
-      if (typeof window === "undefined") return;
       const AudioCtx =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (!AudioCtx) {
-        onEnded?.();
-        return;
+      if (!AudioCtx) return null;
+      if (!neuralCtxRef.current || neuralCtxRef.current.state === "closed") {
+        const created = new AudioCtx({ sampleRate: 24000 });
+        const createdGain = created.createGain();
+        createdGain.connect(created.destination);
+        neuralCtxRef.current = created;
+        neuralGainRef.current = createdGain;
       }
-      if (!liveAudioCtxRef.current) {
-        liveAudioCtxRef.current = new AudioCtx({ sampleRate: 24000 });
+      const ctx = neuralCtxRef.current;
+      const gain = neuralGainRef.current;
+      if (!gain) return null;
+      if (ctx.state !== "running") {
+        await Promise.race([
+          ctx.resume().catch(() => undefined),
+          new Promise((resolve) => setTimeout(resolve, 400)),
+        ]);
+        if ((ctx.state as AudioContextState) !== "running") return null;
+        if (!stillWanted()) return -1;
       }
-      const ctx = liveAudioCtxRef.current;
-      if (ctx.state === "suspended") {
-        void ctx.resume();
-      }
-      const binary = atob(base64Data);
-      const len = binary.length / 2;
-      const pcm16 = new Int16Array(len);
-      for (let i = 0; i < len; i++) {
-        pcm16[i] = binary.charCodeAt(i * 2) | (binary.charCodeAt(i * 2 + 1) << 8);
-      }
-      const float32 = new Float32Array(len);
-      for (let i = 0; i < len; i++) {
-        float32[i] = pcm16[i] / 32768.0;
-      }
-      const buffer = ctx.createBuffer(1, len, 24000);
-      buffer.copyToChannel(float32, 0);
-
+      const samples = pcm16Base64ToFloat32(base64Data);
+      if (samples.length === 0) return null;
+      const buffer = ctx.createBuffer(1, samples.length, 24000);
+      buffer.getChannelData(0).set(samples);
       const source = ctx.createBufferSource();
       source.buffer = buffer;
-      source.connect(ctx.destination);
-
-      const now = ctx.currentTime;
-      if (liveNextPlayTimeRef.current < now) {
-        liveNextPlayTimeRef.current = now;
-      }
-      source.start(liveNextPlayTimeRef.current);
-      liveNextPlayTimeRef.current += buffer.duration;
-
-      liveActiveSourcesRef.current.push(source);
+      const rate = Math.min(1.6, Math.max(0.5, settingsRef.current.rate));
+      source.playbackRate.value = rate;
+      gain.gain.value = Math.min(1, Math.max(0, settingsRef.current.volume));
+      source.connect(gain);
       source.onended = () => {
-        const idx = liveActiveSourcesRef.current.indexOf(source);
-        if (idx >= 0) liveActiveSourcesRef.current.splice(idx, 1);
-        if (liveActiveSourcesRef.current.length === 0) {
-          onEnded?.();
-        }
+        const idx = neuralSourcesRef.current.indexOf(source);
+        if (idx >= 0) neuralSourcesRef.current.splice(idx, 1);
+        onEnded();
       };
+      neuralSourcesRef.current.push(source);
+      source.start();
+      return (buffer.duration / rate) * 1000;
     } catch (err) {
-      console.warn("[gemini-audio] playback error:", err);
-      onEnded?.();
+      console.warn("[host-voice] neural playback error:", err);
+      return null;
     }
   }
 
@@ -834,9 +849,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     clearSpeechWatchdog();
     clearHostStartTimer();
     clearRearmTimer();
-    ttsAbortRef.current?.abort();
-    ttsAbortRef.current = null;
-    stopLiveAudio();
+    stopNeuralAudio();
     utteranceRef.current = null;
     hostSpeakingRef.current = false;
     setHostSpeaking(false);
@@ -1053,41 +1066,53 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         }
       };
 
-      // 1. Try Gemini Neural Voice (/api/tts)
-      const ctrl = new AbortController();
-      ttsAbortRef.current?.abort();
-      ttsAbortRef.current = ctrl;
+      // The browser voice is the engine for the Meta provider, for the
+      // "system default" retry, and whenever neural audio is not available.
+      if (!providerRef.current.neuralVoice || options.useDefaultVoice || hostTts.unavailable()) {
+        speakWithBrowserSynth();
+        return;
+      }
 
-      fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: spoken, voice: "Aoede" }),
-        signal: ctrl.signal,
-      })
-        .then(async (res) => {
-          if (!res.ok) throw new Error(`TTS status ${res.status}`);
-          const data = (await res.json()) as { audio?: string };
-          if (!data.audio) throw new Error("No audio payload");
-          if (attempt !== hostAttemptSeqRef.current || utterCancelledRef.current) return;
-
-          stopLiveAudio();
+      // Gemini neural voice. The line is usually already cached by the
+      // prefetch; if it is not here within the wait budget the browser
+      // voice says it, so the host never sits silent on a slow request.
+      const isCurrent = () => attempt === hostAttemptSeqRef.current && !utterCancelledRef.current;
+      withDeadline(hostTts.get(spoken), NEURAL_VOICE_WAIT_MS)
+        .then(async (audio) => {
+          if (!isCurrent()) return;
+          stopNeuralAudio();
+          const playingMs = await playNeuralLine(
+            audio,
+            () => {
+              if (attempt !== hostAttemptSeqRef.current) return;
+              stampTiming("speechEnd");
+              finishSpeech();
+            },
+            isCurrent,
+          );
+          if (playingMs === -1 || !isCurrent()) return;
+          if (playingMs === null) {
+            speakWithBrowserSynth();
+            return;
+          }
           setHostSilent(false);
           setRecovery((current) => (current?.kind === "host-silent" ? null : current));
           hostAudioRef.current.started += 1;
           hostAudioRef.current.lastVoice = "Gemini (Aoede)";
           hostAudioRef.current.lastVolume = settingsRef.current.volume;
+          hostAudioRef.current.lastRate = settingsRef.current.rate;
           hostAudioRef.current.lastStartedAt = Date.now();
           logEvent("host voice started Gemini (Aoede)");
-
-          playLiveAudioChunk(data.audio, () => {
-            stampTiming("speechEnd");
+          // Web Audio should always report the end; never trust it to.
+          speechWatchdogRef.current = setTimeout(() => {
+            speechWatchdogRef.current = null;
+            if (attempt !== hostAttemptSeqRef.current) return;
+            stopNeuralAudio();
             finishSpeech();
-          });
+          }, playingMs + 1500);
         })
-        .catch((err) => {
-          if (ctrl.signal.aborted) return;
-          if (attempt !== hostAttemptSeqRef.current || utterCancelledRef.current) return;
-          // Fall back to browser synth if Gemini TTS network request fails
+        .catch(() => {
+          if (!isCurrent()) return;
           speakWithBrowserSynth();
         });
     };
@@ -2444,6 +2469,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       return;
     }
     if (typeof window === "undefined") return;
+    // Realtime streaming transcription exists only for the Meta provider.
+    if (!providerRef.current.streamingAsr) return;
     try {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${protocol}//${window.location.host}/api/asr-stream`;
@@ -2462,84 +2489,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
           const msg = JSON.parse(raw) as Record<string, unknown>;
           const type = msg.type as string | undefined;
 
-          if (type === "audio") {
-            const audioData = msg.data as string | undefined;
-            if (audioData) {
-              playLiveAudioChunk(audioData);
-            }
-          } else if (type === "interrupted") {
-            stopLiveAudio();
-          } else if (type === "toolCall") {
-            const toolName = (msg.name as string) || "";
-            const toolId = (msg.id as string) || "";
-            const toolArgs = (msg.args as Record<string, unknown>) ?? {};
-            logEvent(`gemini toolCall ${toolName} ${JSON.stringify(toolArgs)}`);
-
-            let toolResult: Record<string, unknown> = { success: true };
-            try {
-              if (toolName === "showJurisdictionComparison" || toolName === "selectJurisdiction") {
-                const jur = (toolArgs.jurisdiction as string) || (toolArgs.targetJurisdiction as string) || null;
-                commit("jurisdiction", (s) => applyJurisdiction(s, jur));
-                toolResult = { success: true, jurisdiction: jur };
-              } else if (toolName === "setFounderEquity") {
-                const founder = (toolArgs.founder as string) ?? "";
-                const percent = Number(toolArgs.percent ?? 50);
-                const base = withDefaults(stateRef.current);
-                const index = resolveFounderIndex(base.founders, founder);
-                if (index >= 0) {
-                  commit("equity", (s) => applyEquity(s, index, percent, "voice"));
-                  toolResult = { success: true, founder, percent };
-                } else {
-                  toolResult = { error: `Founder ${founder} not found` };
-                }
-              } else if (toolName === "setOwnerCount") {
-                const count = Number(toolArgs.count ?? 2);
-                commit("owners", (s) => applyOwnerCount(s, count));
-                toolResult = { success: true, count };
-              } else if (toolName === "setChecklistItem") {
-                const itemId = String(toolArgs.itemId ?? "");
-                const done = Boolean(toolArgs.done);
-                commit("checklist", (s) => applyChecklistItem(s, itemId, done));
-                toolResult = { success: true, itemId, done };
-              } else if (toolName === "setChecklistItems") {
-                const ids = Array.isArray(toolArgs.itemIds) ? (toolArgs.itemIds as string[]) : [];
-                const done = Boolean(toolArgs.done);
-                commit("checklist", (s) => applyChecklistItems(s, ids, done));
-                toolResult = { success: true, itemIds: ids, done };
-              } else if (toolName === "advanceChecklist") {
-                commit("checklist", (s) => applyAdvanceChecklist(s));
-                toolResult = { success: true };
-              } else if (toolName === "approveCompanyName") {
-                const name = (toolArgs.name as string) || DEMO_COMPANY_NAME;
-                approveCompanyName(name);
-                toolResult = { success: true, name };
-              } else if (toolName === "showFilingSteps") {
-                const ids = Array.isArray(toolArgs.factIds) ? (toolArgs.factIds as string[]) : [];
-                commit("filingsteps", (s) => applyFilingSteps(s, ids, toolArgs.question as string | undefined));
-                toolResult = { success: true, factIds: ids };
-              } else if (toolName === "prepareLawyerSummary") {
-                prepareLawyerPackage(true);
-                toolResult = { success: true };
-              } else if (toolName === "undoLastChange") {
-                undoLast();
-                toolResult = { success: true };
-              } else if (toolName === "startOver") {
-                cancelSummaryBuild();
-                commit("start-over", (s) => applyStartOver(s));
-                toolResult = { success: true };
-              } else if (toolName === "compareJurisdictions") {
-                const focus = (toolArgs.focus as string) || "Europa";
-                commit("compare", (s) => applyFocusJurisdiction(s, focus, (toolArgs.question as string) ?? "comparison"));
-                toolResult = { success: true, focus };
-              }
-            } catch (err) {
-              toolResult = { error: String(err) };
-            }
-
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "toolResponse", id: toolId, output: toolResult }));
-            }
-          } else if (type === "speechStart") {
+          if (type === "speechStart") {
             asrLastEventAtRef.current = performance.now();
             logEvent(`asr speechStart ${String(msg.turnId)}`);
             const turnId = msg.turnId as number | undefined;
@@ -2820,10 +2770,22 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       };
       rec.onend = () => {
         recognitionRef.current = null;
+        if (streamingReadyRef.current) {
+          // Meta streaming is active: its endpointing and HybridEndpointer
+          // are the authority. The browser recogniser must never tear
+          // down the streaming turn early.
+          return;
+        }
+        // Meta (stream down): the recogniser is a preview, so only a
+        // matched command ends the turn. Gemini: its words are the turn.
+        const turnReady =
+          providerRef.current.provider === "meta"
+            ? intentMatchedRef.current || (equityConfirmRef.current && isConfirmationAnswer(liveTranscriptRef.current))
+            : liveTranscriptRef.current.trim().length > 0;
         if (
           recordingRef.current &&
           !finishingRef.current &&
-          liveTranscriptRef.current.trim().length > 0
+          turnReady
         ) {
           void finishRecording();
           return;
@@ -2861,6 +2823,11 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       summaryBuildTokenRef.current += 1;
       utteranceRef.current = null;
       if (travelFrameRef.current !== null) cancelAnimationFrame(travelFrameRef.current);
+      stopNeuralAudio();
+      const neuralCtx = neuralCtxRef.current;
+      neuralCtxRef.current = null;
+      neuralGainRef.current = null;
+      if (neuralCtx && neuralCtx.state !== "closed") void neuralCtx.close().catch(() => undefined);
       try {
         window.speechSynthesis?.cancel();
       } catch {
@@ -2972,17 +2939,44 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (finishingRef.current) return;
     finishingRef.current = true;
 
+    // Meta streaming: check for a pending fast-commit to fire first.
+    if (streamingReadyRef.current) {
+      if (endpointerRef.current?.forceFastCommitNow(liveTranscriptRef.current)) {
+        finishingRef.current = false;
+        return;
+      }
+      recordingRef.current = false;
+      isTurnListeningRef.current = false;
+      stopWebSpeech();
+      setMicLevel(0);
+      setRecording(false);
+      // Streaming never delivered this turn. Keep the audio usable: send
+      // the buffered utterance through the batch recogniser. Tombstone the
+      // streamed turn so a late Meta final cannot run the command twice.
+      bufferedFallbackTurnRef.current = activeTurnIdRef.current;
+      completedStreamingTurnRef.current = activeTurnIdRef.current;
+      try {
+        await sendBufferedChunks();
+      } finally {
+        finishingRef.current = false;
+      }
+      return;
+    }
+
     recordingRef.current = false;
     isTurnListeningRef.current = false;
     stopWebSpeech();
     setMicLevel(0);
     setRecording(false);
 
-    bufferedFallbackTurnRef.current = activeTurnIdRef.current;
-    completedStreamingTurnRef.current = activeTurnIdRef.current;
-
-    const recognized = liveTranscriptRef.current.trim();
+    // Gemini: the browser recogniser already has the words, so the turn
+    // goes straight to the brain with no transcription round trip. With no
+    // recogniser (Firefox, Safari) the buffered audio below is transcribed.
+    // Meta: the recogniser is only a preview; Meta's transcript decides.
+    const recognized = providerRef.current.provider === "meta" ? "" : liveTranscriptRef.current.trim();
     if (recognized) {
+      chunksRef.current = [];
+      stampTiming("finalTranscript");
       try {
         await sendToAgent(recognized, true);
       } finally {
@@ -2991,8 +2985,38 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       return;
     }
 
+    const ctx = audioContextRef.current;
+    const inputRate = ctx?.sampleRate ?? 0;
+    const chunks = chunksRef.current;
+    chunksRef.current = [];
     try {
-      await sendBufferedChunks();
+      if (!inputRate || inputRate <= 0) {
+        setTranscribeFailure(makeTranscribeFailure("microphone capture failed (no audio context)"));
+        return;
+      }
+      const samples = concatFloat32(chunks);
+      if (samples.length === 0) {
+        setTranscribeFailure(makeTranscribeFailure("no audio captured"));
+        return;
+      }
+      const pcm = toPcm16k(samples, inputRate);
+      const byteLength = pcm.byteLength;
+      if (byteLength === 0 || byteLength % 2 !== 0) {
+        setTranscribeFailure(makeTranscribeFailure("invalid PCM audio"));
+        return;
+      }
+      if (byteLength > MAX_PCM_BYTES) {
+        setTranscribeFailure(makeTranscribeFailure("recording too long (60s max)"));
+        return;
+      }
+      const buf = new ArrayBuffer(pcm.byteLength);
+      new Int16Array(buf).set(pcm);
+      lastAudioRef.current = buf;
+      setHasLastAudio(true);
+      console.info(
+        `[vvb-timing] turn ended, peak RMS: ${peakLevelRef.current.toFixed(4)}, speechMs: ${activityRef.current.speechMs.toFixed(0)}ms`,
+      );
+      await transcribeAndSend(buf);
     } finally {
       finishingRef.current = false;
     }
@@ -3279,7 +3303,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }
       setRecording(true);
       playCue("listen");
-      startWebSpeech();
+      // Gemini: the browser recogniser supplies the live words. Meta:
+      // streaming transcription is the authority, and the browser
+      // recogniser is only a preview while the stream is down.
+      if (!streamingReadyRef.current) startWebSpeech();
     } catch (error) {
       cleanupAudio();
       recordingRef.current = false;
@@ -3341,18 +3368,29 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     return () => clearTimeout(timer);
   }, [view, settings, log]);
 
-  // Warm up Gemini Neural Voice cache for the first greeting
+  // Learn which provider the server runs, then fetch the host's likely
+  // next line ahead of time so neural speech starts without a network
+  // wait (lib/host-tts.ts). hostPrompt.text is the next question on screen.
   useEffect(() => {
-    const greeting = withCommander(FIRST_SPEAK_GREETING);
-    const spoken = spokenHostText(greeting);
-    if (spoken && typeof window !== "undefined") {
-      void fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: spoken, voice: "Aoede" }),
-      }).catch(() => undefined);
-    }
-  }, []);
+    if (!voiceOn) return;
+    let alive = true;
+    void loadProviderInfo().then((info) => {
+      if (!alive) return;
+      providerRef.current = info;
+      if (!info.neuralVoice) return;
+      const next = spokenHostText(hostPrompt.text);
+      if (next) hostTts.prefetch(next);
+      hostTts.prefetch(spokenHostText(withCommander(FIRST_SPEAK_GREETING)));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [hostPrompt.text, voiceOn]);
+
+  // "Louder" / "quieter" apply to a neural line that is already playing.
+  useEffect(() => {
+    if (neuralGainRef.current) neuralGainRef.current.gain.value = Math.min(1, Math.max(0, settings.volume));
+  }, [settings.volume]);
 
   // Voice-first boot: the cockpit opens the conversation and the mic on
   // its own after the landing gate. No click, no "press TALK" step.

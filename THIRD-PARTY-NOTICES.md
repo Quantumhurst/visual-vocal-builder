@@ -21,6 +21,8 @@ are the versions installed in the current tree — see `package.json` and
 | AG-UI core (via CopilotKit) | 1.0.2 | MIT | https://github.com/ag-ui-protocol/ag-ui |
 | A2UI web_core (via CopilotKit) | 0.10.4 | Apache-2.0 | https://a2ui.org/ |
 | openai | 7.45.1 | Apache-2.0 | https://github.com/openai/openai-node |
+| AI SDK OpenAI provider (`@ai-sdk/openai`, Meta brain client) | 3.0.132 | Apache-2.0 | https://github.com/vercel/ai |
+| AI SDK Google provider (`@ai-sdk/google`, Gemini brain client) | 3.0.139 | Apache-2.0 | https://github.com/vercel/ai |
 | pixi.js | 8.22.0 | MIT | https://pixijs.com/ |
 | canvas-confetti | 1.9.4 | ISC | https://github.com/catdad/canvas-confetti |
 | lenis | 1.3.27 | MIT | https://github.com/darkroomengineering/lenis |

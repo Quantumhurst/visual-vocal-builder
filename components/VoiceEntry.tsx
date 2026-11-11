@@ -2,8 +2,9 @@
 
 // Voice-first front door. The landing page listens for "Enter the
 // bridge" / "Start" (and "Resume" when a run is saved) through the same
-// Meta Voice Transcribe endpoint the cockpit uses. The button remains
-// only as an accessibility fallback; the core journey never needs it.
+// transcription endpoint the cockpit uses, for whichever provider the
+// server runs (lib/provider.ts). The button remains only as an
+// accessibility fallback; the core journey never needs it.
 //
 // The component is deliberately small and fail-safe: denied mic,
 // missing audio engine, or a failed transcription all leave the button
@@ -15,6 +16,18 @@ import { rmsLevel } from "../lib/live-intent";
 import { concatFloat32, toPcm16k } from "../lib/pcm";
 import { entryHint, entryPrompt, parseEntryIntent, type EntryMode } from "../lib/voice-entry";
 import { progressSummary, type SavedSession } from "../lib/persistence";
+import { loadProviderInfo } from "../lib/provider-client";
+import { NEURAL_VOICE_WAIT_MS, hostTts, pcm16Base64ToFloat32, withDeadline } from "../lib/host-tts";
+
+type EntryRecognizer = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  start: () => void;
+  stop: () => void;
+  onresult: unknown;
+  onerror: unknown;
+};
 
 type Props = {
   saved: SavedSession | null;
@@ -43,8 +56,26 @@ export default function VoiceEntry({ saved, onEnter, onStartOver }: Props) {
   const doneRef = useRef(false);
   const startedRef = useRef(false);
   const cancelledRef = useRef(false);
+  const recognizerRef = useRef<EntryRecognizer | null>(null);
+  const promptCtxRef = useRef<AudioContext | null>(null);
 
   function cleanup() {
+    // The browser allows one speech recogniser at a time. Leaving this one
+    // running would block the cockpit's own recogniser after entry.
+    const rec = recognizerRef.current;
+    recognizerRef.current = null;
+    if (rec) {
+      rec.onresult = null;
+      rec.onerror = null;
+      try {
+        rec.stop();
+      } catch {
+        // ignore
+      }
+    }
+    const promptCtx = promptCtxRef.current;
+    promptCtxRef.current = null;
+    if (promptCtx && promptCtx.state !== "closed") void promptCtx.close().catch(() => undefined);
     try {
       nodeRef.current?.disconnect();
     } catch {
@@ -186,38 +217,35 @@ export default function VoiceEntry({ saved, onEnter, onStartOver }: Props) {
       source.connect(node);
       if (ctx.state === "suspended") await ctx.resume();
 
-      if (typeof window !== "undefined") {
-        const w = window as unknown as Record<string, unknown>;
-        const Ctor = (w.SpeechRecognition ?? w.webkitSpeechRecognition) as
-          | (new () => { lang: string; continuous: boolean; interimResults: boolean; start: () => void; stop: () => void; onresult: unknown; onerror: unknown })
-          | undefined;
-        if (Ctor) {
-          try {
-            const rec = new Ctor();
-            rec.lang = "en-US";
-            rec.interimResults = true;
-            rec.continuous = true;
-            rec.onresult = (ev: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal?: boolean }> }) => {
-              if (doneRef.current) return;
-              let text = "";
-              for (let i = 0; i < ev.results.length; i++) {
-                text += ev.results[i][0]?.transcript ?? "";
-              }
-              const clean = text.trim();
-              if (clean) {
-                setHeard(clean);
-                const intent = parseEntryIntent(clean);
-                if (intent) {
-                  try { rec.stop(); } catch { /* ignore */ }
-                  handleTranscript(clean);
-                }
-              }
-            };
-            rec.onerror = () => {};
-            rec.start();
-          } catch {
-            // ignore
-          }
+      // Gemini: the browser recogniser hears the entry phrase instantly
+      // where it exists. Meta: Muse Voice Transcribe is the only ear.
+      const info = await loadProviderInfo();
+      if (cancelledRef.current || doneRef.current) return;
+      const w = window as unknown as Record<string, unknown>;
+      const Ctor = (w.SpeechRecognition ?? w.webkitSpeechRecognition) as (new () => EntryRecognizer) | undefined;
+      if (Ctor && info.provider !== "meta") {
+        try {
+          const rec = new Ctor();
+          rec.lang = "en-US";
+          rec.interimResults = true;
+          rec.continuous = true;
+          rec.onresult = (ev: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal?: boolean }> }) => {
+            if (doneRef.current) return;
+            let text = "";
+            for (let i = 0; i < ev.results.length; i++) {
+              text += ev.results[i][0]?.transcript ?? "";
+            }
+            const clean = text.trim();
+            if (clean) {
+              setHeard(clean);
+              if (parseEntryIntent(clean)) handleTranscript(clean);
+            }
+          };
+          rec.onerror = () => {};
+          rec.start();
+          recognizerRef.current = rec;
+        } catch {
+          // ignore
         }
       }
 
@@ -241,66 +269,62 @@ export default function VoiceEntry({ saved, onEnter, onStartOver }: Props) {
       void start();
     };
     let promptStarted = false;
-    try {
-      if (typeof window !== "undefined") {
-        fetch("/api/tts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: prompt, voice: "Aoede" }),
-        })
-          .then(async (res) => {
-            if (!res.ok) throw new Error("TTS failed");
-            const data = (await res.json()) as { audio?: string };
-            if (!data.audio || doneRef.current || began) return;
-            const AudioCtx =
-              window.AudioContext ||
-              (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-            if (AudioCtx) {
-              const ctx = new AudioCtx({ sampleRate: 24000 });
-              if (ctx.state === "suspended") {
-                throw new Error("AudioContext suspended");
-              }
-              promptStarted = true;
-              const binary = atob(data.audio);
-              const len = binary.length / 2;
-              const pcm16 = new Int16Array(len);
-              for (let i = 0; i < len; i++) {
-                pcm16[i] = binary.charCodeAt(i * 2) | (binary.charCodeAt(i * 2 + 1) << 8);
-              }
-              const float32 = new Float32Array(len);
-              for (let i = 0; i < len; i++) {
-                float32[i] = pcm16[i] / 32768.0;
-              }
-              const buffer = ctx.createBuffer(1, len, 24000);
-              buffer.copyToChannel(float32, 0);
-              const src = ctx.createBufferSource();
-              src.buffer = buffer;
-              src.connect(ctx.destination);
-              src.onended = () => {
-                begin();
-                try { void ctx.close(); } catch { /* ignore */ }
-              };
-              src.start(0);
-              return;
-            }
-            throw new Error("No AudioContext");
-          })
-          .catch(() => {
-            if (typeof window !== "undefined" && window.speechSynthesis && !began) {
-              const utter = new SpeechSynthesisUtterance(prompt);
-              utter.rate = 0.95;
-              utter.onstart = () => {
-                promptStarted = true;
-              };
-              utter.onend = begin;
-              utter.onerror = begin;
-              window.speechSynthesis.speak(utter);
-            }
-          });
+    const speakWithBrowser = () => {
+      if (began || cancelledRef.current || !window.speechSynthesis) return;
+      try {
+        const utter = new SpeechSynthesisUtterance(prompt);
+        utter.rate = 0.95;
+        utter.onstart = () => {
+          promptStarted = true;
+        };
+        utter.onend = begin;
+        utter.onerror = begin;
+        window.speechSynthesis.speak(utter);
+      } catch {
+        // ignore: the mic opens on the fallback timer below
       }
-    } catch {
-      // ignore
-    }
+    };
+    const speakNeural = (audio: string) => {
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) throw new Error("No AudioContext");
+      const ctx = new AudioCtx({ sampleRate: 24000 });
+      // Before the first user gesture the browser keeps audio suspended.
+      if (ctx.state !== "running") {
+        void ctx.close().catch(() => undefined);
+        throw new Error("AudioContext suspended");
+      }
+      promptCtxRef.current = ctx;
+      const samples = pcm16Base64ToFloat32(audio);
+      const buffer = ctx.createBuffer(1, Math.max(1, samples.length), 24000);
+      buffer.getChannelData(0).set(samples);
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(ctx.destination);
+      src.onended = () => {
+        begin();
+        if (promptCtxRef.current === ctx) promptCtxRef.current = null;
+        void ctx.close().catch(() => undefined);
+      };
+      promptStarted = true;
+      src.start(0);
+    };
+    // Gemini speaks the prompt in the neural host voice; Meta, and any
+    // failure, uses the browser voice.
+    void loadProviderInfo().then((info) => {
+      if (began || cancelledRef.current) return;
+      if (!info.neuralVoice) {
+        speakWithBrowser();
+        return;
+      }
+      withDeadline(hostTts.get(prompt), NEURAL_VOICE_WAIT_MS)
+        .then((audio) => {
+          if (began || cancelledRef.current || doneRef.current) return;
+          speakNeural(audio);
+        })
+        .catch(speakWithBrowser);
+    });
     const audioCheck = setTimeout(() => {
       if (!promptStarted) setAudioWarn(true);
     }, 1800);
