@@ -5,7 +5,13 @@ import next from "next";
 import { WebSocketServer } from "ws";
 import { handleStreamClient } from "./lib/meta-stream-relay.ts";
 import { providerInfo, resolveProvider } from "./lib/provider.ts";
-import { checkOrigin } from "./lib/request-guard.ts";
+import {
+  checkOrigin,
+  clientKey,
+  createConnectionLimiter,
+  isTrustProxy,
+  normalizeForwardedHeaders,
+} from "./lib/request-guard.ts";
 
 process.env.WS_NO_BUFFER_UTIL = "true";
 
@@ -18,7 +24,16 @@ if (typeof process.loadEnvFile === "function") {
 }
 
 const dev = process.env.NODE_ENV !== "production";
-const hostname = "localhost";
+// Bind address. localhost by default; set HOST=0.0.0.0 to serve a LAN or
+// a container.
+const hostname = process.env.HOST || "localhost";
+const trustProxy = isTrustProxy();
+// One mic stream per tab is normal; a few allows a reload overlapping the
+// old socket's close. Each stream holds a billed upstream speech session.
+const streamLimiter = createConnectionLimiter({ perKey: 3, total: 50 });
+// Browser audio frames are ~100 ms of PCM16 (3.2 KB). Anything near this
+// cap is not a microphone.
+const MAX_WS_PAYLOAD = 64 * 1024;
 const port = Number(process.env.PORT || 3000);
 
 const app = next({ dev, hostname, port });
@@ -27,6 +42,7 @@ const handle = app.getRequestHandler();
 await app.prepare();
 
 const server = createServer(async (req, res) => {
+  normalizeForwardedHeaders(req.headers, req.socket.remoteAddress, trustProxy);
   try {
     const parsedUrl = parse(req.url || "", true);
     await handle(req, res, parsedUrl);
@@ -37,20 +53,22 @@ const server = createServer(async (req, res) => {
   }
 });
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD });
 
-wss.on("connection", (clientWs) => {
+wss.on("connection", (clientWs, _req, key) => {
+  clientWs.once("close", () => streamLimiter.release(key));
   handleStreamClient(clientWs);
 });
 
 const nextUpgrade = app.getUpgradeHandler();
 
 server.on("upgrade", (req, socket, head) => {
+  normalizeForwardedHeaders(req.headers, req.socket.remoteAddress, trustProxy);
   const { pathname } = parse(req.url || "");
   if (pathname === "/api/asr-stream") {
     const origin = req.headers.origin;
     const host = req.headers.host;
-    if (!checkOrigin(origin, host)) {
+    if (!checkOrigin(origin, host, { requireOrigin: true })) {
       socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
       socket.destroy();
       return;
@@ -64,8 +82,19 @@ server.on("upgrade", (req, socket, head) => {
       socket.destroy();
       return;
     }
+    const key = clientKey(req);
+    if (!streamLimiter.acquire(key)) {
+      socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    let upgraded = false;
+    socket.once("close", () => {
+      if (!upgraded) streamLimiter.release(key);
+    });
     wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit("connection", ws, req);
+      upgraded = true;
+      wss.emit("connection", ws, req, key);
     });
   } else if (nextUpgrade) {
     nextUpgrade(req, socket, head);

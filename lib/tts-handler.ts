@@ -63,7 +63,7 @@ export async function handleTts(req: Request, deps: TtsDeps): Promise<Response> 
   const synthesize = deps.synthesize ?? synthesizeWithGemini;
   const log = deps.log ?? ((message: string) => console.warn(`[tts] ${message}`));
 
-  if (!checkOrigin(req.headers.get("origin"), req.headers.get("host"))) {
+  if (!checkOrigin(req.headers.get("origin"), req.headers.get("host"), { requireOrigin: true })) {
     return Response.json({ error: "forbidden origin" }, { status: 403 });
   }
   const rl = limiter(clientKey(req));

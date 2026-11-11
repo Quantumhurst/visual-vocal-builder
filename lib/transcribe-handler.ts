@@ -16,7 +16,7 @@ export async function handleTranscribe(req: Request, deps: TranscribeDeps): Prom
   const log = deps.log ?? ((entry: { audioBytes: number; transcriptLength: number }) => console.log(`${deps.provider ?? "asr"} transcribe call`, entry));
   const logError = deps.logError ?? ((message: string) => console.warn(`[transcribe] ${message}`));
 
-  if (!checkOrigin(req.headers.get("origin"), req.headers.get("host"))) {
+  if (!checkOrigin(req.headers.get("origin"), req.headers.get("host"), { requireOrigin: true })) {
     return Response.json({ error: "forbidden origin" }, { status: 403 });
   }
   const rl = limiter(clientKey(req));

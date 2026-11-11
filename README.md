@@ -50,7 +50,7 @@ The unified server matters in Meta mode: `/api/asr-stream` is a WebSocket owned 
 
 ```bash
 ffmpeg -i in.wav -ac 1 -ar 16000 -f s16le out.pcm
-curl -F "audio=@out.pcm;type=audio/L16" http://localhost:3000/api/transcribe
+curl -H "Origin: http://localhost:3000" -F "audio=@out.pcm;type=audio/L16" http://localhost:3000/api/transcribe
 ```
 
 Check the code with:
@@ -104,6 +104,17 @@ The page opens on the Orbital Foundry landing screen, listening. Say **Enter the
 5. **Lawyer summary:** say “Prepare the lawyer summary”. The package carries the approved name, home base, split, and 5/5 checklist. Prep only — no email, no filing, no submission.
 
 The optional Filing Intel archive (steps and fees) remains available by voice but is not a required mission.
+
+### Running it beyond localhost
+
+The API routes spend the server's provider key, so they only answer this app's own page. POSTs and the speech socket must carry an `Origin` that matches the host; requests from other sites, and scripts that send no Origin, get 403. Origin is not authentication: put the app behind your own auth before exposing it publicly.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `HOST` | `localhost` | Address `server.mjs` binds to. Use `0.0.0.0` for a LAN or a container. |
+| `TRUST_PROXY` | off | Set to `1` only behind a reverse proxy that sets `X-Forwarded-For`. Otherwise the server replaces client-sent forwarding headers with the socket address, so the per-client rate limit cannot be dodged by changing a header. |
+
+The speech socket also caps each client at 3 open streams (50 in total) and refuses frames over 64 KB. If Meta never acknowledges a stream, the server closes it after 10 seconds so the browser falls back to buffered transcription.
 
 ## Follow-ups
 

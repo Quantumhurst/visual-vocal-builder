@@ -168,3 +168,27 @@ test("meta-stream-relay: sends silence padding during audio gaps", async () => {
   await new Promise((resolve) => relayServer.close(resolve));
   await new Promise((resolve) => metaServer.close(resolve));
 });
+
+test("meta-stream-relay: closes the client when Meta never acknowledges the handshake", async () => {
+  const metaServer = new WebSocketServer({ port: 0 });
+  await new Promise((resolve) => metaServer.on("listening", resolve));
+  const metaUrl = `ws://localhost:${metaServer.address().port}`;
+  // Accepts the socket, never answers the handshake.
+  metaServer.on("connection", () => {});
+
+  const relayServer = new WebSocketServer({ port: 0 });
+  await new Promise((resolve) => relayServer.on("listening", resolve));
+  relayServer.on("connection", (clientWs) => {
+    handleStreamClient(clientWs, { apiKey: "k", metaUrl, handshakeTimeoutMs: 60 });
+  });
+
+  const client = new WebSocket(`ws://localhost:${relayServer.address().port}`);
+  const messages = [];
+  client.on("message", (data) => messages.push(JSON.parse(data.toString())));
+  const code = await new Promise((resolve) => client.on("close", (c) => resolve(c)));
+
+  assert.equal(code, 1011);
+  assert.ok(messages.some((m) => m.type === "error" && /handshake timed out/.test(m.message)));
+  await new Promise((resolve) => relayServer.close(resolve));
+  await new Promise((resolve) => metaServer.close(resolve));
+});

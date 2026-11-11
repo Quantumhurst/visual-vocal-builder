@@ -14,7 +14,10 @@ import { resolveProvider, type VoiceProvider } from "../../../../lib/provider";
 const copilotLimiter = createRateLimiter({ limit: 60, windowMs: 60_000 });
 
 function guard(req: Request): Response | null {
-  if (!checkOrigin(req.headers.get("origin"), req.headers.get("host"))) return Response.json({ error: "forbidden origin" }, { status: 403 });
+  // POST runs the model, so it must come from this app's page. GET is
+  // agent discovery only; same-origin GETs may omit Origin.
+  const requireOrigin = req.method !== "GET";
+  if (!checkOrigin(req.headers.get("origin"), req.headers.get("host"), { requireOrigin })) return Response.json({ error: "forbidden origin" }, { status: 403 });
   const rl = copilotLimiter(clientKey(req));
   if (!rl.ok) return Response.json({ error: "rate limited" }, { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } });
   return null;

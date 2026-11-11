@@ -61,7 +61,8 @@ async function streamAudioToWs(wavPath) {
   }
   const pcm = buf.subarray(dataOffset);
 
-  const ws = new WebSocket("ws://localhost:3000/api/asr-stream");
+  // The server requires an Origin on the speech socket, as a browser sends.
+  const ws = new WebSocket("ws://localhost:3000/api/asr-stream", { origin: "http://localhost:3000" });
 
   let readyResolve;
   const readyPromise = new Promise((r) => { readyResolve = r; });
