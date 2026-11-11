@@ -41,3 +41,33 @@ export const ASR_KEYWORDS = [
   "filing steps",
   "lawyer summary",
 ] as const;
+
+// The always-available voice controls (lib/voice-controls.ts). Several are
+// a single short word that a recogniser readily turns into another word
+// ("slower" -> "slayer"). Only the Gemini transcription prompt uses this
+// list; the Meta handshake keeps ASR_KEYWORDS alone.
+export const CONTROL_KEYWORDS = [
+  "help",
+  "repeat that",
+  "stop",
+  "continue",
+  "slower",
+  "faster",
+  "louder",
+  "quieter",
+  "mute",
+  "unmute",
+  "volume",
+  "slow mode",
+  "take your time",
+  "show transcript",
+  "hide transcript",
+  "close",
+  "save progress",
+  "status",
+  "test voice",
+  "download",
+  "download summary",
+  "download transcript",
+  "download package",
+] as const;

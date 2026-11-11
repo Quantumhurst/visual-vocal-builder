@@ -14,6 +14,11 @@ export const TTS_VOICES = ["Aoede", "Charon", "Fenrir", "Kore", "Leda", "Orus", 
 export const MAX_TTS_CHARS = 1500;
 export const TTS_SAMPLE_RATE = 24000;
 const MAX_CACHE_ENTRIES = 100;
+// The TTS model reads its input as a prompt. A host line that sounds like
+// an instruction ("Didn't hear anything — say it again.") makes it try to
+// answer in text, and the API rejects that with a 400. A leading directive
+// keeps it reading the line verbatim; the directive itself is not spoken.
+export const READ_ALOUD_DIRECTIVE = "Read aloud: ";
 const UPSTREAM_TIMEOUT_MS = 10_000;
 
 export type TtsAudio = { audio: string; sampleRate: number };
@@ -40,7 +45,7 @@ export async function synthesizeWithGemini(text: string, voice: string, apiKey: 
     headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
     signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     body: JSON.stringify({
-      contents: [{ parts: [{ text }] }],
+      contents: [{ parts: [{ text: READ_ALOUD_DIRECTIVE + text }] }],
       generationConfig: {
         responseModalities: ["AUDIO"],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },

@@ -110,3 +110,22 @@ test("tts route: wired to the handler", async () => {
   const res = await POST(makeReq({ text: "Hello" }, "http://malicious-site.com"));
   assert.equal(res.status, 403);
 });
+
+test("tts: the upstream prompt asks for the line to be read aloud, not answered", async () => {
+  const { synthesizeWithGemini, READ_ALOUD_DIRECTIVE } = await import("../lib/tts-handler.ts");
+  const realFetch = globalThis.fetch;
+  let sent = null;
+  globalThis.fetch = async (url, init) => {
+    sent = { url: String(url), body: JSON.parse(init.body), headers: init.headers };
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ inlineData: { data: "AAAA" } }] } }] }), { status: 200 });
+  };
+  try {
+    const out = await synthesizeWithGemini("Didn't hear anything — say it again.", "Aoede", "k");
+    assert.equal(out.audio, "AAAA");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(sent.body.contents[0].parts[0].text, `${READ_ALOUD_DIRECTIVE}Didn't hear anything — say it again.`);
+  assert.equal(sent.headers["x-goog-api-key"], "k");
+  assert.ok(!sent.url.includes("key="));
+});

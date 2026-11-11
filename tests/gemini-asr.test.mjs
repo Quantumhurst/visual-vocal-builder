@@ -59,3 +59,19 @@ test("pcmToWav: writes a 44-byte mono 16 kHz header", () => {
   assert.equal(wav.toString("ascii", 0, 4), "RIFF");
   assert.equal(wav.readUInt32LE(24), 16000);
 });
+
+test("gemini transcription prompt carries the whole shared vocabulary, commands included", async () => {
+  const { TRANSCRIBE_PROMPT } = await import("../lib/gemini-asr.ts");
+  const { ASR_KEYWORDS, CONTROL_KEYWORDS } = await import("../lib/asr-vocabulary.ts");
+  for (const word of [...ASR_KEYWORDS, ...CONTROL_KEYWORDS]) assert.ok(TRANSCRIBE_PROMPT.includes(word), word);
+  assert.ok(TRANSCRIBE_PROMPT.includes("four owners"));
+});
+
+test("every listed control word is one the voice-control parser accepts", async () => {
+  const { CONTROL_KEYWORDS } = await import("../lib/asr-vocabulary.ts");
+  const { parseVoiceControl } = await import("../lib/voice-controls.ts");
+  for (const word of CONTROL_KEYWORDS) {
+    if (word === "volume") continue; // only with a number: "volume 40"
+    assert.ok(parseVoiceControl(word), word);
+  }
+});

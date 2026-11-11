@@ -1,12 +1,15 @@
 // Gemini transcription of one buffered PCM utterance.
 
 import { ASR_MODEL } from "./gemini-models.ts";
-import { ASR_KEYWORDS } from "./asr-vocabulary.ts";
+import { ASR_KEYWORDS, CONTROL_KEYWORDS } from "./asr-vocabulary.ts";
 
-// The shared demo vocabulary (lib/asr-vocabulary.ts).
+// The full shared demo vocabulary (lib/asr-vocabulary.ts), the same list
+// Meta is biased toward, plus the voice controls. Command phrases matter as
+// much as names: without them "four owners" came back as "forerunners" and
+// "slower" as "slayer".
 export const TRANSCRIBE_PROMPT =
   "Transcribe the spoken English in this audio recording verbatim. Output ONLY the transcribed words, without any commentary, preamble, or quotes. If there is no audible speech or only noise, output an empty string. " +
-  `Words that are likely when they fit the audio (never add them otherwise): ${ASR_KEYWORDS.slice(0, 11).join(", ")}.`;
+  `Words and phrases that are likely when they fit the audio (never add them otherwise): ${[...ASR_KEYWORDS, ...CONTROL_KEYWORDS].join(", ")}.`;
 
 export interface TranscribePcmOptions {
   model?: string;
