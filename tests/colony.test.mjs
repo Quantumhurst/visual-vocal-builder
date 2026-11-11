@@ -103,11 +103,17 @@ test("colony component is a read-only Pixi island wired in Canvas", () => {
   // Read-only board: no shared-state writes, no agent actions.
   assert.doesNotMatch(src, /setState|useCopilotAction|appendMessage/);
   const canvasSrc = readFileSync(new URL("../components/Canvas.tsx", import.meta.url), "utf8");
-  assert.match(canvasSrc, /dynamic\(.*ColonyView.*ssr: false/s);
-  assert.match(canvasSrc, /EXAMPLE_COMMANDS/);
+  const viewportSrc = readFileSync(new URL("../components/ShipViewport.tsx", import.meta.url), "utf8");
+  const objectiveSrc = readFileSync(new URL("../components/MissionObjective.tsx", import.meta.url), "utf8");
+  assert.match(viewportSrc, /dynamic\(.*ColonyView.*ssr: false/s);
+  // The example commands live with the CONTROLS pop-out.
+  const popoutSrc = readFileSync(new URL("../components/ControlsPopout.tsx", import.meta.url), "utf8");
+  assert.match(popoutSrc, /EXAMPLE_COMMANDS/);
   for (const label of ["Pick Mars", "Make Orbit 70%", "Prepare lawyer summary"]) {
-    assert.match(canvasSrc, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(popoutSrc, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+  assert.match(popoutSrc, /onChipCommand\(chip\.command\)/);
   // Chips go through the agent path, not a state shortcut.
-  assert.match(canvasSrc, /sendToAgent\(chip\.command\)/);
+  assert.match(objectiveSrc, /onChipCommand\(chip\.command\)/);
+  assert.match(canvasSrc, /onChipCommand=\{\(command\) => void sendToAgent\(command\)\}/);
 });

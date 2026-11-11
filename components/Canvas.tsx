@@ -10,45 +10,41 @@ import {
   useFrontendTool,
 } from "@copilotkit/react-core/v2";
 import { z } from "zod";
-import dynamic from "next/dynamic";
-import JurisdictionTable from "./JurisdictionTable";
-
-// Pixi canvas must never render on the server (Day 4 hero island).
-const GalaxyHero = dynamic(() => import("./GalaxyHero"), { ssr: false });
-// Day 8 colony board: second Pixi island, same ssr rule.
-const ColonyView = dynamic(() => import("./ColonyView"), { ssr: false });
-import EquitySlider from "./EquitySlider";
-import FilingChecklist from "./FilingChecklist";
-import FilingSteps from "./FilingSteps";
-import LawyerSummary from "./LawyerSummary";
-import HostVoicePicker from "./HostVoicePicker";
-import BuildQueuePanel from "./BuildQueuePanel";
+import ControlsPopout from "./ControlsPopout";
+import DeckMain from "./DeckMain";
+import DeckStatus from "./DeckStatus";
+import TranscriptPanel from "./TranscriptPanel";
+import { useBrowserVoiceChoice } from "./hooks/useBrowserVoiceChoice";
+import { useNeuralPlayback } from "./hooks/useNeuralPlayback";
+import { useSoundCues } from "./hooks/useSoundCues";
+import HudHeader from "./HudHeader";
+import MissionObjective from "./MissionObjective";
+import ShipViewport from "./ShipViewport";
+import SystemsRail from "./SystemsRail";
 import {
   DEMO_COMPANY_NAME,
   DEMO_JURISDICTIONS,
 } from "../lib/demo-data";
 import { FILING_STEPS_PACK } from "../lib/knowledge";
 import type { SharedState } from "../lib/state";
-import TrustStrip from "./TrustStrip";
 import { verifyPaintedCards } from "../lib/verifier";
 import { getHostQuestion, resolveHostPrompt, shortFounderNames, shouldSpeakFallbackQuestion, type Beat } from "../lib/host-questions";
 import { buildGuideLine, buildQuestionLine, buildRaisedLine, equityConfirmationLine, nameApprovedLine, nextObjectiveHostLine } from "../lib/build-host";
 import { isChangeAnswer, isConfirmationAnswer } from "../lib/confirmation";
 import { FILING_GUARD_REPLY, isFilingGuardQuestion } from "../lib/filing-guard";
-import { DEFAULT_VOICE_SETTINGS, applyVoiceControl, normalizeVoiceSettings, parseVoiceControl, settingsSummary, type VoiceControl, type VoiceSettings } from "../lib/voice-controls";
+import { DEFAULT_VOICE_SETTINGS, applyVoiceControl, normalizeVoiceSettings, parseVoiceControl, type VoiceControl, type VoiceSettings } from "../lib/voice-controls";
 import { clearSavedSession, progressSummary, saveSession, type TranscriptEntry } from "../lib/persistence";
 import { resumeSummary } from "../lib/resume";
 import { withCommander } from "../lib/commander";
-import { buildPackageFile, buildTranscriptFile, hasTranscriptContent, packageFilename, summaryFilename, transcriptFilename } from "../lib/downloads";
+import { DOWNLOAD_BLOCKED_LINE, downloadedLine, planDownload, type DownloadKind } from "../lib/downloads";
 import { FIRST_SPEAK_GREETING, hasFirstSpeakGreeting, markFirstSpeakGreeting } from "../lib/first-speak";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
 import { withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount, applyCompanyName, parseSpokenCompanyName } from "../lib/state-updates";
 import { pushHistory, popHistory, statesEqual, type HistoryEntry } from "../lib/history";
 import { describeChange, currentStateSummary } from "../lib/describe-change";
-import { REQUIRED_BEATS, beatProgress } from "../lib/beat-progress";
+import { beatProgress } from "../lib/beat-progress";
 import {
   captionPhase,
-  captionPhaseLabel,
   heardCaption,
   heardCaptionState,
   hostCaption,
@@ -70,7 +66,6 @@ import {
   SUMMARY_STEP_MS,
   nextSummaryProgress,
 } from "../lib/summary-build";
-import CaptionConsole from "./CaptionConsole";
 import CaptionHistory from "./CaptionHistory";
 import { concatFloat32, toPcm16k } from "../lib/pcm";
 import {
@@ -94,36 +89,24 @@ import { MAX_PCM_BYTES } from "../lib/request-guard";
 import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, autoStopSilence, IDLE_ACTIVITY, MIN_SPEECH_MS, type LiveIntent, type VoiceActivity } from "../lib/live-intent";
 import { queueTurn, flushQueuedTurn, QUEUED_TURN_NOTICE } from "../lib/turn-queue";
 import { AnnouncementBudget } from "../lib/announcements";
-import { cueForChange, CUES, type CueName } from "../lib/sound-cues";
+import { cueForChange, type CueName } from "../lib/sound-cues";
 import { missionFor } from "../lib/mission";
 import { colonyPalette, colonyProgress } from "../lib/colony";
-import { MODULES, flightPlan, flightStatusLabel, formatClock, moduleFor, shipLabel } from "../lib/game-ui";
+import { MODULES, flightPlan, formatClock, moduleFor, shipLabel } from "../lib/game-ui";
 import { spokenHostText } from "../lib/spoken-text";
 import { stripAsrAnnotations } from "../lib/transcript";
 import { resolveVoiceFinal } from "../lib/voice-final";
-import { HOST_VOICE_STORAGE_KEY, defaultHostVoice, isSelectableVoice, pickVoice, prosodyFor, resolveVoiceSelection } from "../lib/voice-select";
+import { pickVoice, prosodyFor } from "../lib/voice-select";
 import { TOOL_TIMEOUT_MS, ToolTimeoutError, toolTimeoutLine, withToolTimeout } from "../lib/tool-timeout";
 import { summarizeTimings, type TurnTimings } from "../lib/turn-timing";
 import { HybridEndpointer } from "../lib/voice/hybrid-endpointer";
 import { speechQueue } from "../lib/voice/surviving-speech-queue";
 import { echoFilter } from "../lib/voice/echo-filter";
 import { currentProviderInfo, loadProviderInfo } from "../lib/provider-client";
-import { NEURAL_VOICE_WAIT_MS, hostTts, pcm16Base64ToFloat32, withDeadline } from "../lib/host-tts";
+import { NEURAL_VOICE_WAIT_MS, hostTts, withDeadline } from "../lib/host-tts";
 
 
 
-
-// Day 8: one-click example commands for judges without a mic. Each chip
-// sends its command through the same sendToAgent path as typed/voice
-// input — sendToAgent paints a live preview instantly (same appliers
-// the agent uses), then the agent turn confirms or corrects it.
-const EXAMPLE_COMMANDS = [
-  { label: "Pick Mars", command: "Pick Mars as our home base" },
-  { label: "Approve Galactic Bagels", command: "Approve Galactic Bagels" },
-  { label: "Make Orbit 70%", command: "Make Orbit 70%" },
-  { label: "Filing steps & fees", command: "What are the filing steps and fees?" },
-  { label: "Prepare lawyer summary", command: "Prepare the lawyer summary" },
-] as const;
 
 // The host voice is the browser/OS system voice. The picker stores a
 // voiceURI (not an index) so it survives OS updates; a stale URI falls
@@ -283,9 +266,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // Which engines the server is configured for (lib/provider.ts). Until
   // the answer arrives this is the safe default that works with either.
   const providerRef = useRef(currentProviderInfo());
-  const neuralCtxRef = useRef<AudioContext | null>(null);
-  const neuralGainRef = useRef<GainNode | null>(null);
-  const neuralSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const streamingReadyRef = useRef(false);
   const activeTurnIdRef = useRef(0);
   const asrLastEventAtRef = useRef(0);
@@ -306,77 +286,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       alive = false;
     };
   }, []);
-
-  function stopNeuralAudio() {
-    const sources = neuralSourcesRef.current;
-    neuralSourcesRef.current = [];
-    for (const src of sources) {
-      try {
-        src.onended = null;
-        src.stop();
-        src.disconnect();
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  // Plays one synthesised host line through Web Audio, honouring the
-  // spoken volume and speed controls. Resolves with the playing time in
-  // ms, null when audio cannot start (no AudioContext, or the browser kept
-  // it suspended) so the caller can use the browser voice instead of
-  // sitting in silence, or -1 when the line was superseded while waiting.
-  async function playNeuralLine(
-    base64Data: string,
-    onEnded: () => void,
-    stillWanted: () => boolean,
-  ): Promise<number | null> {
-    try {
-      const AudioCtx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (!AudioCtx) return null;
-      if (!neuralCtxRef.current || neuralCtxRef.current.state === "closed") {
-        const created = new AudioCtx({ sampleRate: 24000 });
-        const createdGain = created.createGain();
-        createdGain.connect(created.destination);
-        neuralCtxRef.current = created;
-        neuralGainRef.current = createdGain;
-      }
-      const ctx = neuralCtxRef.current;
-      const gain = neuralGainRef.current;
-      if (!gain) return null;
-      if (ctx.state !== "running") {
-        await Promise.race([
-          ctx.resume().catch(() => undefined),
-          new Promise((resolve) => setTimeout(resolve, 400)),
-        ]);
-        if ((ctx.state as AudioContextState) !== "running") return null;
-        if (!stillWanted()) return -1;
-      }
-      const samples = pcm16Base64ToFloat32(base64Data);
-      if (samples.length === 0) return null;
-      const buffer = ctx.createBuffer(1, samples.length, 24000);
-      buffer.getChannelData(0).set(samples);
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      const rate = Math.min(1.6, Math.max(0.5, settingsRef.current.rate));
-      source.playbackRate.value = rate;
-      gain.gain.value = Math.min(1, Math.max(0, settingsRef.current.volume));
-      source.connect(gain);
-      source.onended = () => {
-        const idx = neuralSourcesRef.current.indexOf(source);
-        if (idx >= 0) neuralSourcesRef.current.splice(idx, 1);
-        onEnded();
-      };
-      neuralSourcesRef.current.push(source);
-      source.start();
-      return (buffer.duration / rate) * 1000;
-    } catch (err) {
-      console.warn("[host-voice] neural playback error:", err);
-      return null;
-    }
-  }
 
   function clearConfirmationTimer() {
     if (confirmationTimerRef.current !== null) {
@@ -646,8 +555,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     );
   }
   const [celebrated, setCelebrated] = useState("");
-  const sfxCtxRef = useRef<AudioContext | null>(null);
   const unlockedRef = useRef(false);
+  // Host audio engines (components/hooks): Web Audio for the Gemini neural
+  // voice, the browser/OS voice choice, and the synthesised sound cues.
+  const neural = useNeuralPlayback(settingsRef, settings.volume);
+  const voiceChoice = useBrowserVoiceChoice();
+  const cachedVoiceRef = voiceChoice.cachedVoiceRef;
+  const refreshCachedVoice = voiceChoice.refresh;
+  const playCue = useSoundCues(settingsRef, unlockedRef);
   // The first TALK press is a greeting, not a recording: it announces the
   // home-base question once per session, then opens the mic. The ref is
   // the synchronous guard; sessionStorage is the cross-reload marker.
@@ -676,8 +591,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const prevDoneCountRef = useRef(-1);
   // Voice pre-warm: cache the picked system voice, re-pick once when
   // the browser finishes loading voices, preload on first gesture.
-  const cachedVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
-  const chosenVoiceUriRef = useRef<string | null>(null);
   const utterCancelledRef = useRef(false);
   // Keep a reference to the live utterance: Chrome can drop an unreferenced
   // utterance before firing onend, leaving speechSynthesis.speaking stuck
@@ -734,67 +647,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     dropQueuedTurnNotice();
   }
 
-  function readStoredVoiceUri(): string | null {
-    try {
-      const stored = window.localStorage.getItem(HOST_VOICE_STORAGE_KEY);
-      const voices = window.speechSynthesis?.getVoices() ?? [];
-      // No saved choice: land on Karen when the machine exposes her.
-      if (!stored) {
-        return defaultHostVoice(voices)?.voiceURI ?? null;
-      }
-      if (stored === "auto") return null;
-      if (voices.length === 0) return stored;
-      const chosen = resolveVoiceSelection(voices, stored);
-      if (chosen?.voiceURI === stored) return stored;
-      // A stale or unreliable saved voice is removed so the next read
-      // applies the Karen default rather than leaving the host silent.
-      window.localStorage.removeItem(HOST_VOICE_STORAGE_KEY);
-      return defaultHostVoice(voices)?.voiceURI ?? null;
-    } catch {
-      return null;
-    }
-  }
-
-  function refreshCachedVoice() {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    const voices = window.speechSynthesis.getVoices();
-    let selected = chosenVoiceUriRef.current;
-    // Sanitize a stale ref only after the browser has published voices;
-    // before that, an empty list would look like every voice vanished.
-    if (selected && voices.length > 0 && !voices.some((voice) => voice.voiceURI === selected && isSelectableVoice(voice))) {
-      chosenVoiceUriRef.current = null;
-      try {
-        window.localStorage.removeItem(HOST_VOICE_STORAGE_KEY);
-      } catch {
-        // Storage is optional.
-      }
-      selected = null;
-    }
-    const picked = resolveVoiceSelection(voices, selected ?? readStoredVoiceUri());
-    if (picked) {
-      // The queue has its own fallback cache. Keep it in step with the
-      // curated pick so a missing explicit voice cannot pin an old one.
-      if (cachedVoiceRef.current?.voiceURI !== picked.voiceURI) {
-        speechQueue.clearCachedVoice();
-      }
-      cachedVoiceRef.current = picked;
-    }
-  }
-
   function selectHostVoice(uri: string) {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    const list = window.speechSynthesis.getVoices();
-    const chosen = uri === "auto" ? pickVoice(list) : resolveVoiceSelection(list, uri);
-    const nextUri = uri === "auto" ? "auto" : chosen?.voiceURI ?? "auto";
-    chosenVoiceUriRef.current = nextUri === "auto" ? null : nextUri;
-    cachedVoiceRef.current = chosen;
-    speechQueue.clearCachedVoice();
-    try {
-      window.localStorage.setItem(HOST_VOICE_STORAGE_KEY, nextUri);
-    } catch {
-      // Storage is optional; the choice still applies this session.
-    }
-    playCue("highlight");
+    if (voiceChoice.select(uri)) playCue("highlight");
   }
 
   function previewHostVoice() {
@@ -812,35 +666,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   function toggleControls() {
     if (!dockOpen) refreshCachedVoice();
     setDockOpen((value) => !value);
-  }
-
-  // Synthesised cues only (no assets). Browsers refuse audio before a
-  // user gesture, so cues stay silent until the first interaction.
-  function playCue(name: CueName) {
-    if (!settingsRef.current.soundOn || settingsRef.current.sound <= 0.01) return;
-    if (!unlockedRef.current || typeof window === "undefined") return;
-    try {
-      const ctx = sfxCtxRef.current ?? new AudioContext();
-      sfxCtxRef.current = ctx;
-      if (ctx.state === "suspended") void ctx.resume();
-      const recipe = CUES[name];
-      const t0 = ctx.currentTime;
-      for (const note of recipe.notes) {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = recipe.type;
-        osc.frequency.value = note.freq;
-        const start = t0 + note.atMs / 1000;
-        gain.gain.setValueAtTime(0.0001, start);
-        gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.14 * settingsRef.current.sound), start + 0.015);
-        gain.gain.exponentialRampToValueAtTime(0.0001, start + note.durMs / 1000);
-        osc.connect(gain).connect(ctx.destination);
-        osc.start(start);
-        osc.stop(start + note.durMs / 1000 + 0.05);
-      }
-    } catch {
-      // Sound is garnish; a failed cue must never break a turn.
-    }
   }
 
   function clearSpeechWatchdog() {
@@ -863,7 +688,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     clearSpeechWatchdog();
     clearHostStartTimer();
     clearRearmTimer();
-    stopNeuralAudio();
+    neural.stop();
     utteranceRef.current = null;
     hostSpeakingRef.current = false;
     setHostSpeaking(false);
@@ -1094,8 +919,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       withDeadline(hostTts.get(spoken), NEURAL_VOICE_WAIT_MS)
         .then(async (audio) => {
           if (!isCurrent()) return;
-          stopNeuralAudio();
-          const playingMs = await playNeuralLine(
+          neural.stop();
+          const playingMs = await neural.play(
             audio,
             () => {
               if (attempt !== hostAttemptSeqRef.current) return;
@@ -1121,7 +946,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
           speechWatchdogRef.current = setTimeout(() => {
             speechWatchdogRef.current = null;
             if (attempt !== hostAttemptSeqRef.current) return;
-            stopNeuralAudio();
+            neural.stop();
             finishSpeech();
           }, playingMs + 1500);
         })
@@ -1816,48 +1641,31 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
   }
 
+  // What to save (or why not) is decided in lib/downloads.ts; this only
+  // saves the file and speaks the outcome.
+  function downloadNow(kind: DownloadKind) {
+    const plan = planDownload(kind, withDefaults(stateRef.current), logRef.current);
+    if (!plan.ok) {
+      hostFeedback(plan.line);
+      return;
+    }
+    if (!saveTextFile(plan.filename, plan.text)) {
+      hostFeedback(DOWNLOAD_BLOCKED_LINE);
+      return;
+    }
+    hostFeedback(downloadedLine(plan.filename));
+  }
+
   function downloadSummaryNow() {
-    const current = withDefaults(stateRef.current);
-    if (!current.lawyerPackage.trim()) {
-      hostFeedback("No lawyer summary yet. Prepare the summary first.");
-      return;
-    }
-    const filename = summaryFilename(current);
-    if (!saveTextFile(filename, current.lawyerPackage)) {
-      hostFeedback("The browser blocked the download. Nothing was saved.");
-      return;
-    }
-    hostFeedback(`Downloaded ${filename}.`);
+    downloadNow("summary");
   }
 
   function downloadTranscriptNow() {
-    const current = withDefaults(stateRef.current);
-    const entries = logRef.current;
-    if (!hasTranscriptContent(entries)) {
-      hostFeedback("No transcript yet. Say something first.");
-      return;
-    }
-    const filename = transcriptFilename(current);
-    if (!saveTextFile(filename, buildTranscriptFile(entries, current))) {
-      hostFeedback("The browser blocked the download. Nothing was saved.");
-      return;
-    }
-    hostFeedback(`Downloaded ${filename}.`);
+    downloadNow("transcript");
   }
 
   function downloadPackageNow() {
-    const current = withDefaults(stateRef.current);
-    const entries = logRef.current;
-    if (!current.lawyerPackage.trim() && !hasTranscriptContent(entries)) {
-      hostFeedback("Nothing to download yet — prepare the summary or say something first.");
-      return;
-    }
-    const filename = packageFilename(current);
-    if (!saveTextFile(filename, buildPackageFile(entries, current))) {
-      hostFeedback("The browser blocked the download. Nothing was saved.");
-      return;
-    }
-    hostFeedback(`Downloaded ${filename}.`);
+    downloadNow("package");
   }
 
   // Every new turn starts with no displayed error. Last transcript and
@@ -2799,11 +2607,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       summaryBuildTokenRef.current += 1;
       utteranceRef.current = null;
       if (travelFrameRef.current !== null) cancelAnimationFrame(travelFrameRef.current);
-      stopNeuralAudio();
-      const neuralCtx = neuralCtxRef.current;
-      neuralCtxRef.current = null;
-      neuralGainRef.current = null;
-      if (neuralCtx && neuralCtx.state !== "closed") void neuralCtx.close().catch(() => undefined);
+      neural.dispose();
       try {
         window.speechSynthesis?.cancel();
       } catch {
@@ -3365,11 +3169,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     };
   }, [hostPrompt.text, voiceOn]);
 
-  // "Louder" / "quieter" apply to a neural line that is already playing.
-  useEffect(() => {
-    if (neuralGainRef.current) neuralGainRef.current.gain.value = Math.min(1, Math.max(0, settings.volume));
-  }, [settings.volume]);
-
   // Voice-first boot: the cockpit opens the conversation and the mic on
   // its own after the landing gate. No click, no "press TALK" step.
   useEffect(() => {
@@ -3481,7 +3280,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // Errors get a dull buzz, never silence.
   useEffect(() => {
     if (turnError || transcribeFailure) playCue("error");
-  }, [turnError, transcribeFailure]);
+  }, [turnError, transcribeFailure, playCue]);
 
   // The host line is the outcome of a turn. When VOX is on it is already
   // spoken by TTS; when VOX is off, put it in the one live region. The
@@ -3809,7 +3608,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [playCue]);
 
   const structures = colonyProgress(view.checklist);
   const flight = flightPlan(view, activeModule);
@@ -3845,870 +3644,169 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
   return (
     <main className="game" data-stage={stageTab}>
-      <header className="hud" aria-label="Mission header">
-        <div className="brand">
-          <span className="brand-orb-wrap" aria-hidden="true">
-            <span className="brand-spin" />
-            <span className="brand-mark">
-              <span />
-            </span>
-          </span>
-          <div className="brand-text">
-            <p className="eyebrow">VVB-01 · ORBITAL FOUNDRY</p>
-            <h1>Visual Vocal Builder</h1>
-          </div>
-        </div>
-
-        <div className="hud-mission" aria-label={`${doneCount} of ${progress.requiredTotal} missions complete`}>
-          <span className="hud-kicker">{progress.requiredTotal} MISSIONS</span>
-          <div className="hud-pips" role="group" aria-label="Required missions">
-            {REQUIRED_BEATS.map((beat) => {
-              const step = flight.find((entry) => entry.id === beat);
-              const meta = moduleFor(beat);
-              return (
-                <button
-                  key={beat}
-                  type="button"
-                  className={`hud-pip is-${step?.status ?? "pending"}`}
-                  data-testid={`hud-pip-${beat}`}
-                  aria-pressed={activeModule === beat}
-                  onClick={() => selectModule(beat)}
-                  title={`${meta.label} — ${step ? flightStatusLabel(step.status) : "PENDING"}`}
-                >
-                  <span className={`pip is-${step?.status ?? "pending"}`} aria-hidden="true" />
-                  <span className="hud-pip-label">{meta.short}</span>
-                </button>
-              );
-            })}
-          </div>
-          <strong className="hud-count">
-            {doneCount}
-            <span>/{progress.requiredTotal}</span>
-          </strong>
-        </div>
-      </header>
+      <HudHeader
+        doneCount={doneCount}
+        requiredTotal={progress.requiredTotal}
+        flight={flight}
+        activeModule={activeModule}
+        selectModule={selectModule}
+      />
 
       <div className="bridge">
         <aside className="rail rail-mission" aria-label="Mission control">
-          {equityConfirm ? (
-            <section
-              className="panel objective objective-confirm"
-              data-testid="mission-banner"
-              data-equity-confirm="true"
-              data-beat="equity"
-              data-celebrated="false"
-            >
-              <div className="objective-head">
-                <span className="eyebrow">CONFIRM CREW SPLIT</span>
-                <span className="objective-step">3/5</span>
-              </div>
-              <h2>
-                {view.founders.length} owner{view.founders.length === 1 ? "" : "s"} — {equityLabel}
-              </h2>
-              <p className="objective-prompt" data-testid="mission-prompt">
-                Does this split look right? One step: confirm it.
-              </p>
-              <p className="objective-say" data-testid="next-step">
-                <span>SAY</span> <q>Confirm</q>
-              </p>
-              <div className="confirm-actions" data-testid="equity-confirm">
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  data-testid="confirm-equity"
-                  onClick={confirmEquitySelection}
-                >
-                  CONFIRM SPLIT
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  data-testid="edit-equity"
-                  onClick={() => selectModule("equity")}
-                >
-                  KEEP EDITING
-                </button>
-              </div>
-              <p className="objective-build-hint">The split already totals 100%. KEEP EDITING is the only alternative.</p>
-            </section>
-          ) : (
-          <section
-            className="panel objective"
-            data-testid="mission-banner"
-            data-beat={mission.beat}
-            data-celebrated={celebrated ? "true" : "false"}
-          >
-            <div className="objective-head">
-              <span className="eyebrow">CURRENT OBJECTIVE</span>
-              <span className="objective-step">
-                {mission.step}/{mission.total}
-              </span>
-            </div>
-            <h2>{mission.title}</h2>
-            <p data-testid="mission-prompt" className="objective-prompt">
-              {mission.prompt}
-            </p>
-            <p className="objective-say" data-testid="next-step">
-              <span>SAY</span> <q>{mission.voiceCue}</q>
-            </p>
-            <div className="objective-meter" aria-hidden="true">
-              <span style={{ width: `${Math.round((doneCount / progress.requiredTotal) * 100)}%` }} />
-            </div>
-
-            {/* The build mission is the one required task where the user
-                has to choose among five steps. Keep the five options and
-                the running 0/5..5/5 count in the left rail, not only in
-                the systems panel, so the spoken question has visible
-                answers. Clicks use the same updateChecklistItem path. */}
-            {mission.beat === "checklist" ? (
-              <BuildQueuePanel
-                items={view.checklist}
-                built={structures.built}
-                total={structures.total}
-                percent={structures.percent}
-                nextItemId={nextChecklistId}
-                onToggle={updateChecklistItem}
-              />
-            ) : null}
-
-            {mission.beat === "name" ? (
-              <div className="name-approval" data-testid="name-approval-card">
-                <span className="eyebrow">PROPOSED COMPANY NAME</span>
-                <strong className="name-approval-name">{DEMO_COMPANY_NAME}</strong>
-                <p className="name-approval-why">
-                  This is the one spoken approval that names the company, before equity and the
-                  build. It feeds the lawyer summary. Fictional demo only.
-                </p>
-                <div className="confirm-actions">
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    data-testid="approve-name-button"
-                    onClick={() => approveCompanyName(DEMO_COMPANY_NAME)}
-                  >
-                    APPROVE NAME
-                  </button>
-                </div>
-                <p className="objective-build-hint">Or say “Approve Galactic Bagels” / “Call it &lt;name&gt;”.</p>
-              </div>
-            ) : null}
-
-            {celebrated ? (
-              <p data-testid="mission-celebrated" className="celebrate">
-                {celebrated}
-              </p>
-            ) : null}
-
-            {/* The five required missions are the only steps in the open.
-                The detailed flight plan, its optional archive rows, and the
-                mission chips live behind one disclosure. */}
-            <details className="objective-more">
-              <summary>
-                <span className="eyebrow">PLAN &amp; QUICK ACTIONS</span>
-                <span className="panel-note">
-                  {doneCount}/{progress.requiredTotal} CLEARED
-                </span>
-              </summary>
-              <div className="objective-more-body">
-                <div className="chip-row">
-                  {mission.chips.map((chip) => (
-                    <button
-                      key={chip.label}
-                      type="button"
-                      className="chip-btn"
-                      data-testid="mission-chip"
-                      data-label={chip.label}
-                      disabled={!canSend}
-                      onClick={async () => {
-                        await sendToAgent(chip.command);
-                      }}
-                    >
-                      {chip.label}
-                    </button>
-                  ))}
-                </div>
-                <ol className="flight-list flight-list-compact" aria-label="Required mission flight plan">
-                  {requiredFlight.map((step) => (
-                    <li key={step.id} className={`flight-item is-${step.status}`}>
-                      <button
-                        type="button"
-                        onClick={() => selectModule(step.id)}
-                        aria-pressed={activeModule === step.id}
-                        data-testid={`flight-step-${step.id}`}
-                      >
-                        <span className="flight-code">{step.code}</span>
-                        <span className="flight-main">
-                          <strong>{step.label}</strong>
-                          <span>{step.detail}</span>
-                        </span>
-                        <span className="flight-status">{flightStatusLabel(step.status)}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ol>
-                <details className="plan-archive">
-                  <summary>
-                    <span className="eyebrow">ARCHIVE · FILING FEES</span>
-                    <span className="panel-note">OPTIONAL</span>
-                  </summary>
-                  <ol className="flight-list flight-list-compact" aria-label="Optional archive">
-                    {archiveFlight.map((step) => (
-                      <li key={step.id} className={`flight-item is-${step.status}`}>
-                        <button
-                          type="button"
-                          onClick={() => selectModule(step.id)}
-                          aria-pressed={activeModule === step.id}
-                          data-testid={`flight-step-${step.id}`}
-                        >
-                          <span className="flight-code">{step.code}</span>
-                          <span className="flight-main">
-                            <strong>{step.label}</strong>
-                            <span>{step.detail}</span>
-                          </span>
-                          <span className="flight-status">{flightStatusLabel(step.status)}</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ol>
-                </details>
-              </div>
-            </details>
-          </section>
-          )}
+          <MissionObjective
+            equityConfirm={equityConfirm}
+            ownerCount={view.founders.length}
+            equityLabel={equityLabel}
+            mission={mission}
+            celebrated={celebrated}
+            doneCount={doneCount}
+            requiredTotal={progress.requiredTotal}
+            checklist={view.checklist}
+            structures={structures}
+            nextChecklistId={nextChecklistId}
+            canSend={canSend}
+            requiredFlight={requiredFlight}
+            archiveFlight={archiveFlight}
+            activeModule={activeModule}
+            selectModule={selectModule}
+            confirmEquitySelection={confirmEquitySelection}
+            updateChecklistItem={updateChecklistItem}
+            onApproveName={() => approveCompanyName(DEMO_COMPANY_NAME)}
+            onChipCommand={(command) => void sendToAgent(command)}
+          />
           {/* Captions are a primary channel, not a modal. The full run
               stays on screen in the left rail and auto-scrolls. */}
           <CaptionHistory entries={log} />
         </aside>
 
-        <section className="stage" aria-label="Ship viewport">
-          <div className="stage-head">
-            <div className="stage-tabs" role="tablist" aria-label="Viewport">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={stageTab === "galaxy"}
-                className={stageTab === "galaxy" ? "is-active" : ""}
-                onClick={() => selectStage("galaxy")}
-              >
-                STAR MAP
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={stageTab === "colony"}
-                className={stageTab === "colony" ? "is-active" : ""}
-                onClick={() => selectStage("colony")}
-              >
-                COLONY
-              </button>
-            </div>
-            <div className="stage-live">
-              <span className="live-dot" aria-hidden="true" />
-              LIVE FEED
-              <span className="stage-clock">T+{clockLabel}</span>
-            </div>
-          </div>
+        <ShipViewport
+          view={view}
+          stageTab={stageTab}
+          selectStage={selectStage}
+          handleSelectJurisdiction={handleSelectJurisdiction}
+          clockLabel={clockLabel}
+          homeBase={homeBase}
+          structures={structures}
+          equityLabel={equityLabel}
+          ship={ship}
+          activeMeta={activeMeta}
+          travel={travel}
+          travelColor={travelColor}
+        />
 
-          <div className="stage-viewport">
-            <div className="stage-scene-wrap" hidden={stageTab !== "galaxy"}>
-              <GalaxyHero
-                rows={view.jurisdictions}
-                selected={view.selectedJurisdiction}
-                onSelect={handleSelectJurisdiction}
-              />
-            </div>
-            <div className="stage-scene-wrap" hidden={stageTab !== "colony"}>
-              <ColonyView
-                selected={view.selectedJurisdiction}
-                checklist={view.checklist}
-                founders={view.founders}
-                lawyerPackage={view.lawyerPackage}
-              />
-            </div>
-            <span className="reticle" aria-hidden="true" />
-            <span className="scanlines" aria-hidden="true" />
-          </div>
-
-          <div className="stage-foot">
-            <span>
-              HOME BASE <strong>{homeBase}</strong>
-            </span>
-            <span>
-              COLONY{" "}
-              <strong>
-                {structures.built}/{structures.total}
-              </strong>
-            </span>
-            <span>
-              CREW <strong>{equityLabel}</strong>
-            </span>
-            <span>
-              SHIP <strong data-testid="ship-name">{ship}</strong>
-            </span>
-            <span>
-              PHASE <strong>{activeMeta.label.toUpperCase()}</strong>
-            </span>
-          </div>
-
-          {travel ? (
-            <div className="warp" key={travel.id} data-testid="warp-transition">
-              <div className="warp-stars warp-stars-a" aria-hidden="true" />
-              <div className="warp-stars warp-stars-b" aria-hidden="true" />
-              <div className="warp-flash" aria-hidden="true" />
-              <div className="warp-target" aria-hidden="true">
-                <span
-                  className="warp-planet"
-                  style={{
-                    background: `radial-gradient(circle at 34% 30%, #fff 0 5%, ${travelColor} 36%, #0b1026 100%)`,
-                    boxShadow: `0 0 70px ${travelColor}`,
-                  }}
-                />
-                <span className="warp-ring" />
-              </div>
-              <div className="warp-rocket" aria-hidden="true">
-                <svg viewBox="0 0 64 64" width="64" height="64">
-                  <path
-                    d="M32 4c8 7 12 17 12 28l-6 8H26l-6-8C20 21 24 11 32 4Z"
-                    fill="#e9eeff"
-                    stroke="#7fe7ff"
-                    strokeWidth="1.6"
-                  />
-                  <circle cx="32" cy="24" r="5" fill="#08101f" stroke="#ffd166" strokeWidth="2" />
-                  <path d="M26 40 18 52l10-3M38 40l8 12-10-3" fill="#ff6b7a" />
-                  <path d="M32 46v13" stroke="#ffd166" strokeWidth="4" strokeLinecap="round" />
-                </svg>
-              </div>
-              <div className="warp-copy">
-                <span className="eyebrow">COURSE LOCKED</span>
-                <strong>{travel.planet}</strong>
-                <span className="warp-sub">ENTERING ORBIT</span>
-              </div>
-            </div>
-          ) : null}
-        </section>
-
-        <aside className="rail rail-systems" aria-label="Ship systems">
-          <div className="systems-nav">
-            <div className="module-tabs is-core" role="tablist" aria-label="Four required missions">
-              {requiredModules.map((entry) => {
-                const step = flight.find((item) => item.id === entry.id);
-                return (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={activeModule === entry.id}
-                    className={`module-tab is-${step?.status ?? "pending"}`}
-                    onClick={() => selectModule(entry.id)}
-                    title={entry.blurb}
-                  >
-                    <span className="module-glyph" aria-hidden="true">
-                      {entry.glyph}
-                    </span>
-                    <span className="module-label">{entry.short}</span>
-                    <span className="module-dot" aria-hidden="true" />
-                  </button>
-                );
-              })}
-            </div>
-
-            <details
-              className="archive-tabs"
-              data-testid="archive-tabs"
-              open={archiveOpen}
-              onToggle={(event) => setArchiveOpen(event.currentTarget.open)}
-            >
-              <summary>
-                <span className="archive-title">ARCHIVE</span>
-                <span className="archive-note">FILING FEES · OPTIONAL</span>
-                <span className="integrity-chevron" aria-hidden="true">
-                  ⌄
-                </span>
-              </summary>
-              <div className="module-tabs is-archive" role="tablist" aria-label="Optional archive systems">
-                {archiveModules.map((entry) => {
-                  const step = flight.find((item) => item.id === entry.id);
-                  return (
-                    <button
-                      key={entry.id}
-                      type="button"
-                      role="tab"
-                      aria-selected={activeModule === entry.id}
-                      className={`module-tab is-${step?.status ?? "pending"}`}
-                      onClick={() => selectModule(entry.id)}
-                      title={entry.blurb}
-                    >
-                      <span className="module-glyph" aria-hidden="true">
-                        {entry.glyph}
-                      </span>
-                      <span className="module-label">{entry.short}</span>
-                      <span className="module-dot" aria-hidden="true" />
-                    </button>
-                  );
-                })}
-              </div>
-            </details>
-          </div>
-
-          <div className="panel module-panel" data-active-module={activeModule}>
-            <div className="module-head">
-              <span className="eyebrow">
-                SYSTEM {activeMeta.code} · {activeMeta.label.toUpperCase()}
-              </span>
-              <span className={`chip chip-${activeStep.status}`}>
-                {flightStatusLabel(activeStep.status)}
-              </span>
-            </div>
-
-            <div data-beat="jurisdiction" hidden={activeModule !== "jurisdiction"}>
-              <JurisdictionTable
-                rows={view.jurisdictions}
-                selected={view.selectedJurisdiction}
-                focus={view.focusJurisdiction}
-                focusReason={view.focusReason}
-                onSelect={handleSelectJurisdiction}
-              />
-            </div>
-
-            <div data-beat="equity" hidden={activeModule !== "equity"}>
-              <EquitySlider
-                founders={view.founders}
-                equityNote={view.equityNote}
-                onShareChange={(index, percent) => updateEquity(index, percent, "slider")}
-                onOwnerCountChange={updateOwnerCount}
-              />
-            </div>
-
-            <div data-beat="checklist" hidden={activeModule !== "checklist"}>
-              <FilingChecklist
-                items={view.checklist}
-                onToggle={updateChecklistItem}
-                flags={checklistFlags}
-              />
-            </div>
-
-            <div data-beat="name" hidden={activeModule !== "name"}>
-              <section className="panel module-card" aria-label="Company name approval">
-                <span className="eyebrow">COMPANY NAME · DEMO</span>
-                <h3 className="module-card-title">{view.companyName || DEMO_COMPANY_NAME}</h3>
-                <p className="module-card-copy">
-                  {view.companyName
-                    ? "Approved by voice. This name appears in the lawyer summary."
-                    : "Say “Approve Galactic Bagels”, or “Call it” and a fictional name. The name is approved right after the home base, before equity."}
-                </p>
-                {!view.companyName ? (
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    data-testid="rail-approve-name"
-                    onClick={() => approveCompanyName(DEMO_COMPANY_NAME)}
-                  >
-                    APPROVE GALACTIC BAGELS
-                  </button>
-                ) : (
-                  <p className="module-card-ok" data-testid="name-approved">
-                    Approved: {view.companyName}
-                  </p>
-                )}
-              </section>
-            </div>
-
-            <div data-beat="filingsteps" hidden={activeModule !== "filingsteps"}>
-              <FilingSteps
-                card={view.filingStepsCard}
-                filingStepsNote={view.filingStepsNote}
-                flagReason={filingFlag ? `${filingFlag.reason}: ${filingFlag.detail}` : null}
-              />
-            </div>
-
-            <div data-beat="summary" hidden={activeModule !== "summary"}>
-              <LawyerSummary
-                view={view}
-                companyName={view.companyName || DEMO_COMPANY_NAME}
-                lawyerPackage={view.lawyerPackage}
-                lawyerNote={view.lawyerNote}
-                onPrepare={() => prepareLawyerPackage(true)}
-              />
-            </div>
-          </div>
-
-          <TrustStrip result={verification} />
-        </aside>
+        <SystemsRail
+          view={view}
+          flight={flight}
+          requiredModules={requiredModules}
+          archiveModules={archiveModules}
+          activeModule={activeModule}
+          activeMeta={activeMeta}
+          activeStep={activeStep}
+          archiveOpen={archiveOpen}
+          setArchiveOpen={setArchiveOpen}
+          selectModule={selectModule}
+          handleSelectJurisdiction={handleSelectJurisdiction}
+          onShareChange={(index, percent) => updateEquity(index, percent, "slider")}
+          updateOwnerCount={updateOwnerCount}
+          updateChecklistItem={updateChecklistItem}
+          onApproveName={() => approveCompanyName(DEMO_COMPANY_NAME)}
+          onPrepareSummary={() => prepareLawyerPackage(true)}
+          verification={verification}
+          checklistFlags={checklistFlags}
+          filingFlag={filingFlag}
+        />
       </div>
 
       <footer className="deck" data-testid="command-deck" data-phase={turnPhase}>
         {dockOpen ? (
-          <div className="deck-popout" data-testid="dock-popout">
-            <div className="popout-head">
-              <span className="eyebrow">FLIGHT CONTROLS</span>
-              <button type="button" className="link-btn" onClick={() => setDockOpen(false)}>
-                CLOSE
-              </button>
-            </div>
-            <div className="popout-grid">
-              <button
-                type="button"
-                className="btn"
-                data-testid="convo-toggle"
-                aria-pressed={convoOn}
-                onClick={() => {
-                  const next = !convoOn;
-                  setConvoOn(next);
-                  if (!next) {
-                    convoRef.current = false;
-                    setConvoActive(false);
-                    dropQueuedTurn();
-                  }
-                }}
-              >
-                Conversation auto-listen: {convoOn ? "on" : "off"}
-              </button>
-              <button
-                type="button"
-                className="btn"
-                data-testid="restart-conversation"
-                onClick={() => window.location.reload()}
-              >
-                Restart conversation
-              </button>
-            </div>
-
-            <div className="popout-section">
-              <span className="eyebrow">QUICK COMMANDS</span>
-              <div className="popout-chips">
-                {EXAMPLE_COMMANDS.map((chip) => (
-                  <button
-                    key={chip.label}
-                    type="button"
-                    className="chip-btn"
-                    data-testid={`example-chip-${chip.label}`}
-                    disabled={!canSend}
-                    onClick={async () => {
-                      await sendToAgent(chip.command);
-                    }}
-                  >
-                    {chip.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="popout-section">
-              <span className="eyebrow">VOICE &amp; SOUND</span>
-              <div className="popout-grid">
-                <button
-                  type="button"
-                  className="hud-btn"
-                  data-testid="sound-toggle"
-                  aria-pressed={soundOn}
-                  onClick={() => updateVoiceSettings({ soundOn: !soundOn })}
-                >
-                  <span aria-hidden="true">{soundOn ? "◉" : "○"}</span> SFX
-                </button>
-                <button
-                  type="button"
-                  className="hud-btn"
-                  data-testid="voice-toggle"
-                  aria-pressed={voiceOn}
-                  onClick={() => {
-                    if (voiceOn) cancelSpeech();
-                    updateVoiceSettings({ voiceOn: !voiceOn });
-                  }}
-                >
-                  <span aria-hidden="true">{voiceOn ? "◉" : "○"}</span> VOX
-                </button>
-              </div>
-              <HostVoicePicker
-                voiceOn={voiceOn}
-                onSelect={selectHostVoice}
-                onPreview={previewHostVoice}
-              />
-              <button type="button" className="btn" data-testid="test-voice" onClick={previewHostVoice}>
-                TEST VOICE
-              </button>
-              <p className="popout-clock" aria-label={`Mission clock ${clockLabel}`}>
-                MISSION CLOCK T+{clockLabel}
-              </p>
-            </div>
-
-            <p data-testid="recording-hint" className="micro">
-              Say one short command — it paints live as you speak and sends itself when you pause.
-              Space starts the mic; 1–6 opens a system panel.
-            </p>
-            {shownTranscript ? (
-              <p data-testid="last-transcript" className="micro">
-                Last transcript: <q>{shownTranscript}</q>
-              </p>
-            ) : null}
-          </div>
-        ) : null}
-
-        <div className="deck-status">
-          <span data-testid="turn-phase" className={`deck-phase phase-${turnPhase}`}>
-            {recovery
-              ? "Recovering…"
-              : rearming
-                ? "Re-arming…"
-                : hostSpeaking
-                  ? "Host speaking…"
-                  : turnPhase === "recording"
-                    ? "Recording…"
-                    : turnPhase === "transcribing"
-                      ? "Transcribing…"
-                      : turnPhase === "sending"
-                        ? "Sending…"
-                        : turnPhase === "agent-busy"
-                          ? `Agent working… ${elapsed}s`
-                          : "Ready"}
-          </span>
-          <span data-testid="convo-status" className="deck-convo" data-phase={captionState}>
-            {captionPhaseLabel(captionState).label}
-          </span>
-          <span data-testid="flow-status" className="deck-flow">
-            {flowStatus}
-          </span>
-          <span data-testid="voice-settings" className="deck-settings" aria-label="Voice settings">
-            {settingsSummary(settings)}
-          </span>
-          <span
-            data-testid="host-audio"
-            className={`deck-host-audio${!voiceAudiblyOn || hostSilent ? " is-silent" : hostSpeaking ? " is-speaking" : ""}`}
-          >
-            {!voiceAudiblyOn
-              ? "HOST AUDIO OFF"
-              : hostSilent
-                ? "HOST AUDIO SILENT"
-                : hostSpeaking
-                  ? "HOST AUDIO SPEAKING"
-                  : "HOST AUDIO READY"}
-          </span>
-          {savedNotice ? (
-            <span data-testid="autosave" className="deck-saved">
-              {savedNotice}
-            </span>
-          ) : null}
-          {!voiceOn ? (
-            <span className="deck-vox-off" data-testid="vox-off">
-              VOX OFF
-            </span>
-          ) : null}
-        </div>
-
-        {/* One live region for the turn story. Visual statuses above stay
-            visible but are not live; this prevents a polite-region pile-up
-            while keeping "heard" + result available to a screen reader. */}
-        <p
-          className="visually-hidden"
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-          data-testid="turn-announcement"
-        >
-          {announcement?.text ?? ""}
-        </p>
-
-        {recovery ? (
-          <div
-            className="recovery-banner"
-            data-testid="recovery-banner"
-            data-kind={recovery.kind}
-            role="alert"
-          >
-            <span className="recovery-kicker">RECOVERY</span>
-            <div className="recovery-copy">
-              <strong>{recovery.headline}</strong>
-              {recovery.detail ? <span className="recovery-detail">{recovery.detail}</span> : null}
-              <span className="recovery-next">{recovery.nextStep}</span>
-            </div>
-            {rearming ? <span className="recovery-rearm">MIC RE-ARMING</span> : null}
-          </div>
-        ) : null}
-
-        {!voiceAudiblyOn ? (
-          <p data-testid="host-audio-off" className="alert" role="alert">
-            Host voice is off. Say “voice on” or “test voice” — I will turn it back on.
-          </p>
-        ) : hostSilent && recovery?.kind !== "host-silent" ? (
-          <p data-testid="host-audio-error" className="alert" role="alert">
-            No host audio started. Check the tab mute and the system output device, then say “test
-            voice” — I will retry with the system default voice.
-          </p>
-        ) : null}
-        {turnError && !recovery ? (
-          <p data-testid="turn-error" className="alert" role="alert">
-            {turnError}
-          </p>
-        ) : null}
-        {transcribeFailure ? (
-          <div data-testid="transcribe-failure" className="alert">
-            <p role="alert">
-              {transcribeFailure.plain}{" "}
-              <span data-testid="transcribe-failure-detail">
-                Transcribe failed: {transcribeFailure.detail}
-              </span>
-            </p>
-            {hasLastAudio ? (
-              <button
-                type="button"
-                className="btn"
-                data-testid="retry-transcribe"
-                disabled={recording || transcribing || sending || isLoading}
-                onClick={retryTranscribe}
-              >
-                Retry
-              </button>
-            ) : (
-              <p data-testid="typed-fallback-hint" className="micro">
-                Type the command below to send it without voice.
-              </p>
-            )}
-          </div>
-        ) : null}
-        {notice ? (
-          <p className="deck-notice" role="status" aria-live="polite" data-testid="deck-notice">
-            {notice}
-          </p>
-        ) : null}
-
-        <div className="deck-main">
-          <button
-            type="button"
-            className={`mic-orb${recording ? " is-live" : ""}${convoActive ? " is-convo" : ""}`}
-            data-testid="mic-button"
-            onClick={() => {
-              void toggleRecording();
+          <ControlsPopout
+            convoOn={convoOn}
+            canSend={canSend}
+            soundOn={soundOn}
+            voiceOn={voiceOn}
+            clockLabel={clockLabel}
+            shownTranscript={shownTranscript}
+            onClose={() => setDockOpen(false)}
+            onToggleConvo={() => {
+              const next = !convoOn;
+              setConvoOn(next);
+              if (!next) {
+                convoRef.current = false;
+                setConvoActive(false);
+                dropQueuedTurn();
+              }
             }}
-            disabled={!recording && !convoActive && (transcribing || sending || isLoading)}
-            aria-label={micLabel}
-            title={micLabel}
-          >
-            <span className="mic-ring" aria-hidden="true" />
-            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-              <path
-                d="M12 15a4 4 0 0 0 4-4V6a4 4 0 0 0-8 0v5a4 4 0 0 0 4 4Z"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.7"
-              />
-              <path
-                d="M5 11a7 7 0 0 0 14 0M12 18v3"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-              />
-            </svg>
-            <span className="mic-caption">
-              {recording ? "STOP" : convoActive && busy ? "WAIT" : "TALK"}
-            </span>
-          </button>
+            onChipCommand={(command) => void sendToAgent(command)}
+            onToggleSound={() => updateVoiceSettings({ soundOn: !soundOn })}
+            onToggleVoice={() => {
+              if (voiceOn) cancelSpeech();
+              updateVoiceSettings({ voiceOn: !voiceOn });
+            }}
+            selectHostVoice={selectHostVoice}
+            previewHostVoice={previewHostVoice}
+          />
+        ) : null}
 
-          <div className="deck-readout">
-            <CaptionConsole
-              hostText={hostDisplay}
-              heardText={heardText}
-              heardState={heardState}
-              phase={captionState}
-              hostHealth={hostHealth}
-              ack={ack}
-              holdText={showHold ? continuation?.text ?? null : null}
-              summaryBuild={summaryBuild}
-            />
-            <div className="deck-kicker">
-              <span className="deck-mode">{convoActive ? "CONVERSATION" : "PUSH TO TALK"}</span>
-              <span className="deck-hint">SPACE to talk · 1–6 systems</span>
-            </div>
+        <DeckStatus
+          turnPhase={turnPhase}
+          recovery={recovery}
+          rearming={rearming}
+          hostSpeaking={hostSpeaking}
+          elapsed={elapsed}
+          captionState={captionState}
+          flowStatus={flowStatus}
+          settings={settings}
+          voiceAudiblyOn={voiceAudiblyOn}
+          hostSilent={hostSilent}
+          savedNotice={savedNotice}
+          voiceOn={voiceOn}
+          announcement={announcement}
+          turnError={turnError}
+          transcribeFailure={transcribeFailure}
+          hasLastAudio={hasLastAudio}
+          retryDisabled={recording || transcribing || sending || isLoading}
+          retryTranscribe={retryTranscribe}
+          notice={notice}
+        />
 
-            {recording || livePreview ? (
-              <div data-testid="live-voice-panel" className="live-panel">
-                {recording ? (
-                  <div
-                    data-testid="mic-meter"
-                    className="meter"
-                    aria-label={`Microphone level, recording ${recordSeconds} seconds`}
-                  >
-                    {[0.15, 0.35, 0.55, 0.75, 0.95].map((bar) => (
-                      <span key={bar} className={micLevel >= bar ? "is-on" : ""} />
-                    ))}
-                    <span className="meter-time">
-                      ● {recordSeconds}s {micLevel > 0.05 ? "— HEARING YOU" : "— LISTENING"}
-                    </span>
-                  </div>
-                ) : null}
-                {livePreview ? (
-                  <p data-testid="live-preview" className="live-preview">
-                    {livePreview.status === "confirmed"
-                      ? `Confirmed — ${livePreview.label.replace(/…$/, "")}`
-                      : `${livePreview.label}${
-                          livePreview.status === "confirming" ? " · confirming" : " · provisional"
-                        }`}
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="deck-input">
-            <input
-              value={typed}
-              disabled={recording || transcribing || sending || isLoading}
-              onChange={(event) => setTyped(event.target.value)}
-              onKeyDown={async (event) => {
-                if (event.key === "Enter") {
-                  await sendToAgent(typed);
-                  setTyped("");
-                }
-              }}
-              placeholder="Or type a command for the agent"
-              aria-label="Type a command for the agent"
-            />
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={!canSend || !typed.trim()}
-              onClick={async () => {
-                await sendToAgent(typed);
-                setTyped("");
-              }}
-            >
-              {busy ? "WORKING" : "SEND"}
-            </button>
-          </div>
-
-          <div className="deck-tools">
-            <button
-              type="button"
-              className="btn"
-              data-testid="undo-button"
-              disabled={historySize === 0}
-              onClick={() => {
-                undoLast();
-              }}
-            >
-              UNDO
-            </button>
-            <button
-              type="button"
-              className="btn"
-              data-testid="transcript-toggle"
-              aria-expanded={transcriptOpen}
-              onClick={() => setTranscriptVisibility(!transcriptOpen)}
-            >
-              {transcriptOpen ? "HIDE TRANSCRIPT" : "TRANSCRIPT"}
-            </button>
-            <button
-              type="button"
-              className="btn"
-              data-testid="dock-expand"
-              aria-expanded={dockOpen}
-              aria-label="Controls — host voice, sound, quick commands"
-              title="Controls — host voice, sound, quick commands"
-              onClick={toggleControls}
-            >
-              {dockOpen ? "CLOSE" : "CONTROLS"}
-            </button>
-          </div>
-        </div>
+        <DeckMain
+          recording={recording}
+          convoActive={convoActive}
+          micDisabled={!recording && !convoActive && (transcribing || sending || isLoading)}
+          micLabel={micLabel}
+          busy={busy}
+          onToggleRecording={() => {
+            void toggleRecording();
+          }}
+          hostText={hostDisplay}
+          heardText={heardText}
+          heardState={heardState}
+          captionState={captionState}
+          hostHealth={hostHealth}
+          ack={ack}
+          holdText={showHold ? continuation?.text ?? null : null}
+          summaryBuild={summaryBuild}
+          recordSeconds={recordSeconds}
+          micLevel={micLevel}
+          livePreview={livePreview}
+          typed={typed}
+          setTyped={setTyped}
+          inputDisabled={recording || transcribing || sending || isLoading}
+          canSend={canSend}
+          onSendTyped={async () => {
+            await sendToAgent(typed);
+            setTyped("");
+          }}
+          historySize={historySize}
+          onUndo={() => {
+            undoLast();
+          }}
+          transcriptOpen={transcriptOpen}
+          onToggleTranscript={() => setTranscriptVisibility(!transcriptOpen)}
+          dockOpen={dockOpen}
+          toggleControls={toggleControls}
+        />
 
         <p className="deck-legal">
           DEMO ONLY · NOT LEGAL ADVICE · NOT A FILING · NOTHING SUBMITTED · NO EMAIL
@@ -4716,36 +3814,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       </footer>
 
       {transcriptOpen ? (
-        <section
-          className="transcript-panel"
-          data-testid="transcript-panel"
-          aria-label="Full conversation transcript"
-        >
-          <header className="transcript-head">
-            <div>
-              <span className="eyebrow">FULL TRANSCRIPT</span>
-              <h2>Everything said, both sides</h2>
-            </div>
-            <button type="button" className="btn" onClick={() => setTranscriptVisibility(false)}>
-              CLOSE
-            </button>
-          </header>
-          <ol className="transcript-list" data-testid="transcript-list">
-            {log.length === 0 ? (
-              <li className="transcript-empty">Nothing said yet. Say “Enter the Bridge” or “Pick Mars”.</li>
-            ) : (
-              log.map((entry, index) => (
-                <li key={`${entry.at}-${index}`} className={`transcript-entry is-${entry.role}`}>
-                  <span className="transcript-who">{entry.role === "you" ? "YOU" : "HOST"}</span>
-                  <p>{entry.text}</p>
-                </li>
-              ))
-            )}
-          </ol>
-          <p className="transcript-foot">
-            Demo transcript. Nothing here is legal advice, a filing, or a submission.
-          </p>
-        </section>
+        <TranscriptPanel log={log} onClose={() => setTranscriptVisibility(false)} />
       ) : null}
     </main>
   );

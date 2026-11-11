@@ -194,9 +194,13 @@ test("trust strip is wired live into Canvas and flags show on cards", () => {
     "utf8",
   );
   assert.match(canvas, /verifyPaintedCards\(view\)/);
-  assert.match(canvas, /<TrustStrip result=\{verification\} \/>/);
-  assert.match(canvas, /flagReason=/);
-  assert.match(canvas, /flags=\{checklistFlags\}/);
+  // The cards and the strip render in the systems rail, fed by Canvas.
+  const rail = readFileSync(new URL("../components/SystemsRail.tsx", import.meta.url), "utf8");
+  assert.match(rail, /<TrustStrip result=\{verification\} \/>/);
+  assert.match(rail, /flagReason=/);
+  assert.match(rail, /flags=\{checklistFlags\}/);
+  assert.match(canvas, /verification=\{verification\}/);
+  assert.match(canvas, /checklistFlags=\{checklistFlags\}/);
   const strip = readFileSync(
     new URL("../components/TrustStrip.tsx", import.meta.url),
     "utf8",

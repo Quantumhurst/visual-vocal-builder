@@ -94,3 +94,41 @@ export function buildTranscriptFile(
     FILE_DISCLAIMER,
   ].join("\n");
 }
+
+export type DownloadKind = "summary" | "transcript" | "package";
+
+// What a download request should do: save one file, or say why not. The
+// host speaks `line` either way (after a successful save it is replaced
+// by the "Downloaded …" confirmation). Pure: no browser, no state writes.
+export type DownloadPlan =
+  | { ok: true; filename: string; text: string }
+  | { ok: false; line: string };
+
+export const DOWNLOAD_BLOCKED_LINE = "The browser blocked the download. Nothing was saved.";
+
+export function downloadedLine(filename: string): string {
+  return `Downloaded ${filename}.`;
+}
+
+export function planDownload(
+  kind: DownloadKind,
+  state: Pick<SharedState, "companyName" | "lawyerPackage">,
+  entries: readonly TranscriptEntry[],
+): DownloadPlan {
+  if (kind === "summary") {
+    if (!state.lawyerPackage.trim()) {
+      return { ok: false, line: "No lawyer summary yet. Prepare the summary first." };
+    }
+    return { ok: true, filename: summaryFilename(state), text: state.lawyerPackage };
+  }
+  if (kind === "transcript") {
+    if (!hasTranscriptContent(entries)) {
+      return { ok: false, line: "No transcript yet. Say something first." };
+    }
+    return { ok: true, filename: transcriptFilename(state), text: buildTranscriptFile(entries, state) };
+  }
+  if (!state.lawyerPackage.trim() && !hasTranscriptContent(entries)) {
+    return { ok: false, line: "Nothing to download yet — prepare the summary or say something first." };
+  }
+  return { ok: true, filename: packageFilename(state), text: buildPackageFile(entries, state) };
+}
