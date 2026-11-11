@@ -1,10 +1,9 @@
 // Gemini transcription of one buffered PCM utterance.
 
 import { ASR_MODEL } from "./gemini-models.ts";
-import { ASR_KEYWORDS } from "./meta-models.ts";
+import { ASR_KEYWORDS } from "./asr-vocabulary.ts";
 
-// The same demo vocabulary the Meta recogniser is biased toward, so
-// "Europa" and "Galactic Bagels" are spelled the way the app expects.
+// The shared demo vocabulary (lib/asr-vocabulary.ts).
 export const TRANSCRIBE_PROMPT =
   "Transcribe the spoken English in this audio recording verbatim. Output ONLY the transcribed words, without any commentary, preamble, or quotes. If there is no audible speech or only noise, output an empty string. " +
   `Words that are likely when they fit the audio (never add them otherwise): ${ASR_KEYWORDS.slice(0, 11).join(", ")}.`;
