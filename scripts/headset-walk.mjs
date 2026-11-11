@@ -846,6 +846,13 @@ async function main() {
       const synth = window.speechSynthesis;
       window.__vvbPrimalSpeak = synth.speak;
       Object.defineProperty(synth, "speak", { configurable: true, value: () => {} });
+      // Gemini speaks through Web Audio first. Make that path fail too, so
+      // the app falls back to the (silenced) browser voice on either
+      // provider. The mic worklet never calls createBuffer.
+      window.__vvbPrimalCreateBuffer = AudioContext.prototype.createBuffer;
+      AudioContext.prototype.createBuffer = () => {
+        throw new Error("walk: neural playback disabled");
+      };
     });
     await say(page, audio.help);
     const silentRecovery = await waitFor("host silent recovery banner", async () => {
@@ -856,6 +863,7 @@ async function main() {
     const silentRearmed = await waitFor("mic re-armed after silent host", () => waitMicReady(page, 30000));
     await page.evaluate(() => {
       delete window.speechSynthesis.speak;
+      AudioContext.prototype.createBuffer = window.__vvbPrimalCreateBuffer;
     });
     console.log(`  Visible: "${silentRecovery.recovery?.headline ?? "host audio silent"}" · mic re-armed.`);
 
