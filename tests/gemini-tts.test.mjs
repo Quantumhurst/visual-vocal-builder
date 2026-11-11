@@ -27,6 +27,7 @@ function deps(overrides = {}) {
     limiter: createRateLimiter({ limit: 1000, windowMs: 60_000 }),
     cache: new Map(),
     inflight: new Map(),
+    quota: { until: 0 },
     log: () => {},
     ...overrides,
   };
@@ -128,4 +129,85 @@ test("tts: the upstream prompt asks for the line to be read aloud, not answered"
   assert.equal(sent.body.contents[0].parts[0].text, `${READ_ALOUD_DIRECTIVE}Didn't hear anything — say it again.`);
   assert.equal(sent.headers["x-goog-api-key"], "k");
   assert.ok(!sent.url.includes("key="));
+});
+
+test("tts: an upstream quota refusal pauses synthesis and says how long", async () => {
+  const { UpstreamTtsError } = await import("../lib/tts-handler.ts");
+  let t = 1_000_000;
+  const logs = [];
+  const d = deps({ now: () => t, log: (m) => logs.push(m) });
+  let refuse = true;
+  d.synthesize = async (text) => {
+    d.calls.push(text);
+    if (refuse) throw new UpstreamTtsError(429, 37);
+    return { audio: "QUJD", sampleRate: 24000 };
+  };
+  const first = await handleTts(makeReq({ text: "Line one" }), d);
+  assert.equal(first.status, 429);
+  assert.equal(first.headers.get("Retry-After"), "37");
+  // Inside the window: refused without calling upstream.
+  t += 10_000;
+  const second = await handleTts(makeReq({ text: "Line two" }), d);
+  assert.equal(second.status, 429);
+  assert.equal(second.headers.get("Retry-After"), "27");
+  assert.equal(d.calls.length, 1);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /quota exhausted; pausing neural voice for 37s/);
+  // After the window: upstream is tried again.
+  t += 28_000;
+  refuse = false;
+  const third = await handleTts(makeReq({ text: "Line three" }), d);
+  assert.equal(third.status, 200);
+  assert.equal(d.calls.length, 2);
+});
+
+test("tts: a cached line still plays during a quota pause", async () => {
+  let t = 5_000;
+  const d = deps({ now: () => t, quota: { until: 60_000 } });
+  d.cache.set("Aoede:Pick Mars", { audio: "QUJD", sampleRate: 24000 });
+  const hit = await handleTts(makeReq({ text: "Pick Mars" }), d);
+  assert.equal(hit.status, 200);
+  const miss = await handleTts(makeReq({ text: "Something new" }), d);
+  assert.equal(miss.status, 429);
+  assert.equal(d.calls.length, 0);
+});
+
+test("tts: other upstream failures stay a plain 502 and do not pause", async () => {
+  const { UpstreamTtsError } = await import("../lib/tts-handler.ts");
+  const d = deps();
+  d.synthesize = async () => {
+    throw new UpstreamTtsError(400);
+  };
+  const res = await handleTts(makeReq({ text: "Hello" }), d);
+  assert.equal(res.status, 502);
+  assert.equal(d.quota.until, 0);
+});
+
+test("tts: retry delay is read from the header or Google's RetryInfo, then clamped", async () => {
+  const { parseRetryAfterSec, quotaCooldownSec, DEFAULT_QUOTA_COOLDOWN_SEC } = await import("../lib/tts-handler.ts");
+  assert.equal(parseRetryAfterSec("12", null), 12);
+  const body = { error: { details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "41s" }] } };
+  assert.equal(parseRetryAfterSec(null, body), 41);
+  assert.equal(parseRetryAfterSec(null, { error: {} }), null);
+  assert.equal(quotaCooldownSec(null), DEFAULT_QUOTA_COOLDOWN_SEC);
+  assert.equal(quotaCooldownSec(1), 5);
+  assert.equal(quotaCooldownSec(10_000), 300);
+  assert.equal(quotaCooldownSec(12.2), 13);
+});
+
+test("tts: synthesizeWithGemini turns a 429 into a quota error with its retry delay", async () => {
+  const { synthesizeWithGemini, UpstreamTtsError } = await import("../lib/tts-handler.ts");
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ error: { code: 429, details: [{ retryDelay: "22s" }] } }), { status: 429 });
+  try {
+    await assert.rejects(synthesizeWithGemini("Hi", "Aoede", "k"), (err) => {
+      assert.ok(err instanceof UpstreamTtsError);
+      assert.equal(err.status, 429);
+      assert.equal(err.retryAfterSec, 22);
+      return true;
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

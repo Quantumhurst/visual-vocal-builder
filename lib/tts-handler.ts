@@ -23,18 +23,63 @@ const UPSTREAM_TIMEOUT_MS = 10_000;
 
 export type TtsAudio = { audio: string; sampleRate: number };
 
+// Quota cool-down. The preview TTS model has a small per-minute quota; once
+// Google refuses (429), every further call in that window is refused too
+// and only adds latency. The server stops calling upstream until the
+// window passes and tells the browser how long, so it uses the browser
+// voice straight away instead of waiting on each line.
+export const DEFAULT_QUOTA_COOLDOWN_SEC = 60;
+const MIN_QUOTA_COOLDOWN_SEC = 5;
+const MAX_QUOTA_COOLDOWN_SEC = 300;
+
+export class UpstreamTtsError extends Error {
+  readonly status: number;
+  readonly retryAfterSec: number | null;
+  constructor(status: number, retryAfterSec: number | null = null) {
+    super(`upstream status ${status}`);
+    this.name = "UpstreamTtsError";
+    this.status = status;
+    this.retryAfterSec = retryAfterSec;
+  }
+}
+
+// Google reports the wait as a Retry-After header or, more often, as a
+// RetryInfo detail ({"retryDelay": "37s"}) in the error body.
+export function parseRetryAfterSec(header: string | null, body: unknown): number | null {
+  const fromHeader = header ? Number(header.trim()) : NaN;
+  if (Number.isFinite(fromHeader) && fromHeader > 0) return fromHeader;
+  const details = (body as { error?: { details?: Array<{ retryDelay?: unknown }> } } | null)?.error?.details;
+  if (Array.isArray(details)) {
+    for (const detail of details) {
+      const match = typeof detail?.retryDelay === "string" ? /^(\d+(?:\.\d+)?)s$/.exec(detail.retryDelay.trim()) : null;
+      if (match) return Number(match[1]);
+    }
+  }
+  return null;
+}
+
+export function quotaCooldownSec(retryAfterSec: number | null): number {
+  const sec = retryAfterSec ?? DEFAULT_QUOTA_COOLDOWN_SEC;
+  return Math.ceil(Math.min(MAX_QUOTA_COOLDOWN_SEC, Math.max(MIN_QUOTA_COOLDOWN_SEC, sec)));
+}
+
+export type QuotaState = { until: number };
+
 export type TtsDeps = {
   resolve: () => ProviderResolution;
   synthesize?: (text: string, voice: string, apiKey: string) => Promise<TtsAudio>;
   limiter?: ReturnType<typeof createRateLimiter>;
   cache?: Map<string, TtsAudio>;
   inflight?: Map<string, Promise<TtsAudio>>;
+  quota?: QuotaState;
+  now?: () => number;
   log?: (message: string) => void;
 };
 
 const defaultLimiter = createRateLimiter({ limit: 90, windowMs: 60_000 });
 const defaultCache = new Map<string, TtsAudio>();
 const defaultInflight = new Map<string, Promise<TtsAudio>>();
+const defaultQuota: QuotaState = { until: 0 };
 
 export async function synthesizeWithGemini(text: string, voice: string, apiKey: string): Promise<TtsAudio> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${TTS_MODEL}:generateContent`;
@@ -52,7 +97,15 @@ export async function synthesizeWithGemini(text: string, voice: string, apiKey: 
       },
     }),
   });
-  if (!res.ok) throw new Error(`upstream status ${res.status}`);
+  if (!res.ok) {
+    let body: unknown = null;
+    try {
+      body = await res.json();
+    } catch {
+      // The status is what matters; the body is only read for RetryInfo.
+    }
+    throw new UpstreamTtsError(res.status, res.status === 429 ? parseRetryAfterSec(res.headers.get("retry-after"), body) : null);
+  }
   const data = (await res.json()) as {
     candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string } }> } }>;
   };
@@ -67,6 +120,15 @@ export async function handleTts(req: Request, deps: TtsDeps): Promise<Response> 
   const inflight = deps.inflight ?? defaultInflight;
   const synthesize = deps.synthesize ?? synthesizeWithGemini;
   const log = deps.log ?? ((message: string) => console.warn(`[tts] ${message}`));
+  const quota = deps.quota ?? defaultQuota;
+  const now = deps.now ?? (() => Date.now());
+  const quotaRefusal = () => {
+    const retryAfterSec = Math.max(1, Math.ceil((quota.until - now()) / 1000));
+    return Response.json(
+      { error: "voice quota exhausted; try again later" },
+      { status: 429, headers: { "Retry-After": String(retryAfterSec) } },
+    );
+  };
 
   if (!checkOrigin(req.headers.get("origin"), req.headers.get("host"), { requireOrigin: true })) {
     return Response.json({ error: "forbidden origin" }, { status: 403 });
@@ -108,6 +170,9 @@ export async function handleTts(req: Request, deps: TtsDeps): Promise<Response> 
     return Response.json({ ...cached, cached: true });
   }
 
+  // Cached lines above still play; only new synthesis waits out the quota.
+  if (now() < quota.until) return quotaRefusal();
+
   // A prefetch and the real request for the same line share one upstream call.
   let pending = inflight.get(key);
   if (!pending) {
@@ -123,6 +188,14 @@ export async function handleTts(req: Request, deps: TtsDeps): Promise<Response> 
     cache.set(key, result);
     return Response.json({ ...result, cached: false });
   } catch (err) {
+    if (err instanceof UpstreamTtsError && err.status === 429) {
+      const wasCooling = now() < quota.until;
+      const sec = quotaCooldownSec(err.retryAfterSec);
+      quota.until = Math.max(quota.until, now() + sec * 1000);
+      // One log line per cool-down, not one per refused line.
+      if (!wasCooling) log(`upstream quota exhausted; pausing neural voice for ${sec}s`);
+      return quotaRefusal();
+    }
     // Upstream detail stays in the server log; the browser gets a plain line.
     log(err instanceof Error ? err.message : String(err));
     return Response.json({ error: "voice synthesis failed" }, { status: 502 });

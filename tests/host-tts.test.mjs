@@ -66,3 +66,36 @@ test("pcm16Base64ToFloat32: decodes little-endian signed samples", () => {
   assert.deepEqual(Array.from(out), [0, 0.5, -0.5, 32767 / 32768, -1]);
   assert.equal(pcm16Base64ToFloat32("").length, 0);
 });
+
+test("host tts: a quota refusal pauses new requests for the server's window", async () => {
+  let t = 1_000;
+  const quota = { ok: false, status: 429, json: async () => ({}), headers: { get: (n) => (n === "retry-after" ? "20" : null) } };
+  const { calls, fetchImpl } = fakeFetch((n) => (n === 1 ? okAudio("CACHED") : n === 2 ? quota : okAudio("FRESH")));
+  const tts = createHostTts({ fetchImpl, now: () => t });
+  assert.equal(await tts.get("Pick Mars"), "CACHED");
+  await assert.rejects(tts.get("Line two"), /TTS status 429/);
+  assert.equal(tts.pausedForQuota(), true);
+  assert.equal(tts.unavailable(), false);
+  // Paused: refused at once with no request; prefetch does nothing; cache still plays.
+  await assert.rejects(tts.get("Line three"), /paused for quota/);
+  tts.prefetch("Line four");
+  assert.equal(await tts.get("Pick Mars"), "CACHED");
+  assert.equal(calls.length, 2);
+  // After the window the voice is asked again.
+  t += 20_001;
+  assert.equal(tts.pausedForQuota(), false);
+  assert.equal(await tts.get("Line three"), "FRESH");
+  assert.equal(calls.length, 3);
+});
+
+test("host tts: a 429 without Retry-After pauses for the default window", async () => {
+  let t = 0;
+  const { QUOTA_PAUSE_DEFAULT_MS } = await import("../lib/host-tts.ts");
+  const { fetchImpl } = fakeFetch(() => ({ ok: false, status: 429, json: async () => ({}) }));
+  const tts = createHostTts({ fetchImpl, now: () => t });
+  await assert.rejects(tts.get("Hello"));
+  t = QUOTA_PAUSE_DEFAULT_MS - 1;
+  assert.equal(tts.pausedForQuota(), true);
+  t = QUOTA_PAUSE_DEFAULT_MS + 1;
+  assert.equal(tts.pausedForQuota(), false);
+});
