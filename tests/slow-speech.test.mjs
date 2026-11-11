@@ -62,3 +62,12 @@ test("held text and the next final merge into one utterance", () => {
 test("the continuation grace is long enough for slow speech", () => {
   assert.ok(CONTINUATION_GRACE_MS >= 10_000);
 });
+
+test("a command word used as a noun after a determiner is not held", () => {
+  for (const text of ["confirm the split", "Yes, confirm the split.", "show me the build", "make it our call"]) {
+    assert.equal(looksUnfinishedTranscript(text), false, text);
+  }
+  // A real open verb still holds.
+  assert.equal(looksUnfinishedTranscript("I would like to pick"), true);
+  assert.equal(looksUnfinishedTranscript("we should split"), true);
+});

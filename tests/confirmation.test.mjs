@@ -51,3 +51,9 @@ test("a confirmation with a new command is not a pure yes", () => {
   assert.equal(isConfirmationAnswer(""), false);
   assert.equal(isChangeAnswer("no, make it four owners"), false);
 });
+test("an affirmative followed by a full confirm phrase is a confirmation", () => {
+  for (const text of ["Yes, confirm the split.", "yes confirm the split", "Okay, confirm it", "yeah confirm this split"]) {
+    assert.equal(isConfirmationAnswer(text), true, text);
+  }
+  assert.equal(isConfirmationAnswer("yes confirm the split and build"), false);
+});

@@ -65,6 +65,10 @@ const OPEN_ENDINGS = new Set([
   "your",
 ]);
 
+// After one of these, a command word is a noun ("the split", "a build",
+// "our call"): the phrase is complete, not waiting for an object.
+const DETERMINERS = new Set(["a", "an", "the", "this", "that", "our", "my", "your", "its", "their"]);
+
 // A bare command verb with no object is still a beginning.
 const OPEN_VERBS = new Set([
   "approve",
@@ -140,8 +144,9 @@ export function looksUnfinishedTranscript(text: string): boolean {
   if (OPEN_ENDINGS.has(tail)) return true;
   // "Pick" / "make" / "build" alone: a verb that still needs its object.
   if (words.length === 1 && OPEN_VERBS.has(tail)) return true;
-  // "I would like to pick": the last word is a transitive verb.
-  if (words.length >= 2 && OPEN_VERBS.has(tail)) return true;
+  // "I would like to pick": the last word is a transitive verb. But
+  // "confirm the split" ends on a noun, not a verb waiting for its object.
+  if (words.length >= 2 && OPEN_VERBS.has(tail) && !DETERMINERS.has(words[words.length - 2])) return true;
 
   return false;
 }

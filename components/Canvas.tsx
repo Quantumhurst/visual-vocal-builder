@@ -62,7 +62,6 @@ import {
 } from "../lib/recovery";
 import {
   CONTINUATION_GRACE_MS,
-  looksUnfinishedTranscript,
   mergeContinuation,
 } from "../lib/slow-speech";
 import {
@@ -101,6 +100,7 @@ import { colonyPalette, colonyProgress } from "../lib/colony";
 import { MODULES, flightPlan, flightStatusLabel, formatClock, moduleFor, shipLabel } from "../lib/game-ui";
 import { spokenHostText } from "../lib/spoken-text";
 import { stripAsrAnnotations } from "../lib/transcript";
+import { resolveVoiceFinal } from "../lib/voice-final";
 import { HOST_VOICE_STORAGE_KEY, defaultHostVoice, isSelectableVoice, pickVoice, prosodyFor, resolveVoiceSelection } from "../lib/voice-select";
 import { TOOL_TIMEOUT_MS, ToolTimeoutError, toolTimeoutLine, withToolTimeout } from "../lib/tool-timeout";
 import { summarizeTimings, type TurnTimings } from "../lib/turn-timing";
@@ -539,6 +539,20 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     clearHeldUtterance();
     if (!withinGrace) return nextText;
     return mergeContinuation(held.text, nextText);
+  }
+
+  // One slow-speech decision for every speech path (Meta streaming, the
+  // browser recogniser, buffered transcription). Returns the text to send,
+  // or null when the final was held and the mic re-armed for the rest.
+  function holdOrMerge(text: string): string | null {
+    const decision = resolveVoiceFinal(text, heldUtteranceRef.current?.text);
+    clearHeldUtterance();
+    if (decision.action === "hold") {
+      logEvent(`holding unfinished final ${JSON.stringify(decision.text)}`);
+      holdContinuation(decision.text);
+      return null;
+    }
+    return decision.text;
   }
 
   // True while the host voice is actually speaking. The mic stays closed
@@ -2624,49 +2638,11 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         }
 
         // --- Slow-speech continuation ----------------------------------
-        // A recognizer final is not always a complete thought. If the
-        // wording is visibly unfinished, hold it, keep the mic open, and
-        // merge the next final. Controls always win over a held fragment.
-        const held = heldUtteranceRef.current;
-        let finalText = trimmed;
-        if (held) {
-          // Controls, yes/no answers, name approvals, and questions are
-          // standalone turns. They abandon the held fragment instead of
-          // being glued onto it ("I want to … Stop").
-          const standalone =
-            Boolean(parseVoiceControl(trimmed)) ||
-            isConfirmationAnswer(trimmed) ||
-            isNameApproval(trimmed) ||
-            Boolean(parseSpokenCompanyName(trimmed)) ||
-            /\?\s*$/.test(trimmed) ||
-            /^(?:what|how|where|when|who|why|can|could|do|does|is|are|should|would)\b/i.test(trimmed);
-          if (standalone) {
-            clearHeldUtterance();
-          } else {
-            finalText = mergeContinuation(held.text, trimmed);
-            clearHeldUtterance();
-          }
-        }
-        const finalControl = parseVoiceControl(finalText);
-        const finalIntent = parseLiveIntent(finalText);
-        const finalAnswer =
-          isConfirmationAnswer(finalText) ||
-          isNameApproval(finalText) ||
-          Boolean(parseSpokenCompanyName(finalText));
-        const looksLikeQuestion = /\?\s*$/.test(finalText) ||
-          /^(?:what|how|where|when|who|why|can|could|do|does|is|are|should|would)\b/i.test(finalText);
-        if (
-          !finalControl &&
-          !finalIntent &&
-          !finalAnswer &&
-          !looksLikeQuestion &&
-          looksUnfinishedTranscript(finalText)
-        ) {
-          logEvent(`holding unfinished final ${JSON.stringify(finalText)}`);
-          holdContinuation(finalText);
-          return;
-        }
-
+        // A recognizer final is not always a complete thought. The shared
+        // decision (lib/voice-final.ts) merges a held beginning, or holds a
+        // visibly unfinished final and keeps the mic open.
+        const finalText = holdOrMerge(trimmed);
+        if (finalText === null) return;
         await sendToAgent(finalText, true);
       } finally {
         finishingRef.current = false;
@@ -2893,7 +2869,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         }
         return;
       }
-      await sendToAgent(transcript, true);
+      const text = holdOrMerge(stripAsrAnnotations(transcript));
+      if (text !== null) await sendToAgent(text, true);
     } catch (error) {
       setNotice("");
       setTranscribeFailure(
@@ -2978,7 +2955,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       chunksRef.current = [];
       stampTiming("finalTranscript");
       try {
-        await sendToAgent(recognized, true);
+        const text = holdOrMerge(recognized);
+        if (text !== null) await sendToAgent(text, true);
       } finally {
         finishingRef.current = false;
       }
