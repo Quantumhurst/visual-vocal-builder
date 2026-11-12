@@ -2,52 +2,53 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  CopilotKit,
-  useCoAgent,
-  useCopilotAction,
-  useCopilotChatInternal,
-  useCopilotReadable,
-} from "@copilotkit/react-core";
-import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
-import dynamic from "next/dynamic";
-import JurisdictionTable from "./JurisdictionTable";
-
-// Pixi canvas must never render on the server (Day 4 hero island).
-const GalaxyHero = dynamic(() => import("./GalaxyHero"), { ssr: false });
-// Day 8 colony board: second Pixi island, same ssr rule.
-const ColonyView = dynamic(() => import("./ColonyView"), { ssr: false });
-import EquitySlider from "./EquitySlider";
-import FilingChecklist from "./FilingChecklist";
-import FilingSteps from "./FilingSteps";
-import LawyerSummary from "./LawyerSummary";
-import HostVoicePicker from "./HostVoicePicker";
-import BuildQueuePanel from "./BuildQueuePanel";
+  CopilotKitProvider,
+  UseAgentUpdate,
+  useAgent,
+  useAgentContext,
+  useCopilotKit,
+  useFrontendTool,
+} from "@copilotkit/react-core/v2";
+import { z } from "zod";
+import ControlsPopout from "./ControlsPopout";
+import DeckMain from "./DeckMain";
+import DeckStatus from "./DeckStatus";
+import TranscriptPanel from "./TranscriptPanel";
+import { useBrowserVoiceChoice } from "./hooks/useBrowserVoiceChoice";
+import { useNeuralPlayback } from "./hooks/useNeuralPlayback";
+import { useSoundCues } from "./hooks/useSoundCues";
+import { useHostSpeech } from "./hooks/useHostSpeech";
+import { useTurnStore } from "./hooks/useTurnStore";
+import { useMicCapture, type MicBlock } from "./hooks/useMicCapture";
+import { canRearm, isBusy, micHot } from "../lib/turn-machine";
+import HudHeader from "./HudHeader";
+import MissionObjective from "./MissionObjective";
+import ShipViewport from "./ShipViewport";
+import SystemsRail from "./SystemsRail";
 import {
   DEMO_COMPANY_NAME,
   DEMO_JURISDICTIONS,
 } from "../lib/demo-data";
 import { FILING_STEPS_PACK } from "../lib/knowledge";
 import type { SharedState } from "../lib/state";
-import TrustStrip from "./TrustStrip";
 import { verifyPaintedCards } from "../lib/verifier";
 import { getHostQuestion, resolveHostPrompt, shortFounderNames, shouldSpeakFallbackQuestion, type Beat } from "../lib/host-questions";
 import { buildGuideLine, buildQuestionLine, buildRaisedLine, equityConfirmationLine, nameApprovedLine, nextObjectiveHostLine } from "../lib/build-host";
 import { isChangeAnswer, isConfirmationAnswer } from "../lib/confirmation";
 import { FILING_GUARD_REPLY, isFilingGuardQuestion } from "../lib/filing-guard";
-import { DEFAULT_VOICE_SETTINGS, applyVoiceControl, normalizeVoiceSettings, parseVoiceControl, settingsSummary, type VoiceControl, type VoiceSettings } from "../lib/voice-controls";
+import { DEFAULT_VOICE_SETTINGS, applyVoiceControl, normalizeVoiceSettings, parseVoiceControl, type VoiceControl, type VoiceSettings } from "../lib/voice-controls";
 import { clearSavedSession, progressSummary, saveSession, type TranscriptEntry } from "../lib/persistence";
 import { resumeSummary } from "../lib/resume";
 import { withCommander } from "../lib/commander";
-import { buildPackageFile, buildTranscriptFile, hasTranscriptContent, packageFilename, summaryFilename, transcriptFilename } from "../lib/downloads";
+import { DOWNLOAD_BLOCKED_LINE, downloadedLine, planDownload, type DownloadKind } from "../lib/downloads";
 import { FIRST_SPEAK_GREETING, hasFirstSpeakGreeting, markFirstSpeakGreeting } from "../lib/first-speak";
 import { AGENT_ACTIONS } from "../lib/agent-actions";
 import { withDefaults, resolveFounderIndex, applyEquity, applyChecklistItem, applyChecklistItems, applyAdvanceChecklist, applyJurisdiction, applyFilingSteps, applyLawyerSummary, applyFocusJurisdiction, applyStartOver, cheapestByNumber, applyOwnerCount, applyChecklistCount, applyCompanyName, parseSpokenCompanyName } from "../lib/state-updates";
 import { pushHistory, popHistory, statesEqual, type HistoryEntry } from "../lib/history";
 import { describeChange, currentStateSummary } from "../lib/describe-change";
-import { REQUIRED_BEATS, beatProgress } from "../lib/beat-progress";
+import { beatProgress } from "../lib/beat-progress";
 import {
   captionPhase,
-  captionPhaseLabel,
   heardCaption,
   heardCaptionState,
   hostCaption,
@@ -61,7 +62,6 @@ import {
 } from "../lib/recovery";
 import {
   CONTINUATION_GRACE_MS,
-  looksUnfinishedTranscript,
   mergeContinuation,
 } from "../lib/slow-speech";
 import {
@@ -70,7 +70,6 @@ import {
   SUMMARY_STEP_MS,
   nextSummaryProgress,
 } from "../lib/summary-build";
-import CaptionConsole from "./CaptionConsole";
 import CaptionHistory from "./CaptionHistory";
 import { concatFloat32, toPcm16k } from "../lib/pcm";
 import {
@@ -86,41 +85,31 @@ import {
   shouldTriggerNoSpeech,
   shouldCapUtterance,
 } from "../lib/voice-reliability";
-import { loadPcmWorklet, micFailureNotice } from "../lib/mic";
+import { micFailureNotice } from "../lib/mic";
 import { isCompanyNameQuestion, companyNameReply, isNameApproval, isNameCancel } from "../lib/checklist-answers";
 import { turnResultSignature } from "../lib/scroll";
 import confetti from "canvas-confetti";
 import { MAX_PCM_BYTES } from "../lib/request-guard";
-import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, autoStopSilence, IDLE_ACTIVITY, MIN_SPEECH_MS, type LiveIntent, type VoiceActivity } from "../lib/live-intent";
+import { parseLiveIntent, nextVoiceActivity, shouldAutoStop, autoStopSilence, IDLE_ACTIVITY, MIN_SPEECH_MS, type LiveIntent, type VoiceActivity } from "../lib/live-intent";
 import { queueTurn, flushQueuedTurn, QUEUED_TURN_NOTICE } from "../lib/turn-queue";
 import { AnnouncementBudget } from "../lib/announcements";
-import { cueForChange, CUES, type CueName } from "../lib/sound-cues";
+import { cueForChange, type CueName } from "../lib/sound-cues";
 import { missionFor } from "../lib/mission";
 import { colonyPalette, colonyProgress } from "../lib/colony";
-import { MODULES, flightPlan, flightStatusLabel, formatClock, moduleFor, shipLabel } from "../lib/game-ui";
+import { MODULES, flightPlan, formatClock, moduleFor, shipLabel } from "../lib/game-ui";
 import { spokenHostText } from "../lib/spoken-text";
 import { stripAsrAnnotations } from "../lib/transcript";
-import { HOST_VOICE_STORAGE_KEY, defaultHostVoice, isSelectableVoice, pickVoice, prosodyFor, resolveVoiceSelection } from "../lib/voice-select";
+import { resolveVoiceFinal } from "../lib/voice-final";
 import { TOOL_TIMEOUT_MS, ToolTimeoutError, toolTimeoutLine, withToolTimeout } from "../lib/tool-timeout";
 import { summarizeTimings, type TurnTimings } from "../lib/turn-timing";
 import { HybridEndpointer } from "../lib/voice/hybrid-endpointer";
 import { speechQueue } from "../lib/voice/surviving-speech-queue";
 import { echoFilter } from "../lib/voice/echo-filter";
+import { currentProviderInfo, loadProviderInfo } from "../lib/provider-client";
+import { hostTts } from "../lib/host-tts";
 
 
 
-
-// Day 8: one-click example commands for judges without a mic. Each chip
-// sends its command through the same sendToAgent path as typed/voice
-// input — sendToAgent paints a live preview instantly (same appliers
-// the agent uses), then the agent turn confirms or corrects it.
-const EXAMPLE_COMMANDS = [
-  { label: "Pick Mars", command: "Pick Mars as our home base" },
-  { label: "Approve Galactic Bagels", command: "Approve Galactic Bagels" },
-  { label: "Make Orbit 70%", command: "Make Orbit 70%" },
-  { label: "Filing steps & fees", command: "What are the filing steps and fees?" },
-  { label: "Prepare lawyer summary", command: "Prepare the lawyer summary" },
-] as const;
 
 // The host voice is the browser/OS system voice. The picker stores a
 // voiceURI (not an index) so it survives OS updates; a stale URI falls
@@ -128,9 +117,8 @@ const EXAMPLE_COMMANDS = [
 // lib/voice-select.ts so the picker and the speech path agree.
 
 // The canvas is the interface: tool calls do not need a second chat card.
-// Registering an empty renderer keeps CopilotKit from warning about each
-// tool call while leaving the visible cockpit untouched.
-const renderNothing = () => <></>;
+// v2 frontend tools render nothing unless a renderer is registered, so no
+// placeholder renderer is needed — the visible cockpit stays untouched.
 
 // Clear, deterministic commands are handled locally. They still use the
 // exact same state appliers as the agent; skipping the model only removes
@@ -162,19 +150,43 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const [bootSettings] = useState<VoiceSettings>(() =>
     normalizeVoiceSettings(initialSettings ?? DEFAULT_VOICE_SETTINGS),
   );
-  const { state, setState } = useCoAgent<SharedState>({
-    name: "vvb",
-    initialState: bootState,
+  const { agent, isReady: agentReady } = useAgent({
+    agentId: "vvb",
+    updates: [
+      UseAgentUpdate.OnStateChanged,
+      UseAgentUpdate.OnMessagesChanged,
+      UseAgentUpdate.OnRunStatusChanged,
+    ],
   });
-  // The canvas renders from a local authoritative copy. CopilotKit's
-  // initial co-agent state can land a beat after mount; in a voice-first
-  // flow the user may already have spoken, and that late initial sync
-  // must never erase a real selection (the "Mars locked in" line with an
-  // UNSET board bug). Once this session writes locally, the local copy
-  // wins and the agent is kept in sync through setState.
+  const { copilotkit } = useCopilotKit();
+  // v2 has no useCoAgent initialState: seed the runtime copy once the real
+  // agent is ready, retrying across renders until the seed lands.
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (seededRef.current || !agentReady || !agent) return;
+    try {
+      agent.setState(bootState as unknown as Record<string, unknown>);
+      seededRef.current = true;
+    } catch {
+      // Provisional agent or a mid-connect swap — retry on the next render.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent, agentReady]);
+  const state = (
+    agent?.state as unknown as SharedState | undefined
+  ) ?? undefined;
+  function setState(next: SharedState) {
+    agent?.setState(next as unknown as Record<string, unknown>);
+  }
+  // The canvas renders from a local authoritative copy. The runtime
+  // agent state can land a beat after mount; in a voice-first flow the
+  // user may already have spoken, and that late initial sync must never
+  // erase a real selection (the "Mars locked in" line with an UNSET board
+  // bug). Once this session writes locally, the local copy wins and the
+  // agent is kept in sync through setState.
   const [localState, setLocalState] = useState<SharedState>(bootState);
   // A resumed boot is already authoritative: do not let a late initial
-  // co-agent sync replace the saved run with an empty starting state.
+  // agent sync replace the saved run with an empty starting state.
   const localTouchedRef = useRef(Boolean(initialState));
   const view = localState;
   useEffect(() => {
@@ -197,8 +209,27 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       checklistFlags[v.cardId] = `${v.reason}: ${v.detail}`;
     }
   }
-  const { appendMessage, isLoading, messages, stopGeneration } = useCopilotChatInternal();
-  const [recording, setRecording] = useState(false);
+  // v2 agent wire: messages and run status come straight off the bound
+  // agent; sending is addMessage + copilotkit.runAgent (which also runs
+  // the registered frontend tools), stopping is abortRun.
+  const messages = agent?.messages ?? [];
+  const isLoading = agent?.isRunning ?? false;
+  function stopGeneration() {
+    agent?.abortRun();
+  }
+  // The conversation turn (lib/turn-machine.ts). turn.get() is the
+  // synchronous truth for timers and audio callbacks; turnState renders.
+  const { store: turn, state: turnState } = useTurnStore();
+  // Capturing (the pipeline is live), not merely requested.
+  const recording = turnState.mic === "open";
+  // True while the host voice is actually speaking. The mic stays closed
+  // during this window, and the deck says so instead of claiming LIVE.
+  const hostSpeaking = turnState.hostSpeaking;
+  // True during the gap between a host line ending (or a recovery) and the
+  // mic reopening. The caption says MIC RE-ARMING instead of pretending LIVE.
+  const rearming = turnState.rearm !== "none";
+  // Conversation auto-listen: the mic re-opens by itself after each turn.
+  const convoActive = turnState.convo;
   const [typed, setTyped] = useState("");
   const [notice, setNotice] = useState("");
   const [sending, setSending] = useState(false);
@@ -227,26 +258,21 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const [micLevel, setMicLevel] = useState(0);
   const [recordSeconds, setRecordSeconds] = useState(0);
   const lastAudioRef = useRef<ArrayBuffer | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const chunksRef = useRef<Float32Array[]>([]);
   const finishingRef = useRef(false);
   const messageIdRef = useRef(0);
   const activityRef = useRef<VoiceActivity>(IDLE_ACTIVITY);
-  const levelRef = useRef(0);
   const previewKeyRef = useRef<string | null>(null);
   const committedKeyRef = useRef<string | null>(null);
-  const recordingRef = useRef(false);
   const webSpeechFailedRef = useRef(false);
   const recognitionRef = useRef<{ stop: () => void; onresult: unknown; onerror: unknown; onend: unknown } | null>(null);
   const liveTranscriptRef = useRef("");
   const confirmationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const peakLevelRef = useRef(0);
   const listeningStallShownRef = useRef(false);
   const noSpeechAttemptsRef = useRef(0);
   const asrSocketRef = useRef<WebSocket | null>(null);
+  // Which engines the server is configured for (lib/provider.ts). Until
+  // the answer arrives this is the safe default that works with either.
+  const providerRef = useRef(currentProviderInfo());
   const streamingReadyRef = useRef(false);
   const activeTurnIdRef = useRef(0);
   const asrLastEventAtRef = useRef(0);
@@ -257,6 +283,16 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const announcementIdRef = useRef(0);
   const announceTurnRef = useRef(0);
   const lastAnnouncedOutcomeRef = useRef("");
+
+  useEffect(() => {
+    let alive = true;
+    void loadProviderInfo().then((info) => {
+      if (alive) providerRef.current = info;
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   function clearConfirmationTimer() {
     if (confirmationTimerRef.current !== null) {
@@ -303,9 +339,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const [recovery, setRecovery] = useState<RecoveryNotice | null>(null);
   const recoveryTrackerRef = useRef(new RecoveryTracker());
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // True during the short gap between a host line ending and the mic
-  // reopening. The caption says MIC RE-ARMING instead of pretending LIVE.
-  const [rearming, setRearming] = useState(false);
   // A clearly unfinished final ("I would like to pick …") is held here
   // and merged with the next final instead of being sent as a command.
   const [continuation, setContinuation] = useState<{ text: string } | null>(null);
@@ -362,6 +395,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       clearTimeout(recoveryTimerRef.current);
       recoveryTimerRef.current = null;
     }
+    turn.dispatch({ type: "RECOVERY_CLEAR" });
   }
 
   function surfaceRecovery(kind: Parameters<typeof recoveryNotice>[0], detail = "") {
@@ -370,14 +404,17 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (decision.escalate) {
       setNotice("Voice keeps dropping — the mic stays open. Say “help” if you want the control list.");
     }
-    if (!decision.rearm || !convoRef.current) return;
-    setRearming(true);
+    turn.dispatch({ type: "RECOVERY", kind, rearm: decision.rearm });
+    if (turn.get().rearm !== "recovery") return;
     if (recoveryTimerRef.current !== null) clearTimeout(recoveryTimerRef.current);
     recoveryTimerRef.current = setTimeout(() => {
       recoveryTimerRef.current = null;
-      setRearming(false);
-      if (!convoRef.current || recordingRef.current || busyRef.current || hostSpeakingRef.current) return;
-      void startRecording();
+      // The machine applies the recovery rule (lib/turn-machine.ts
+      // canRecoveryRearm): conversation on, mic closed, nothing in
+      // flight, host quiet. It does not wait on the error it recovers.
+      const before = turn.get();
+      const after = turn.dispatch({ type: "REARM_FIRE", via: "recovery" });
+      if (before.mic === "closed" && after.mic === "opening") void openMic();
     }, RECOVERY_REARM_MS);
   }
 
@@ -421,19 +458,24 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     return mergeContinuation(held.text, nextText);
   }
 
-  // True while the host voice is actually speaking. The mic stays closed
-  // during this window, and the deck says so instead of claiming LIVE.
-  const [hostSpeaking, setHostSpeaking] = useState(false);
-  const [hostSilent, setHostSilent] = useState(false);
-  const hostSpeakingRef = useRef(false);
-  const hostAttemptSeqRef = useRef(0);
-  const hostStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // One slow-speech decision for every speech path (Meta streaming, the
+  // browser recogniser, buffered transcription). Returns the text to send,
+  // or null when the final was held and the mic re-armed for the rest.
+  function holdOrMerge(text: string): string | null {
+    const decision = resolveVoiceFinal(text, heldUtteranceRef.current?.text);
+    clearHeldUtterance();
+    if (decision.action === "hold") {
+      logEvent(`holding unfinished final ${JSON.stringify(decision.text)}`);
+      holdContinuation(decision.text);
+      return null;
+    }
+    return decision.text;
+  }
+
   // Continuous conversation (OpenClaw pattern): talk, agent answers
   // out loud, mic re-opens by itself. On by default; a manual Stop
   // ends it. The full control set lives in a pop-out, not the bar.
   const [convoOn, setConvoOn] = useState(true);
-  const [convoActive, setConvoActive] = useState(false);
-  const convoRef = useRef(false);
   const [dockOpen, setDockOpen] = useState(false);
   // Game shell: which system panel is open, which viewport is up, and a
   // light mission clock. These are presentation state only — every fact
@@ -506,14 +548,16 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // The conversation loop re-arms the mic only once the host has
   // finished speaking, so it never cancels the reply mid-flight.
   function isSpeechActive(): boolean {
-    return (
-      typeof window !== "undefined" &&
-      Boolean(window.speechSynthesis?.speaking || speechQueue.isSpeaking() || hostSpeakingRef.current)
-    );
+    return host.isActive();
   }
   const [celebrated, setCelebrated] = useState("");
-  const sfxCtxRef = useRef<AudioContext | null>(null);
   const unlockedRef = useRef(false);
+  // Host audio engines (components/hooks): Web Audio for the Gemini neural
+  // voice, the browser/OS voice choice, and the synthesised sound cues.
+  const neural = useNeuralPlayback(settingsRef, settings.volume);
+  const voiceChoice = useBrowserVoiceChoice();
+  const refreshCachedVoice = voiceChoice.refresh;
+  const playCue = useSoundCues(settingsRef, unlockedRef);
   // The first TALK press is a greeting, not a recording: it announces the
   // home-base question once per session, then opens the mic. The ref is
   // the synchronous guard; sessionStorage is the cross-reload marker.
@@ -521,17 +565,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const lastSpokenRef = useRef("");
   const lastHostLineRef = useRef("");
   const eventsRef = useRef<string[]>([]);
-  const audioStatsRef = useRef({ blocks: 0, hostDropped: 0, listeningDropped: 0 });
-  const hostAudioRef = useRef({
-    started: 0,
-    ended: 0,
-    errors: 0,
-    retries: 0,
-    lastVoice: "",
-    lastVolume: 1,
-    lastRate: 1,
-    lastStartedAt: 0,
-  });
   function logEvent(line: string) {
     eventsRef.current.push(`${Math.round(performance.now())} ${line}`);
     if (eventsRef.current.length > 300) eventsRef.current.shift();
@@ -539,20 +572,35 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       (window as unknown as { __vvbEvents?: string[] }).__vvbEvents = [...eventsRef.current];
     }
   }
+  // The host's voice (components/hooks/useHostSpeech.ts).
+  const host = useHostSpeech({
+    turn,
+    settingsRef,
+    providerRef,
+    neural,
+    voiceChoice,
+    lastHostLineRef,
+    appendLog,
+    logEvent,
+    stampTiming,
+    setNotice,
+    surfaceRecovery,
+    clearSilentRecovery: () => setRecovery((current) => (current?.kind === "host-silent" ? null : current)),
+    requestRearm,
+    onCancel: clearRearmTimer,
+  });
+  const hostSilent = host.hostSilent;
+  // The microphone hardware (components/hooks/useMicCapture.ts).
+  const mic = useMicCapture({
+    isListening: () => isTurnListeningRef.current,
+    isHostAudible: () => turn.get().hostSpeaking || speechQueue.isSpeaking(),
+    streamSocket: () => asrSocketRef.current,
+    onBlock: onMicBlock,
+  });
   const prevDoneCountRef = useRef(-1);
   // Voice pre-warm: cache the picked system voice, re-pick once when
   // the browser finishes loading voices, preload on first gesture.
-  const cachedVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
-  const chosenVoiceUriRef = useRef<string | null>(null);
-  const utterCancelledRef = useRef(false);
-  // Keep a reference to the live utterance: Chrome can drop an unreferenced
-  // utterance before firing onend, leaving speechSynthesis.speaking stuck
-  // true and the mic closed forever. The watchdog is the last resort.
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const speechWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rearmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const busyRef = useRef(false);
-  const turnErrorRef = useRef(false);
   // Single-slot pending turn: a command sent while the agent is busy is
   // parked here (latest wins) and flushed once when idle — never silently
   // dropped, never double-sent, never sent after the conversation ends.
@@ -600,72 +648,13 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     dropQueuedTurnNotice();
   }
 
-  function readStoredVoiceUri(): string | null {
-    try {
-      const stored = window.localStorage.getItem(HOST_VOICE_STORAGE_KEY);
-      const voices = window.speechSynthesis?.getVoices() ?? [];
-      // No saved choice: land on Karen when the machine exposes her.
-      if (!stored) {
-        return defaultHostVoice(voices)?.voiceURI ?? null;
-      }
-      if (stored === "auto") return null;
-      if (voices.length === 0) return stored;
-      const chosen = resolveVoiceSelection(voices, stored);
-      if (chosen?.voiceURI === stored) return stored;
-      // A stale or unreliable saved voice is removed so the next read
-      // applies the Karen default rather than leaving the host silent.
-      window.localStorage.removeItem(HOST_VOICE_STORAGE_KEY);
-      return defaultHostVoice(voices)?.voiceURI ?? null;
-    } catch {
-      return null;
-    }
-  }
-
-  function refreshCachedVoice() {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    const voices = window.speechSynthesis.getVoices();
-    let selected = chosenVoiceUriRef.current;
-    // Sanitize a stale ref only after the browser has published voices;
-    // before that, an empty list would look like every voice vanished.
-    if (selected && voices.length > 0 && !voices.some((voice) => voice.voiceURI === selected && isSelectableVoice(voice))) {
-      chosenVoiceUriRef.current = null;
-      try {
-        window.localStorage.removeItem(HOST_VOICE_STORAGE_KEY);
-      } catch {
-        // Storage is optional.
-      }
-      selected = null;
-    }
-    const picked = resolveVoiceSelection(voices, selected ?? readStoredVoiceUri());
-    if (picked) {
-      // The queue has its own fallback cache. Keep it in step with the
-      // curated pick so a missing explicit voice cannot pin an old one.
-      if (cachedVoiceRef.current?.voiceURI !== picked.voiceURI) {
-        speechQueue.clearCachedVoice();
-      }
-      cachedVoiceRef.current = picked;
-    }
-  }
-
   function selectHostVoice(uri: string) {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    const list = window.speechSynthesis.getVoices();
-    const chosen = uri === "auto" ? pickVoice(list) : resolveVoiceSelection(list, uri);
-    const nextUri = uri === "auto" ? "auto" : chosen?.voiceURI ?? "auto";
-    chosenVoiceUriRef.current = nextUri === "auto" ? null : nextUri;
-    cachedVoiceRef.current = chosen;
-    speechQueue.clearCachedVoice();
-    try {
-      window.localStorage.setItem(HOST_VOICE_STORAGE_KEY, nextUri);
-    } catch {
-      // Storage is optional; the choice still applies this session.
-    }
-    playCue("highlight");
+    if (voiceChoice.select(uri)) playCue("highlight");
   }
 
   function previewHostVoice() {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
-    setHostSilent(false);
+    host.setHostSilent(false);
     if (!settingsRef.current.voiceOn || settingsRef.current.volume <= 0.01) {
       updateVoiceSettings({ voiceOn: true, volume: Math.max(0.25, settingsRef.current.volume) });
     }
@@ -680,60 +669,16 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     setDockOpen((value) => !value);
   }
 
-  // Synthesised cues only (no assets). Browsers refuse audio before a
-  // user gesture, so cues stay silent until the first interaction.
-  function playCue(name: CueName) {
-    if (!settingsRef.current.soundOn || settingsRef.current.sound <= 0.01) return;
-    if (!unlockedRef.current || typeof window === "undefined") return;
-    try {
-      const ctx = sfxCtxRef.current ?? new AudioContext();
-      sfxCtxRef.current = ctx;
-      if (ctx.state === "suspended") void ctx.resume();
-      const recipe = CUES[name];
-      const t0 = ctx.currentTime;
-      for (const note of recipe.notes) {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = recipe.type;
-        osc.frequency.value = note.freq;
-        const start = t0 + note.atMs / 1000;
-        gain.gain.setValueAtTime(0.0001, start);
-        gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, 0.14 * settingsRef.current.sound), start + 0.015);
-        gain.gain.exponentialRampToValueAtTime(0.0001, start + note.durMs / 1000);
-        osc.connect(gain).connect(ctx.destination);
-        osc.start(start);
-        osc.stop(start + note.durMs / 1000 + 0.05);
-      }
-    } catch {
-      // Sound is garnish; a failed cue must never break a turn.
-    }
-  }
-
-  function clearSpeechWatchdog() {
-    if (speechWatchdogRef.current !== null) {
-      clearTimeout(speechWatchdogRef.current);
-      speechWatchdogRef.current = null;
-    }
-  }
-
   function clearRearmTimer() {
     if (rearmTimerRef.current !== null) {
       clearTimeout(rearmTimerRef.current);
       rearmTimerRef.current = null;
     }
+    if (turn.get().rearm === "pending") turn.dispatch({ type: "REARM_CANCEL" });
   }
 
   function cancelSpeech() {
-    utterCancelledRef.current = true;
-    hostAttemptSeqRef.current += 1;
-    clearSpeechWatchdog();
-    clearHostStartTimer();
-    clearRearmTimer();
-    utteranceRef.current = null;
-    hostSpeakingRef.current = false;
-    setHostSpeaking(false);
-    echoFilter.clear();
-    speechQueue.hardFlushOnBargeIn();
+    host.cancel();
   }
 
   // On-end re-arm (primary path; the poll below is fallback only). Wait a
@@ -742,241 +687,36 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // line caused the 4-owner confirm loop. A cancelled utterance never
   // re-arms: cancelSpeech always runs first and marks it.
   function requestRearm() {
-    if (!convoRef.current) return;
-    if (recordingRef.current) return;
-    if (busyRef.current || turnErrorRef.current) return;
-    if (hostSpeakingRef.current || speechQueue.isSpeaking()) return;
-    clearRearmTimer();
-    setRearming(true);
+    // The machine owns the rule (lib/turn-machine.ts canRearm). The speech
+    // queue is checked here too: it can still be draining after the host
+    // flag drops.
+    if (!canRearm(turn.get()) || speechQueue.isSpeaking()) return;
+    if (rearmTimerRef.current !== null) clearTimeout(rearmTimerRef.current);
+    turn.dispatch({ type: "REARM_REQUEST" });
     rearmTimerRef.current = setTimeout(() => {
       rearmTimerRef.current = null;
-      if (!convoRef.current) { setRearming(false); return; }
-      if (recordingRef.current) { setRearming(false); return; }
-      if (busyRef.current || turnErrorRef.current) { setRearming(false); return; }
-      if (hostSpeakingRef.current || speechQueue.isSpeaking()) { setRearming(false); return; }
-      setRearming(false);
+      if (speechQueue.isSpeaking()) {
+        if (turn.get().rearm === "pending") turn.dispatch({ type: "REARM_CANCEL" });
+        return;
+      }
+      const before = turn.get();
+      const after = turn.dispatch({ type: "REARM_FIRE", via: "pending" });
+      if (before.mic !== "closed" || after.mic !== "opening") return;
       stampTiming("rearm");
       console.info(`[vvb-timing] rearm ${summarizeTimings(turnTimingRef.current)}`);
-      void startRecording();
+      void openMic();
     }, 420);
   }
 
-  // Voice-out is the curated system voice only: pick the best English
-  // voice actually on this machine (enhanced/natural beats the robotic
-  // default) with question/statement prosody. No downloads, no model.
-  //
-  // A browser can report `speechSynthesis.speaking === true` while the
-  // utterance never starts — that is silence, not a slow start. If no
-  // onstart arrives, cancel and retry once with the system default voice.
-  // If the default also fails, surface a visible host-audio fault instead
-  // of continuing silently.
-  function clearHostStartTimer() {
-    if (hostStartTimerRef.current !== null) {
-      clearTimeout(hostStartTimerRef.current);
-      hostStartTimerRef.current = null;
-    }
-  }
-
-  // Two animation frames is one painted screen. A hidden tab has no
-  // frames, so a timeout is the fallback; speech must never be lost to
-  // a throttled rAF.
-  function afterNextPaint(fn: () => void) {
-    if (typeof window === "undefined" || document.visibilityState === "hidden") {
-      fn();
-      return;
-    }
-    let ran = false;
-    const run = () => {
-      if (ran) return;
-      ran = true;
-      fn();
-    };
-    window.requestAnimationFrame(() => window.requestAnimationFrame(run));
-    window.setTimeout(run, 140);
-  }
-
+  // Speaks one host line (components/hooks/useHostSpeech.ts): paint
+  // first, neural voice when available, browser voice as the fallback,
+  // and a visible fault if no voice ever starts.
   function speakNative(
     text: string,
     onDone?: () => void,
     options: { retry?: number; useDefaultVoice?: boolean } = {},
   ) {
-    if (typeof window === "undefined") return false;
-    const spoken = spokenHostText(text);
-    if (!spoken) return false;
-    const retry = options.retry ?? 0;
-    lastHostLineRef.current = spoken;
-    if (retry === 0) {
-      appendLog("host", spoken);
-      const win = window as unknown as { __vvbLastSpoken?: string; __vvbAllSpoken?: string[] };
-      win.__vvbLastSpoken = spoken;
-      win.__vvbAllSpoken = win.__vvbAllSpoken ?? [];
-      win.__vvbAllSpoken.push(spoken);
-    }
-    // Muted or no speech engine: the line is still visible, logged, and
-    // repeatable. Callers still get their completion callback.
-    if (!settingsRef.current.voiceOn || settingsRef.current.volume <= 0.01 || !window.speechSynthesis) {
-      onDone?.();
-      return true;
-    }
-
-    // Paint first, then speak. Local callers do setLocalHost(...) right
-    // before this call; two frames guarantee the caption is already on
-    // screen when the first word is audible. The mic is gated from this
-    // moment, so the paint gap cannot capture a stray fragment.
-    utterCancelledRef.current = false;
-    hostSpeakingRef.current = true;
-    setHostSpeaking(true);
-    const attempt = ++hostAttemptSeqRef.current;
-
-    const speakAfterPaint = () => {
-      if (attempt !== hostAttemptSeqRef.current || utterCancelledRef.current) return;
-      echoFilter.recordHostSpeech(spoken);
-      try {
-        // Chrome can leave speechSynthesis stuck with `speaking === true`
-        // after a cancelled landing prompt, which queues every later host
-        // line behind an utterance that never starts. If nothing of ours is
-        // active, clear that stale queue before enqueueing the new line.
-        const synth = window.speechSynthesis;
-        if (synth.speaking && !utteranceRef.current) {
-          try {
-            synth.cancel();
-          } catch {
-            // ignore
-          }
-        }
-        // A new host line replaces the old one. Queueing it behind audio
-        // the caption no longer shows is exactly the mismatch this
-        // caption-first pass exists to remove.
-        if (utteranceRef.current) {
-          utteranceRef.current = null;
-          try {
-            synth.cancel();
-          } catch {
-            // ignore
-          }
-          speechQueue.hardFlushOnBargeIn();
-        }
-        refreshCachedVoice();
-        const voice = options.useDefaultVoice
-          ? null
-          : cachedVoiceRef.current ?? pickVoice(window.speechSynthesis.getVoices());
-        const base = prosodyFor(spoken);
-        const rate = Math.min(1.6, Math.max(0.5, base.rate * settingsRef.current.rate));
-        const pitch = base.pitch;
-        clearSpeechWatchdog();
-        clearHostStartTimer();
-        let started = false;
-
-        const finishSpeech = () => {
-          if (attempt !== hostAttemptSeqRef.current) return;
-          clearSpeechWatchdog();
-          clearHostStartTimer();
-          utteranceRef.current = null;
-          hostSpeakingRef.current = false;
-          setHostSpeaking(false);
-          // Keep the lexical guard only for the brief speaker tail. The mic
-          // is gated during playback, so holding host words for 1.2s after
-          // the line ends only drops the user's natural fast answer.
-          echoFilter.scheduleClear(200);
-          if (utterCancelledRef.current) return;
-          hostAudioRef.current.ended += 1;
-          onDone?.();
-          requestRearm();
-        };
-
-        const utter = speechQueue.enqueue(spoken, {
-          role: "CONTENT",
-          rate,
-          pitch,
-          volume: settingsRef.current.volume,
-          voice,
-          useDefaultVoice: options.useDefaultVoice,
-          onStart: () => {
-            if (attempt !== hostAttemptSeqRef.current) return;
-            started = true;
-            clearHostStartTimer();
-            setHostSilent(false);
-            // Audio is real again: the host-silent recovery has cleared.
-            setRecovery((current) => (current?.kind === "host-silent" ? null : current));
-            hostAudioRef.current.started += 1;
-            hostAudioRef.current.lastVoice = voice?.name ?? "(browser default)";
-            hostAudioRef.current.lastVolume = settingsRef.current.volume;
-            hostAudioRef.current.lastRate = rate;
-            hostAudioRef.current.lastStartedAt = Date.now();
-            logEvent(`host voice started ${voice?.name ?? "default"}`);
-            // The end watchdog starts only once audio really started.
-            speechWatchdogRef.current = setTimeout(() => {
-              speechWatchdogRef.current = null;
-              if (utteranceRef.current !== utter) return;
-              speechQueue.hardFlushOnBargeIn();
-              finishSpeech();
-            }, Math.min(12000, 3000 + spoken.length * 55));
-          },
-          onDone: () => {
-            if (attempt !== hostAttemptSeqRef.current) return;
-            stampTiming("speechEnd");
-            finishSpeech();
-          },
-          onError: (failed) => {
-            // speechSynthesis cancel() can also surface as an error. Only a
-            // failure of the current, non-cancelled utterance is a real
-            // host-voice failure. This was lost in 4972d2b; restore it without
-            // touching the echo/mic loop guards.
-            if (attempt !== hostAttemptSeqRef.current) return;
-            if (utteranceRef.current !== failed || utterCancelledRef.current) return;
-            hostAudioRef.current.errors += 1;
-            setNotice("Host voice could not play — retrying with the system default.");
-          },
-        });
-
-        if (utter) {
-          utteranceRef.current = utter;
-          hostStartTimerRef.current = setTimeout(() => {
-            hostStartTimerRef.current = null;
-            if (attempt !== hostAttemptSeqRef.current || started) return;
-            utteranceRef.current = null;
-            utterCancelledRef.current = true;
-            speechQueue.hardFlushOnBargeIn();
-            hostSpeakingRef.current = false;
-            setHostSpeaking(false);
-            if (retry < 1) {
-              hostAudioRef.current.retries += 1;
-              logEvent("host voice did not start; retrying system default");
-              setNotice("Host voice did not start — switching to the system default voice.");
-              speakNative(text, onDone, { retry: 1, useDefaultVoice: true });
-            } else {
-              setHostSilent(true);
-              // The recovery banner owns this message; a second notice
-              // would duplicate it above the captions.
-              setNotice("");
-              surfaceRecovery("host-silent");
-              onDone?.();
-              requestRearm();
-            }
-          }, 1800);
-        } else {
-          // The queue refused the line: never leave a stuck "speaking".
-          hostSpeakingRef.current = false;
-          setHostSpeaking(false);
-          onDone?.();
-          requestRearm();
-        }
-        return utter !== null;
-      } catch {
-        hostSpeakingRef.current = false;
-        setHostSpeaking(false);
-        echoFilter.clear();
-        setHostSilent(true);
-        setNotice("");
-        surfaceRecovery("host-silent");
-        onDone?.();
-        requestRearm();
-        return false;
-      }
-    };
-
-    afterNextPaint(speakAfterPaint);
-    return true;
+    return host.speak(text, onDone, options);
   }
 
   function speakHost(text: string) {
@@ -1212,7 +952,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
   // Grounding for the agent: fictional company/places, current equity and
   // checklist state, and the optional filing pack's fact ids + topics.
-  useCopilotReadable({
+  useAgentContext({
     description:
       "Fictional demo company, places, equity split, checklist state, and optional filing knowledge-pack fact index for the incorporation demo",
     value: {
@@ -1313,7 +1053,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       // should finish and advance immediately in ~350ms (or 150ms on final), not wait 16+ seconds.
       clearConfirmationTimer();
       confirmationTimerRef.current = setTimeout(() => {
-        if (recordingRef.current && !finishingRef.current) {
+        if (micHot(turn.get()) && !finishingRef.current) {
           if (streamingReadyRef.current && endpointerRef.current) {
             endpointerRef.current.forceFastCommitNow(trimmed);
           } else {
@@ -1331,7 +1071,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       setLivePreview({ key: "approve-name", label: "Approving Galactic Bagels Inc. (fictional)…", status: "live" });
       if (isFinal) {
         setTimeout(() => {
-          if (recordingRef.current && !finishingRef.current) void finishRecording();
+          if (micHot(turn.get()) && !finishingRef.current) void finishRecording();
         }, 150);
       }
       return;
@@ -1342,7 +1082,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       setLivePreview({ key: "company-name-q", label: "Fictional company: Galactic Bagels Inc. (fictional)", status: "live" });
       if (isFinal) {
         setTimeout(() => {
-          if (recordingRef.current && !finishingRef.current) void finishRecording();
+          if (micHot(turn.get()) && !finishingRef.current) void finishRecording();
         }, 150);
       }
       return;
@@ -1355,7 +1095,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       intentMatchedRef.current = true;
       if (isFinal) {
         setTimeout(() => {
-          if (recordingRef.current && !finishingRef.current) void finishRecording();
+          if (micHot(turn.get()) && !finishingRef.current) void finishRecording();
         }, 150);
       }
     }
@@ -1364,20 +1104,15 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // Beat 1 action: the agent's authoritative jurisdiction write. It
   // lands on the same applyJurisdiction path as the live preview, so
   // confirming a preview changes nothing twice.
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.showJurisdictionComparison,
     description:
       "Show the fictional jurisdiction comparison table and optionally select one of the fictional places (Mars, Europa, Andromeda Galaxy). Call this when the user asks to compare jurisdictions, choose a place to incorporate, or start incorporating the fictional company.",
-    parameters: [
-      {
-        name: "jurisdiction",
-        type: "string",
-        description:
-          "Name of the fictional place the user picked, if they named one.",
-        required: false,
-      },
-    ],
+    parameters: z.object({
+      jurisdiction: z.string().optional().describe(
+        "Name of the fictional place the user picked, if they named one.",
+      ),
+    }),
     handler: async ({ jurisdiction }) =>
       runTool("showJurisdictionComparison", () =>
         commit("jurisdiction", (s) => applyJurisdiction(s, jurisdiction ?? null)),
@@ -1386,25 +1121,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
   // Beat 2 voice path: "make me 70%" -> same updateEquity() the slider
   // drags use, so 60/40 with a 70% request lands on 70/30, total 100%.
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.setFounderEquity,
     description:
       "Set one DEMO owner's equity percent (e.g. the user says 'make me 70%'). The other owner(s) auto-adjust so the split always totals 100%. Owners are the readable founders list; there may be 1–5.",
-    parameters: [
-      {
-        name: "founder",
-        type: "string",
-        description: "Founder name, or 'me' for the first founder.",
-        required: true,
-      },
-      {
-        name: "percent",
-        type: "number",
-        description: "Target percent for that founder, 0-100.",
-        required: true,
-      },
-    ],
+    parameters: z.object({
+      founder: z.string().describe("Founder name, or 'me' for the first founder."),
+      percent: z.number().describe("Target percent for that founder, 0-100."),
+    }),
     handler: async ({ founder, percent }) =>
       runTool("setFounderEquity", () => {
         const base = withDefaults(stateRef.current);
@@ -1416,47 +1140,40 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }),
   });
 
-  useCopilotAction({
+  useFrontendTool({
     name: AGENT_ACTIONS.setOwnerCount,
     description:
       "Set the number of fictional company owners (1-5). Shrinking the team redistributes the removed share; growing adds owners at 0%; the equity split always totals 100%. Use when the user says it is just them, or names a number of owners/founders.",
-    parameters: [
-      {
-        name: "count",
-        type: "number",
-        description: "Number of owners, 1 to 5.",
-        required: true,
-      },
-    ],
+    parameters: z.object({
+      count: z.number().describe("Number of owners, 1 to 5."),
+    }),
     handler: async ({ count }) =>
       runTool("setOwnerCount", () => commit("owners", (s) => applyOwnerCount(s, Number(count)))),
   });
 
   // Beat 3 voice paths: check/uncheck one item, or advance the walk.
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.setChecklistItem,
     description:
       "Check or uncheck one filing-checklist item by its id (ids are in the readable checklist state). Use when the user answers a checklist step or asks to mark one done/not done.",
-    parameters: [
-      { name: "itemId", type: "string", description: "Checklist item id.", required: true },
-      { name: "done", type: "boolean", description: "True to check, false to uncheck.", required: true },
-    ],
+    parameters: z.object({
+      itemId: z.string().describe("Checklist item id."),
+      done: z.boolean().describe("True to check, false to uncheck."),
+    }),
     handler: async ({ itemId, done }) =>
       runTool("setChecklistItem", () =>
         commit("checklist", (s) => applyChecklistItem(s, itemId, Boolean(done))),
       ),
   });
 
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.setChecklistItems,
     description:
       "Check or uncheck several filing-checklist items at once by their ids (ids are in the readable checklist state). Use when the user asks to tick off multiple items in one command.",
-    parameters: [
-      { name: "itemIds", type: "string[]", description: "Checklist item ids.", required: true },
-      { name: "done", type: "boolean", description: "True to check, false to uncheck.", required: true },
-    ],
+    parameters: z.object({
+      itemIds: z.array(z.string()).describe("Checklist item ids."),
+      done: z.boolean().describe("True to check, false to uncheck."),
+    }),
     handler: async ({ itemIds, done }) =>
       runTool("setChecklistItems", () => {
         const ids = Array.isArray(itemIds) ? itemIds.map(String) : [];
@@ -1464,21 +1181,17 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }),
   });
 
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.undoLastChange,
     description:
       "Reverse the last canvas change (voice, slider, or click). Call when the user says undo that, revert, or go back. Never claim an undo without calling this.",
-    parameters: [],
     handler: async () => runTool("undoLastChange", () => undoLast()),
   });
 
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.startOver,
     description:
       "Reset the canvas only (selection, equity, checklist, cards, lawyer package) and keep the chat history. Call when the user says start over or fresh start. Never claim a reset without calling this.",
-    parameters: [],
     handler: async () =>
       runTool("startOver", () => {
         cancelSummaryBuild();
@@ -1486,15 +1199,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }),
   });
 
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.compareJurisdictions,
     description:
       "Answer a comparison question about the three fictional places (Mars, Europa, Andromeda Galaxy) from the DEMO rows and set a DEMO highlight. The highlight never changes the user's selected jurisdiction. DEMO values may be quoted verbatim, labeled DEMO, for these three fictional places only.",
-    parameters: [
-      { name: "question", type: "string", description: "The user's comparison question.", required: false },
-      { name: "focus", type: "string", description: "Fictional place to DEMO-highlight, if one fits; otherwise omit.", required: false },
-    ],
+    parameters: z.object({
+      question: z.string().optional().describe("The user's comparison question."),
+      focus: z.string().optional().describe("Fictional place to DEMO-highlight, if one fits; otherwise omit."),
+    }),
     handler: async ({ question, focus }) =>
       runTool("compareJurisdictions", () => {
         const cheapest = cheapestByNumber(DEMO_JURISDICTIONS);
@@ -1509,12 +1221,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       }),
   });
 
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.advanceChecklist,
     description:
       "Mark the first not-yet-done filing-checklist item done and move the walk forward. Use as the user answers each checklist step.",
-    parameters: [],
     handler: async () =>
       runTool("advanceChecklist", () => commit("checklist", (s) => applyAdvanceChecklist(s))),
   });
@@ -1522,20 +1232,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // Day 3: grounded filing-steps/fees card. The handler looks every
   // fact up in the filing-steps pack — card text is pack text verbatim
   // with pack/fact grounding. Any unknown factId renders NO card.
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.showFilingSteps,
     description:
       "Show grounded filing steps and fees facts. Call with factIds from the readable filingStepsFacts index when the user asks about filing steps, process order, or fees. Never invent steps or fees; only pack facts become cards.",
-    parameters: [
-      {
-        name: "factIds",
-        type: "string[]",
-        description: "Fact ids from the filingStepsFacts index.",
-        required: true,
-      },
-      { name: "question", type: "string", description: "The user's question.", required: false },
-    ],
+    parameters: z.object({
+      factIds: z.array(z.string()).describe("Fact ids from the filingStepsFacts index."),
+      question: z.string().optional().describe("The user's question."),
+    }),
     handler: async ({ factIds, question }) =>
       runTool("showFilingSteps", () => {
         const ids = Array.isArray(factIds) ? factIds.map(String) : [];
@@ -1573,9 +1277,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   function speakSummaryWhenFree(token: number) {
     if (token !== summaryBuildTokenRef.current) return;
     const busyNow =
-      recordingRef.current ||
-      busyRef.current ||
-      hostSpeakingRef.current ||
+      micHot(turn.get()) ||
+      isBusy(turn.get()) ||
+      turn.get().hostSpeaking ||
       speechQueue.isSpeaking();
     if (busyNow) {
       summaryDeliverAttemptsRef.current += 1;
@@ -1656,12 +1360,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     summaryBuildRef.current = { token, timer: setTimeout(step, SUMMARY_STEP_MS) };
   }
 
-  useCopilotAction({
-    render: renderNothing,
+  useFrontendTool({
     name: AGENT_ACTIONS.prepareLawyerSummary,
     description:
       "Prepare the lawyer-summary package (jurisdiction choice, equity split, checklist state) and display it on the canvas. Use when the user asks to prepare, show, or send-to-lawyer the summary. This only prepares the package for the user to forward; it never sends email.",
-    parameters: [],
     handler: async () =>
       runTool("prepareLawyerSummary", () => {
         prepareLawyerPackage(true);
@@ -1698,48 +1400,31 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
   }
 
+  // What to save (or why not) is decided in lib/downloads.ts; this only
+  // saves the file and speaks the outcome.
+  function downloadNow(kind: DownloadKind) {
+    const plan = planDownload(kind, withDefaults(stateRef.current), logRef.current);
+    if (!plan.ok) {
+      hostFeedback(plan.line);
+      return;
+    }
+    if (!saveTextFile(plan.filename, plan.text)) {
+      hostFeedback(DOWNLOAD_BLOCKED_LINE);
+      return;
+    }
+    hostFeedback(downloadedLine(plan.filename));
+  }
+
   function downloadSummaryNow() {
-    const current = withDefaults(stateRef.current);
-    if (!current.lawyerPackage.trim()) {
-      hostFeedback("No lawyer summary yet. Prepare the summary first.");
-      return;
-    }
-    const filename = summaryFilename(current);
-    if (!saveTextFile(filename, current.lawyerPackage)) {
-      hostFeedback("The browser blocked the download. Nothing was saved.");
-      return;
-    }
-    hostFeedback(`Downloaded ${filename}.`);
+    downloadNow("summary");
   }
 
   function downloadTranscriptNow() {
-    const current = withDefaults(stateRef.current);
-    const entries = logRef.current;
-    if (!hasTranscriptContent(entries)) {
-      hostFeedback("No transcript yet. Say something first.");
-      return;
-    }
-    const filename = transcriptFilename(current);
-    if (!saveTextFile(filename, buildTranscriptFile(entries, current))) {
-      hostFeedback("The browser blocked the download. Nothing was saved.");
-      return;
-    }
-    hostFeedback(`Downloaded ${filename}.`);
+    downloadNow("transcript");
   }
 
   function downloadPackageNow() {
-    const current = withDefaults(stateRef.current);
-    const entries = logRef.current;
-    if (!current.lawyerPackage.trim() && !hasTranscriptContent(entries)) {
-      hostFeedback("Nothing to download yet — prepare the summary or say something first.");
-      return;
-    }
-    const filename = packageFilename(current);
-    if (!saveTextFile(filename, buildPackageFile(entries, current))) {
-      hostFeedback("The browser blocked the download. Nothing was saved.");
-      return;
-    }
-    hostFeedback(`Downloaded ${filename}.`);
+    downloadNow("package");
   }
 
   // Every new turn starts with no displayed error. Last transcript and
@@ -1894,25 +1579,24 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         setLocalHost(line);
         lastHostLineRef.current = spokenHostText(line);
         appendLog("host", spokenHostText(line));
-        if (convoRef.current && !recordingRef.current) {
+        if (turn.get().convo && !micHot(turn.get())) {
           setTimeout(() => {
-            if (convoRef.current && !recordingRef.current) void startRecording();
+            if (turn.get().convo && !micHot(turn.get())) void startRecording();
           }, 260);
         }
         return true;
       }
       case "continue": {
-        convoRef.current = true;
-        setConvoActive(true);
+        turn.dispatch({ type: "CONVO_START" });
         setNotice("");
         clearHeldUtterance();
         const line = nextObjectiveHostLine(withDefaults(stateRef.current));
         setLocalHost(line);
         if (voiceOn) {
           speakNative(line, () => {
-            if (convoRef.current && !recordingRef.current) void startRecording();
+            if (turn.get().convo && !micHot(turn.get())) void startRecording();
           });
-        } else if (!recordingRef.current) {
+        } else if (!micHot(turn.get())) {
           void startRecording();
         }
         return true;
@@ -1980,7 +1664,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         return true;
       }
       case "test-voice": {
-        setHostSilent(false);
+        host.setHostSilent(false);
         if (!settingsRef.current.voiceOn || settingsRef.current.volume <= 0.01) {
           updateVoiceSettings({ voiceOn: true, volume: Math.max(0.25, settingsRef.current.volume) });
         }
@@ -2056,7 +1740,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     // Always-available voice controls run before the busy gate and before
     // any journey handling, so help, repeat, stop, slower, and start over
     // are understood in every state.
-    logEvent(`sendToAgent ${JSON.stringify(trimmed)} phase=${recordingRef.current ? "rec" : "idle"}`);
+    logEvent(`sendToAgent ${JSON.stringify(trimmed)} phase=${micHot(turn.get()) ? "rec" : "idle"}`);
     const control = parseVoiceControl(trimmed);
     if (control) {
       logEvent(`control ${control.kind}`);
@@ -2074,7 +1758,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     // Busy lane: park one turn (latest wins) with a visible notice instead
     // of the old silent drop. The flush effect below sends it once idle.
     if (sending || isLoading) {
-      queuedTurnRef.current = queueTurn(queuedTurnRef.current, trimmed, convoRef.current);
+      queuedTurnRef.current = queueTurn(queuedTurnRef.current, trimmed, turn.get().convo);
       setNotice(QUEUED_TURN_NOTICE);
       return;
     }
@@ -2344,13 +2028,12 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     messageIdRef.current += 1;
     activeVoiceTurnRef.current = fromVoice;
     try {
-      await appendMessage(
-        new TextMessage({
-          id: `msg-${messageIdRef.current}`,
-          role: Role.User,
-          content: trimmed,
-        }),
-      );
+      agent?.addMessage({
+        id: `msg-${messageIdRef.current}`,
+        role: "user",
+        content: trimmed,
+      });
+      if (agent) await copilotkit.runAgent({ agent });
     } catch (error) {
       const detail = error instanceof Error ? error.message : "the agent run failed";
       setTurnError(`Agent error: ${detail}. Nothing was changed by that turn — say the command again.`);
@@ -2366,6 +2049,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       return;
     }
     if (typeof window === "undefined") return;
+    // Realtime streaming transcription exists only for the Meta provider.
+    if (!providerRef.current.streamingAsr) return;
     try {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${protocol}//${window.location.host}/api/asr-stream`;
@@ -2403,7 +2088,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
             if (transcript) {
               // Only treat words as self-echo while the host is actually
               // speaking. Once the host stops, the user's reply is theirs.
-              const hostActive = hostSpeakingRef.current || speechQueue.isSpeaking();
+              const hostActive = turn.get().hostSpeaking || speechQueue.isSpeaking();
               if (echoFilter.checkWhileHostActive(hostActive, turnId, transcript)) {
                 return;
               }
@@ -2424,7 +2109,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
             if (completedStreamingTurnRef.current === turnId) return;
             if (
               echoFilter.checkWhileHostActive(
-                hostSpeakingRef.current || speechQueue.isSpeaking(),
+                turn.get().hostSpeaking || speechQueue.isSpeaking(),
                 turnId,
                 transcript,
               )
@@ -2458,7 +2143,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         logEvent("asr socket closed");
         // A live socket that drops mid-turn is a recovery event, not a
         // console line. The buffered fallback carries the audio.
-        if (wasReady && convoRef.current && recordingRef.current && !finishingRef.current) {
+        if (wasReady && turn.get().convo && micHot(turn.get()) && !finishingRef.current) {
           surfaceRecovery("stream-lost");
         }
       };
@@ -2485,11 +2170,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
     completedStreamingTurnRef.current = turnId;
     finishingRef.current = true;
-    recordingRef.current = false;
+    turn.dispatch({ type: "MIC_CLOSED" });
     isTurnListeningRef.current = false;
     stopWebSpeech();
     setMicLevel(0);
-    setRecording(false);
     stampTiming("finalTranscript");
 
     const trimmed = (transcript ?? "").trim();
@@ -2519,49 +2203,11 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         }
 
         // --- Slow-speech continuation ----------------------------------
-        // A recognizer final is not always a complete thought. If the
-        // wording is visibly unfinished, hold it, keep the mic open, and
-        // merge the next final. Controls always win over a held fragment.
-        const held = heldUtteranceRef.current;
-        let finalText = trimmed;
-        if (held) {
-          // Controls, yes/no answers, name approvals, and questions are
-          // standalone turns. They abandon the held fragment instead of
-          // being glued onto it ("I want to … Stop").
-          const standalone =
-            Boolean(parseVoiceControl(trimmed)) ||
-            isConfirmationAnswer(trimmed) ||
-            isNameApproval(trimmed) ||
-            Boolean(parseSpokenCompanyName(trimmed)) ||
-            /\?\s*$/.test(trimmed) ||
-            /^(?:what|how|where|when|who|why|can|could|do|does|is|are|should|would)\b/i.test(trimmed);
-          if (standalone) {
-            clearHeldUtterance();
-          } else {
-            finalText = mergeContinuation(held.text, trimmed);
-            clearHeldUtterance();
-          }
-        }
-        const finalControl = parseVoiceControl(finalText);
-        const finalIntent = parseLiveIntent(finalText);
-        const finalAnswer =
-          isConfirmationAnswer(finalText) ||
-          isNameApproval(finalText) ||
-          Boolean(parseSpokenCompanyName(finalText));
-        const looksLikeQuestion = /\?\s*$/.test(finalText) ||
-          /^(?:what|how|where|when|who|why|can|could|do|does|is|are|should|would)\b/i.test(finalText);
-        if (
-          !finalControl &&
-          !finalIntent &&
-          !finalAnswer &&
-          !looksLikeQuestion &&
-          looksUnfinishedTranscript(finalText)
-        ) {
-          logEvent(`holding unfinished final ${JSON.stringify(finalText)}`);
-          holdContinuation(finalText);
-          return;
-        }
-
+        // A recognizer final is not always a complete thought. The shared
+        // decision (lib/voice-final.ts) merges a held beginning, or holds a
+        // visibly unfinished final and keeps the mic open.
+        const finalText = holdOrMerge(trimmed);
+        if (finalText === null) return;
         await sendToAgent(finalText, true);
       } finally {
         finishingRef.current = false;
@@ -2579,30 +2225,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
     asrSocketRef.current = null;
     streamingReadyRef.current = false;
-    try {
-      workletNodeRef.current?.disconnect();
-    } catch {
-      // ignore
-    }
-    try {
-      if (workletNodeRef.current) workletNodeRef.current.port.onmessage = null;
-    } catch {
-      // ignore
-    }
-    workletNodeRef.current = null;
-    try {
-      sourceNodeRef.current?.disconnect();
-    } catch {
-      // ignore
-    }
-    sourceNodeRef.current = null;
-    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-    mediaStreamRef.current = null;
-    const ctx = audioContextRef.current;
-    audioContextRef.current = null;
-    if (ctx && ctx.state !== "closed") {
-      void ctx.close().catch(() => undefined);
-    }
+    mic.stop();
   }
 
   async function fetchTranscript(buf: ArrayBuffer): Promise<string> {
@@ -2650,7 +2273,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       rec.interimResults = true;
       rec.continuous = true;
       rec.onresult = (event: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal?: boolean }> }) => {
-        if (hostSpeakingRef.current || speechQueue.isSpeaking()) return;
+        if (turn.get().hostSpeaking || speechQueue.isSpeaking()) return;
         let text = "";
         let isFinal = false;
         for (let i = 0; i < event.results.length; i++) {
@@ -2666,23 +2289,30 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       rec.onend = () => {
         recognitionRef.current = null;
         if (streamingReadyRef.current) {
-          // Streaming ASR is active: Meta endpointing and HybridEndpointer are the authority.
-          // Web Speech must never prematurely tear down the active streaming session.
+          // Meta streaming is active: its endpointing and HybridEndpointer
+          // are the authority. The browser recogniser must never tear
+          // down the streaming turn early.
           return;
         }
+        // Meta (stream down): the recogniser is a preview, so only a
+        // matched command ends the turn. Gemini: its words are the turn.
+        const turnReady =
+          providerRef.current.provider === "meta"
+            ? intentMatchedRef.current || (equityConfirmRef.current && isConfirmationAnswer(liveTranscriptRef.current))
+            : liveTranscriptRef.current.trim().length > 0;
         if (
-          recordingRef.current &&
+          micHot(turn.get()) &&
           !finishingRef.current &&
-          (intentMatchedRef.current || (equityConfirm && isConfirmationAnswer(liveTranscriptRef.current)))
+          turnReady
         ) {
           void finishRecording();
           return;
         }
         // Chrome ends recognition after a pause; re-arm while the mic
         // is still hot so a second sentence is heard too.
-        if (recordingRef.current && !webSpeechFailedRef.current) {
+        if (micHot(turn.get()) && !webSpeechFailedRef.current) {
           setTimeout(() => {
-            if (recordingRef.current) startWebSpeech();
+            if (micHot(turn.get())) startWebSpeech();
           }, 250);
         }
       };
@@ -2697,7 +2327,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     return () => {
       cleanupAudio();
       stopWebSpeech();
-      clearSpeechWatchdog();
       clearRearmTimer();
       clearConfirmationTimer();
       if (recoveryTimerRef.current !== null) clearTimeout(recoveryTimerRef.current);
@@ -2709,8 +2338,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       summaryBuildRef.current = null;
       summarySpeakTimerRef.current = null;
       summaryBuildTokenRef.current += 1;
-      utteranceRef.current = null;
+      host.dispose();
       if (travelFrameRef.current !== null) cancelAnimationFrame(travelFrameRef.current);
+      neural.dispose();
       try {
         window.speechSynthesis?.cancel();
       } catch {
@@ -2725,14 +2355,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   useEffect(() => {
     if (!recording) return;
     const meter = setInterval(() => {
-      setMicLevel(Math.min(1, levelRef.current * 3.5));
+      setMicLevel(Math.min(1, mic.level() * 3.5));
     }, 200);
     const clock = setInterval(() => setRecordSeconds((s) => s + 1), 1000);
     return () => {
       clearInterval(meter);
       clearInterval(clock);
     };
-  }, [recording]);
+  }, [recording, mic]);
 
   // A long turn with audible speech but no transcript is a visible
   // recovery, not an endless LISTENING screen. The mic is left open: a
@@ -2747,7 +2377,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       isListeningStall({
         recording: true,
         hasTranscript: Boolean(liveTranscript),
-        heardAudio: peakLevelRef.current > 0.02,
+        heardAudio: mic.peak() > 0.02,
         listenedMs: recordSeconds * 1000,
       })
     ) {
@@ -2776,7 +2406,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         }
         return;
       }
-      await sendToAgent(transcript, true);
+      const text = holdOrMerge(stripAsrAnnotations(transcript));
+      if (text !== null) await sendToAgent(text, true);
     } catch (error) {
       setNotice("");
       setTranscribeFailure(
@@ -2800,10 +2431,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // through the reliable batch endpoint instead of dropping the turn.
   // Returns true when the turn was sent (even if the transcript is empty).
   async function sendBufferedChunks(): Promise<boolean> {
-    const chunks = chunksRef.current;
-    chunksRef.current = [];
+    const { chunks, rate: inputRate } = mic.takeBuffered();
     if (chunks.length === 0) return false;
-    const inputRate = audioContextRef.current?.sampleRate ?? 0;
     if (!inputRate || inputRate <= 0) return false;
     const samples = concatFloat32(chunks);
     if (samples.length === 0) return false;
@@ -2822,17 +2451,16 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (finishingRef.current) return;
     finishingRef.current = true;
 
-    // If streaming ASR is active, check if there's a pending fast-commit to fire
+    // Meta streaming: check for a pending fast-commit to fire first.
     if (streamingReadyRef.current) {
       if (endpointerRef.current?.forceFastCommitNow(liveTranscriptRef.current)) {
         finishingRef.current = false;
         return;
       }
-      recordingRef.current = false;
+      turn.dispatch({ type: "MIC_CLOSED" });
       isTurnListeningRef.current = false;
       stopWebSpeech();
       setMicLevel(0);
-      setRecording(false);
       // Streaming never delivered this turn. Keep the audio usable: send
       // the buffered utterance through the batch recogniser. Tombstone the
       // streamed turn so a late Meta final cannot run the command twice.
@@ -2846,15 +2474,29 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       return;
     }
 
-    recordingRef.current = false;
+    turn.dispatch({ type: "MIC_CLOSED" });
     isTurnListeningRef.current = false;
     stopWebSpeech();
     setMicLevel(0);
-    setRecording(false);
-    const ctx = audioContextRef.current;
-    const inputRate = ctx?.sampleRate ?? 0;
-    const chunks = chunksRef.current;
-    chunksRef.current = [];
+
+    // Gemini: the browser recogniser already has the words, so the turn
+    // goes straight to the brain with no transcription round trip. With no
+    // recogniser (Firefox, Safari) the buffered audio below is transcribed.
+    // Meta: the recogniser is only a preview; Meta's transcript decides.
+    const recognized = providerRef.current.provider === "meta" ? "" : liveTranscriptRef.current.trim();
+    if (recognized) {
+      mic.discardBuffered();
+      stampTiming("finalTranscript");
+      try {
+        const text = holdOrMerge(recognized);
+        if (text !== null) await sendToAgent(text, true);
+      } finally {
+        finishingRef.current = false;
+      }
+      return;
+    }
+
+    const { chunks, rate: inputRate } = mic.takeBuffered();
     try {
       if (!inputRate || inputRate <= 0) {
         setTranscribeFailure(makeTranscribeFailure("microphone capture failed (no audio context)"));
@@ -2880,7 +2522,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       lastAudioRef.current = buf;
       setHasLastAudio(true);
       console.info(
-        `[vvb-timing] turn ended, peak RMS: ${peakLevelRef.current.toFixed(4)}, speechMs: ${activityRef.current.speechMs.toFixed(0)}ms`,
+        `[vvb-timing] turn ended, peak RMS: ${mic.peak().toFixed(4)}, speechMs: ${activityRef.current.speechMs.toFixed(0)}ms`,
       );
       await transcribeAndSend(buf);
     } finally {
@@ -2893,14 +2535,13 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     // Silence while the app is actively building or speaking is not a
     // stalled turn. The no-speech guard must not cut into the async
     // summary start/completion.
-    if (summaryBuildRef.current || summarySpeakTimerRef.current || hostSpeakingRef.current) return;
+    if (summaryBuildRef.current || summarySpeakTimerRef.current || turn.get().hostSpeaking) return;
     if (finishingRef.current) return;
     finishingRef.current = true;
-    recordingRef.current = false;
+    turn.dispatch({ type: "MIC_CLOSED" });
     isTurnListeningRef.current = false;
     stopWebSpeech();
     setMicLevel(0);
-    setRecording(false);
     // If the user did speak but streaming never reported a turn, the
     // buffered audio still holds the utterance. Transcribe it rather
     // than claiming silence.
@@ -2955,26 +2596,23 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   async function toggleRecording() {
     if (recording) {
       // A manual stop ends the conversation, not just the turn.
-      convoRef.current = false;
-      setConvoActive(false);
+      turn.dispatch({ type: "CONVO_END" });
       dropQueuedTurn();
       await finishRecording();
       cleanupAudio();
       return;
     }
-    if (convoRef.current && (transcribing || sending || isLoading)) {
+    if (turn.get().convo && (transcribing || sending || isLoading)) {
       // Ending a conversation while the agent is mid-turn: just stop
       // re-arming the mic; the current turn finishes on its own.
-      convoRef.current = false;
-      setConvoActive(false);
+      turn.dispatch({ type: "CONVO_END" });
       dropQueuedTurn();
       cleanupAudio();
       return;
     }
     unlockedRef.current = true;
     if (convoOn) {
-      convoRef.current = true;
-      setConvoActive(true);
+      turn.dispatch({ type: "CONVO_START" });
     }
     setDockOpen(false);
 
@@ -2994,141 +2632,77 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     await startRecording();
   }
 
-  async function ensureAudioPipeline() {
-    if (audioContextRef.current && mediaStreamRef.current && workletNodeRef.current) {
-      if (audioContextRef.current.state === "suspended") {
-        await audioContextRef.current.resume();
-      }
+  // The turn's decisions for each captured block (components/hooks/
+  // useMicCapture.ts owns the hardware): no-speech, the length cap, the
+  // streaming watchdog, and local end-of-speech.
+  function onMicBlock({ level, now, blockMs }: MicBlock) {
+    endpointerRef.current?.onAudioRms(level, now);
+    const listened = now - (turnTimingRef.current.micStart ?? now);
+
+    // Guard 1: No speech detected after 8s -> close quietly, say "Didn't hear anything — say it again", re-arm once
+    if (shouldTriggerNoSpeech(activityRef.current.hasSpoken, listened)) {
+      void handleNoSpeechTimeout();
       return;
     }
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-    });
-    mediaStreamRef.current = stream;
-    let ctx: AudioContext;
-    try {
-      ctx = new AudioContext({ sampleRate: 16000 });
-    } catch {
-      ctx = new AudioContext();
+
+    // Guard 2: Max utterance length (15s cap) -> force finish recording
+    if (shouldCapUtterance(listened)) {
+      void finishRecording();
+      return;
     }
-    audioContextRef.current = ctx;
-    await loadPcmWorklet((url) => ctx.audioWorklet.addModule(url));
-    const node = new AudioWorkletNode(ctx, "pcm-capture");
-    workletNodeRef.current = node;
 
-    node.port.onmessage = (event: MessageEvent) => {
-      const block = event.data as Float32Array;
-      if (!block || block.length === 0) return;
-      if (!isTurnListeningRef.current) {
-        audioStatsRef.current.listeningDropped += 1;
-        return;
-      }
-      // Mic gated during host playback to eliminate acoustic self-echo
-      if (hostSpeakingRef.current || speechQueue.isSpeaking()) {
-        audioStatsRef.current.hostDropped += 1;
-        return;
-      }
-      audioStatsRef.current.blocks += 1;
+    // Guard 3 (streaming watchdog): the user spoke, the mic is quiet,
+    // and Meta has not reported a turn for several seconds. Do not wait
+    // forever or drop the turn: transcribe the buffered audio instead.
+    if (
+      streamingReadyRef.current &&
+      activityRef.current.hasSpoken &&
+      activityRef.current.lastSpeechAt !== null &&
+      now - activityRef.current.lastSpeechAt > 1800 &&
+      now - asrLastEventAtRef.current > 3800
+    ) {
+      logEvent("streaming watchdog → buffered fallback");
+      void finishRecording();
+      return;
+    }
 
-      chunksRef.current.push(block);
-      const rate = audioContextRef.current?.sampleRate ?? 0;
+    activityRef.current = nextVoiceActivity(activityRef.current, level, now, blockMs);
 
-      // Stream binary PCM16 over WebSocket to Meta ASR relay if connected
-      if (asrSocketRef.current && asrSocketRef.current.readyState === WebSocket.OPEN) {
-        let pcm: Int16Array;
-        if (rate === 16000) {
-          pcm = new Int16Array(block.length);
-          for (let i = 0; i < block.length; i++) {
-            const s = Math.max(-1, Math.min(1, block[i]));
-            pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-          }
-        } else if (rate > 0) {
-          pcm = toPcm16k(block, rate);
-        } else {
-          pcm = new Int16Array(0);
-        }
-        if (pcm.length > 0) {
-          asrSocketRef.current.send(pcm.buffer);
-        }
-      }
-
-      const level = rmsLevel(block);
-      levelRef.current = level;
-      peakLevelRef.current = Math.max(peakLevelRef.current, level);
-      const now = performance.now();
-      endpointerRef.current?.onAudioRms(level, now);
-      const listened = now - (turnTimingRef.current.micStart ?? now);
-
-      // Guard 1: No speech detected after 8s -> close quietly, say "Didn't hear anything — say it again", re-arm once
-      if (shouldTriggerNoSpeech(activityRef.current.hasSpoken, listened)) {
-        void handleNoSpeechTimeout();
-        return;
-      }
-
-      // Guard 2: Max utterance length (15s cap) -> force finish recording
-      if (shouldCapUtterance(listened)) {
+    // Demote client RMS/silence gate:
+    // When streaming ASR is active, Meta endpointing is the authority for turn end.
+    // If streaming is not active, fall back to local auto-stop.
+    if (!streamingReadyRef.current) {
+      const silence = autoStopSilence(settingsRef.current.slowMode, intentMatchedRef.current);
+      if (shouldAutoStop(activityRef.current, now, silence)) {
         void finishRecording();
         return;
       }
+    }
 
-      // Guard 3 (streaming watchdog): the user spoke, the mic is quiet,
-      // and Meta has not reported a turn for several seconds. Do not wait
-      // forever or drop the turn: transcribe the buffered audio instead.
-      if (
-        streamingReadyRef.current &&
-        activityRef.current.hasSpoken &&
-        activityRef.current.lastSpeechAt !== null &&
-        now - activityRef.current.lastSpeechAt > 1800 &&
-        now - asrLastEventAtRef.current > 3800
-      ) {
-        logEvent("streaming watchdog → buffered fallback");
-        void finishRecording();
-        return;
-      }
-
-      activityRef.current = nextVoiceActivity(activityRef.current, level, now, rate > 0 ? (block.length / rate) * 1000 : 0);
-
-      // Demote client RMS/silence gate:
-      // When streaming ASR is active, Meta endpointing is the authority for turn end.
-      // If streaming is not active, fall back to local auto-stop.
-      if (!streamingReadyRef.current) {
-        const silence = autoStopSilence(settingsRef.current.slowMode, intentMatchedRef.current);
-        if (shouldAutoStop(activityRef.current, now, silence)) {
-          void finishRecording();
-          return;
-        }
-      }
-
-      if (rate > 0) {
-        const total = chunksRef.current.reduce((s, c) => s + c.length, 0);
-        const estBytes = Math.round(total / (rate / 16000)) * 2;
-        if (estBytes > MAX_PCM_BYTES) {
-          void finishRecording();
-        }
-      }
-    };
-
-    const source = ctx.createMediaStreamSource(stream);
-    sourceNodeRef.current = source;
-    source.connect(node);
-    if (ctx.state === "suspended") {
-      await ctx.resume();
+    if (mic.bufferedPcmBytes() > MAX_PCM_BYTES) {
+      void finishRecording();
     }
   }
 
+  // Open the mic for a new turn (the user asked, or a greeting ended).
+  // A fired re-arm has already moved the machine to "opening" and calls
+  // openMic directly.
   async function startRecording() {
-    if (recordingRef.current) return;
-    audioStatsRef.current = { blocks: 0, hostDropped: 0, listeningDropped: 0 };
+    if (micHot(turn.get())) return;
+    turn.dispatch({ type: "MIC_REQUEST" });
+    await openMic();
+  }
+
+  async function openMic() {
+    mic.resetTurn();
     asrLastEventAtRef.current = performance.now();
     bufferedFallbackTurnRef.current = null;
     logEvent(`startRecording streaming=${streamingReadyRef.current} socket=${asrSocketRef.current?.readyState ?? -1}`);
     clearRearmTimer();
-    setRearming(false);
     clearConfirmationTimer();
     liveTranscriptRef.current = "";
     activeTurnIdRef.current += 1;
     endpointerRef.current?.setActiveTurnId(activeTurnIdRef.current);
-    recordingRef.current = true;
     isTurnListeningRef.current = true;
     turnTimingRef.current = { micStart: performance.now() };
     stampTiming("rearm");
@@ -3139,8 +2713,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     lastAudioRef.current = null;
     setHasLastAudio(false);
     activityRef.current = IDLE_ACTIVITY;
-    levelRef.current = 0;
-    peakLevelRef.current = 0;
     previewKeyRef.current = null;
     committedKeyRef.current = null;
     intentMatchedRef.current = false;
@@ -3149,11 +2721,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     setLivePreview(null);
     setMicLevel(0);
     setRecordSeconds(0);
-    chunksRef.current = [];
     finishingRef.current = false;
 
     try {
-      await ensureAudioPipeline();
+      await mic.ensure();
       if (settingsRef.current.slowMode) {
         // Slow mode: the local, generous silence window is the authority.
         // No streaming socket, so Meta cannot end the turn on a short pause.
@@ -3167,21 +2738,19 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       } else {
         ensureAsrStreamSocket();
       }
-      setRecording(true);
+      turn.dispatch({ type: "MIC_OPEN" });
       playCue("listen");
-      if (!streamingReadyRef.current) {
-        startWebSpeech();
-      }
+      // Gemini: the browser recogniser supplies the live words. Meta:
+      // streaming transcription is the authority, and the browser
+      // recogniser is only a preview while the stream is down.
+      if (!streamingReadyRef.current) startWebSpeech();
     } catch (error) {
       cleanupAudio();
-      recordingRef.current = false;
       isTurnListeningRef.current = false;
-      setRecording(false);
       // End the loop on a failed capture. Otherwise the UI says
       // "conversation live" while the auto-listen effect retries the
       // same broken context forever. TALK or typing can start again.
-      convoRef.current = false;
-      setConvoActive(false);
+      turn.dispatch({ type: "MIC_FAILED" });
       dropQueuedTurn();
       setNotice(micFailureNotice(error));
     }
@@ -3233,11 +2802,29 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     return () => clearTimeout(timer);
   }, [view, settings, log]);
 
+  // Learn which provider the server runs, then fetch the host's likely
+  // next line ahead of time so neural speech starts without a network
+  // wait (lib/host-tts.ts). hostPrompt.text is the next question on screen.
+  useEffect(() => {
+    if (!voiceOn) return;
+    let alive = true;
+    void loadProviderInfo().then((info) => {
+      if (!alive) return;
+      providerRef.current = info;
+      if (!info.neuralVoice) return;
+      const next = spokenHostText(hostPrompt.text);
+      if (next) hostTts.prefetch(next);
+      hostTts.prefetch(spokenHostText(withCommander(FIRST_SPEAK_GREETING)));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [hostPrompt.text, voiceOn]);
+
   // Voice-first boot: the cockpit opens the conversation and the mic on
   // its own after the landing gate. No click, no "press TALK" step.
   useEffect(() => {
     if (!autoStart) return;
-    convoRef.current = true;
     unlockedRef.current = true;
     // A saved run must never restore into silence just because VOX was
     // off or the volume was 0. Entering by voice means the founder expects
@@ -3247,14 +2834,16 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
     refreshCachedVoice();
     const timer = setTimeout(() => {
-      setConvoActive(true);
+      // The conversation starts with the greeting, so the loop cannot
+      // open the mic over it.
+      turn.dispatch({ type: "CONVO_START" });
       const current = withDefaults(stateRef.current);
       const line = resumed
         ? withCommander(resumeSummary(current))
         : withCommander(FIRST_SPEAK_GREETING);
       setLocalHost(line);
       const begin = () => {
-        if (convoRef.current && !recordingRef.current) void startRecording();
+        if (turn.get().convo && !micHot(turn.get())) void startRecording();
       };
       const spoke = speakNative(line, begin);
       if (!spoke) begin();
@@ -3287,13 +2876,16 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Mirrors so the utterance onend handler re-arms with fresh state.
+  // What is in flight, and whether an error is on screen, as the turn
+  // machine sees them (the re-arm rule reads these).
   useEffect(() => {
-    busyRef.current = transcribing || sending || isLoading;
-  }, [transcribing, sending, isLoading]);
+    turn.dispatch({ type: "WORK", key: "transcribing", on: transcribing });
+    turn.dispatch({ type: "WORK", key: "sending", on: sending });
+    turn.dispatch({ type: "WORK", key: "agent", on: isLoading });
+  }, [transcribing, sending, isLoading, turn]);
   useEffect(() => {
-    turnErrorRef.current = Boolean(turnError || transcribeFailure);
-  }, [turnError, transcribeFailure]);
+    turn.dispatch({ type: "ERROR", on: Boolean(turnError || transcribeFailure) });
+  }, [turnError, transcribeFailure, turn]);
 
   // The agent talks back: speak its latest line once a turn completes.
   useEffect(() => {
@@ -3308,7 +2900,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   useEffect(() => {
     if (sending || isLoading) return;
     if (!queuedTurnRef.current) return;
-    const { send, slot } = flushQueuedTurn(queuedTurnRef.current, false, convoRef.current);
+    const { send, slot } = flushQueuedTurn(queuedTurnRef.current, false, turn.get().convo);
     queuedTurnRef.current = slot;
     dropQueuedTurnNotice();
     if (send) void sendToAgent(send);
@@ -3322,19 +2914,19 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (!convoActive || recording || transcribing || sending || isLoading || hostSpeaking) return;
     if (turnError || transcribeFailure) {
       const t = setTimeout(() => {
-        if (!convoRef.current) return;
-        if (recordingRef.current || busyRef.current) return;
+        const now = turn.get();
+        if (!now.convo) return;
+        if (micHot(now) || isBusy(now)) return;
         // Recover hands-free: the error banner has been visible for the
         // recovery beat, so reopen the mic and let the user retry by
         // voice. startRecording clears the stale error state.
-        setRearming(false);
         void startRecording();
       }, RECOVERY_REARM_MS);
       return () => clearTimeout(t);
     }
     // Re-arm on utterance onend/onerror and turn completion, not by polling speechSynthesis.speaking.
     // If not recording and lane is completely idle and no speech is active, request a re-arm.
-    if (convoRef.current && !recordingRef.current && !hostSpeaking) {
+    if (turn.get().convo && !micHot(turn.get()) && !hostSpeaking) {
       requestRearm();
     }
     // requestRearm is an intentional stable closure over refs.
@@ -3344,7 +2936,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // Errors get a dull buzz, never silence.
   useEffect(() => {
     if (turnError || transcribeFailure) playCue("error");
-  }, [turnError, transcribeFailure]);
+  }, [turnError, transcribeFailure, playCue]);
 
   // The host line is the outcome of a turn. When VOX is on it is already
   // spoken by TTS; when VOX is off, put it in the one live region. The
@@ -3384,7 +2976,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (typeof window === "undefined") return;
     const win = window as unknown as Record<string, unknown>;
     win.__vvbVoice = {
-      isRecording: () => recordingRef.current,
+      isRecording: () => micHot(turn.get()),
       getPhase: () =>
         recording ? "recording" : transcribing ? "transcribing" : sending ? "sending" : isLoading ? "agent-busy" : "idle",
       isHostSpeaking: () => Boolean(hostSpeaking || isSpeechActive()),
@@ -3393,8 +2985,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       getSettings: () => ({ ...settingsRef.current }),
       getLastSpoken: () => lastHostLineRef.current,
       getEvents: () => [...eventsRef.current],
-      getAudioStats: () => ({ ...audioStatsRef.current }),
-      getHostAudio: () => ({ ...hostAudioRef.current }),
+      getAudioStats: () => mic.stats(),
+      getHostAudio: () => host.stats(),
       getAsrState: () => ({
         ready: streamingReadyRef.current,
         socket: asrSocketRef.current?.readyState ?? -1,
@@ -3431,8 +3023,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         stopWebSpeech();
         stampTiming("finalTranscript");
         isTurnListeningRef.current = false;
-        recordingRef.current = false;
-        setRecording(false);
+        turn.dispatch({ type: "MIC_CLOSED" });
         setMicLevel(0);
         await sendToAgent(text, true);
       },
@@ -3672,7 +3263,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [playCue]);
 
   const structures = colonyProgress(view.checklist);
   const flight = flightPlan(view, activeModule);
@@ -3708,870 +3299,168 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
   return (
     <main className="game" data-stage={stageTab}>
-      <header className="hud" aria-label="Mission header">
-        <div className="brand">
-          <span className="brand-orb-wrap" aria-hidden="true">
-            <span className="brand-spin" />
-            <span className="brand-mark">
-              <span />
-            </span>
-          </span>
-          <div className="brand-text">
-            <p className="eyebrow">VVB-01 · ORBITAL FOUNDRY</p>
-            <h1>Visual Vocal Builder</h1>
-          </div>
-        </div>
-
-        <div className="hud-mission" aria-label={`${doneCount} of ${progress.requiredTotal} missions complete`}>
-          <span className="hud-kicker">{progress.requiredTotal} MISSIONS</span>
-          <div className="hud-pips" role="group" aria-label="Required missions">
-            {REQUIRED_BEATS.map((beat) => {
-              const step = flight.find((entry) => entry.id === beat);
-              const meta = moduleFor(beat);
-              return (
-                <button
-                  key={beat}
-                  type="button"
-                  className={`hud-pip is-${step?.status ?? "pending"}`}
-                  data-testid={`hud-pip-${beat}`}
-                  aria-pressed={activeModule === beat}
-                  onClick={() => selectModule(beat)}
-                  title={`${meta.label} — ${step ? flightStatusLabel(step.status) : "PENDING"}`}
-                >
-                  <span className={`pip is-${step?.status ?? "pending"}`} aria-hidden="true" />
-                  <span className="hud-pip-label">{meta.short}</span>
-                </button>
-              );
-            })}
-          </div>
-          <strong className="hud-count">
-            {doneCount}
-            <span>/{progress.requiredTotal}</span>
-          </strong>
-        </div>
-      </header>
+      <HudHeader
+        doneCount={doneCount}
+        requiredTotal={progress.requiredTotal}
+        flight={flight}
+        activeModule={activeModule}
+        selectModule={selectModule}
+      />
 
       <div className="bridge">
         <aside className="rail rail-mission" aria-label="Mission control">
-          {equityConfirm ? (
-            <section
-              className="panel objective objective-confirm"
-              data-testid="mission-banner"
-              data-equity-confirm="true"
-              data-beat="equity"
-              data-celebrated="false"
-            >
-              <div className="objective-head">
-                <span className="eyebrow">CONFIRM CREW SPLIT</span>
-                <span className="objective-step">3/5</span>
-              </div>
-              <h2>
-                {view.founders.length} owner{view.founders.length === 1 ? "" : "s"} — {equityLabel}
-              </h2>
-              <p className="objective-prompt" data-testid="mission-prompt">
-                Does this split look right? One step: confirm it.
-              </p>
-              <p className="objective-say" data-testid="next-step">
-                <span>SAY</span> <q>Confirm</q>
-              </p>
-              <div className="confirm-actions" data-testid="equity-confirm">
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  data-testid="confirm-equity"
-                  onClick={confirmEquitySelection}
-                >
-                  CONFIRM SPLIT
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  data-testid="edit-equity"
-                  onClick={() => selectModule("equity")}
-                >
-                  KEEP EDITING
-                </button>
-              </div>
-              <p className="objective-build-hint">The split already totals 100%. KEEP EDITING is the only alternative.</p>
-            </section>
-          ) : (
-          <section
-            className="panel objective"
-            data-testid="mission-banner"
-            data-beat={mission.beat}
-            data-celebrated={celebrated ? "true" : "false"}
-          >
-            <div className="objective-head">
-              <span className="eyebrow">CURRENT OBJECTIVE</span>
-              <span className="objective-step">
-                {mission.step}/{mission.total}
-              </span>
-            </div>
-            <h2>{mission.title}</h2>
-            <p data-testid="mission-prompt" className="objective-prompt">
-              {mission.prompt}
-            </p>
-            <p className="objective-say" data-testid="next-step">
-              <span>SAY</span> <q>{mission.voiceCue}</q>
-            </p>
-            <div className="objective-meter" aria-hidden="true">
-              <span style={{ width: `${Math.round((doneCount / progress.requiredTotal) * 100)}%` }} />
-            </div>
-
-            {/* The build mission is the one required task where the user
-                has to choose among five steps. Keep the five options and
-                the running 0/5..5/5 count in the left rail, not only in
-                the systems panel, so the spoken question has visible
-                answers. Clicks use the same updateChecklistItem path. */}
-            {mission.beat === "checklist" ? (
-              <BuildQueuePanel
-                items={view.checklist}
-                built={structures.built}
-                total={structures.total}
-                percent={structures.percent}
-                nextItemId={nextChecklistId}
-                onToggle={updateChecklistItem}
-              />
-            ) : null}
-
-            {mission.beat === "name" ? (
-              <div className="name-approval" data-testid="name-approval-card">
-                <span className="eyebrow">PROPOSED COMPANY NAME</span>
-                <strong className="name-approval-name">{DEMO_COMPANY_NAME}</strong>
-                <p className="name-approval-why">
-                  This is the one spoken approval that names the company, before equity and the
-                  build. It feeds the lawyer summary. Fictional demo only.
-                </p>
-                <div className="confirm-actions">
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    data-testid="approve-name-button"
-                    onClick={() => approveCompanyName(DEMO_COMPANY_NAME)}
-                  >
-                    APPROVE NAME
-                  </button>
-                </div>
-                <p className="objective-build-hint">Or say “Approve Galactic Bagels” / “Call it &lt;name&gt;”.</p>
-              </div>
-            ) : null}
-
-            {celebrated ? (
-              <p data-testid="mission-celebrated" className="celebrate">
-                {celebrated}
-              </p>
-            ) : null}
-
-            {/* The five required missions are the only steps in the open.
-                The detailed flight plan, its optional archive rows, and the
-                mission chips live behind one disclosure. */}
-            <details className="objective-more">
-              <summary>
-                <span className="eyebrow">PLAN &amp; QUICK ACTIONS</span>
-                <span className="panel-note">
-                  {doneCount}/{progress.requiredTotal} CLEARED
-                </span>
-              </summary>
-              <div className="objective-more-body">
-                <div className="chip-row">
-                  {mission.chips.map((chip) => (
-                    <button
-                      key={chip.label}
-                      type="button"
-                      className="chip-btn"
-                      data-testid="mission-chip"
-                      data-label={chip.label}
-                      disabled={!canSend}
-                      onClick={async () => {
-                        await sendToAgent(chip.command);
-                      }}
-                    >
-                      {chip.label}
-                    </button>
-                  ))}
-                </div>
-                <ol className="flight-list flight-list-compact" aria-label="Required mission flight plan">
-                  {requiredFlight.map((step) => (
-                    <li key={step.id} className={`flight-item is-${step.status}`}>
-                      <button
-                        type="button"
-                        onClick={() => selectModule(step.id)}
-                        aria-pressed={activeModule === step.id}
-                        data-testid={`flight-step-${step.id}`}
-                      >
-                        <span className="flight-code">{step.code}</span>
-                        <span className="flight-main">
-                          <strong>{step.label}</strong>
-                          <span>{step.detail}</span>
-                        </span>
-                        <span className="flight-status">{flightStatusLabel(step.status)}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ol>
-                <details className="plan-archive">
-                  <summary>
-                    <span className="eyebrow">ARCHIVE · FILING FEES</span>
-                    <span className="panel-note">OPTIONAL</span>
-                  </summary>
-                  <ol className="flight-list flight-list-compact" aria-label="Optional archive">
-                    {archiveFlight.map((step) => (
-                      <li key={step.id} className={`flight-item is-${step.status}`}>
-                        <button
-                          type="button"
-                          onClick={() => selectModule(step.id)}
-                          aria-pressed={activeModule === step.id}
-                          data-testid={`flight-step-${step.id}`}
-                        >
-                          <span className="flight-code">{step.code}</span>
-                          <span className="flight-main">
-                            <strong>{step.label}</strong>
-                            <span>{step.detail}</span>
-                          </span>
-                          <span className="flight-status">{flightStatusLabel(step.status)}</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ol>
-                </details>
-              </div>
-            </details>
-          </section>
-          )}
+          <MissionObjective
+            equityConfirm={equityConfirm}
+            ownerCount={view.founders.length}
+            equityLabel={equityLabel}
+            mission={mission}
+            celebrated={celebrated}
+            doneCount={doneCount}
+            requiredTotal={progress.requiredTotal}
+            checklist={view.checklist}
+            structures={structures}
+            nextChecklistId={nextChecklistId}
+            canSend={canSend}
+            requiredFlight={requiredFlight}
+            archiveFlight={archiveFlight}
+            activeModule={activeModule}
+            selectModule={selectModule}
+            confirmEquitySelection={confirmEquitySelection}
+            updateChecklistItem={updateChecklistItem}
+            onApproveName={() => approveCompanyName(DEMO_COMPANY_NAME)}
+            onChipCommand={(command) => void sendToAgent(command)}
+          />
           {/* Captions are a primary channel, not a modal. The full run
               stays on screen in the left rail and auto-scrolls. */}
           <CaptionHistory entries={log} />
         </aside>
 
-        <section className="stage" aria-label="Ship viewport">
-          <div className="stage-head">
-            <div className="stage-tabs" role="tablist" aria-label="Viewport">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={stageTab === "galaxy"}
-                className={stageTab === "galaxy" ? "is-active" : ""}
-                onClick={() => selectStage("galaxy")}
-              >
-                STAR MAP
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={stageTab === "colony"}
-                className={stageTab === "colony" ? "is-active" : ""}
-                onClick={() => selectStage("colony")}
-              >
-                COLONY
-              </button>
-            </div>
-            <div className="stage-live">
-              <span className="live-dot" aria-hidden="true" />
-              LIVE FEED
-              <span className="stage-clock">T+{clockLabel}</span>
-            </div>
-          </div>
+        <ShipViewport
+          view={view}
+          stageTab={stageTab}
+          selectStage={selectStage}
+          handleSelectJurisdiction={handleSelectJurisdiction}
+          clockLabel={clockLabel}
+          homeBase={homeBase}
+          structures={structures}
+          equityLabel={equityLabel}
+          ship={ship}
+          activeMeta={activeMeta}
+          travel={travel}
+          travelColor={travelColor}
+        />
 
-          <div className="stage-viewport">
-            <div className="stage-scene-wrap" hidden={stageTab !== "galaxy"}>
-              <GalaxyHero
-                rows={view.jurisdictions}
-                selected={view.selectedJurisdiction}
-                onSelect={handleSelectJurisdiction}
-              />
-            </div>
-            <div className="stage-scene-wrap" hidden={stageTab !== "colony"}>
-              <ColonyView
-                selected={view.selectedJurisdiction}
-                checklist={view.checklist}
-                founders={view.founders}
-                lawyerPackage={view.lawyerPackage}
-              />
-            </div>
-            <span className="reticle" aria-hidden="true" />
-            <span className="scanlines" aria-hidden="true" />
-          </div>
-
-          <div className="stage-foot">
-            <span>
-              HOME BASE <strong>{homeBase}</strong>
-            </span>
-            <span>
-              COLONY{" "}
-              <strong>
-                {structures.built}/{structures.total}
-              </strong>
-            </span>
-            <span>
-              CREW <strong>{equityLabel}</strong>
-            </span>
-            <span>
-              SHIP <strong data-testid="ship-name">{ship}</strong>
-            </span>
-            <span>
-              PHASE <strong>{activeMeta.label.toUpperCase()}</strong>
-            </span>
-          </div>
-
-          {travel ? (
-            <div className="warp" key={travel.id} data-testid="warp-transition">
-              <div className="warp-stars warp-stars-a" aria-hidden="true" />
-              <div className="warp-stars warp-stars-b" aria-hidden="true" />
-              <div className="warp-flash" aria-hidden="true" />
-              <div className="warp-target" aria-hidden="true">
-                <span
-                  className="warp-planet"
-                  style={{
-                    background: `radial-gradient(circle at 34% 30%, #fff 0 5%, ${travelColor} 36%, #0b1026 100%)`,
-                    boxShadow: `0 0 70px ${travelColor}`,
-                  }}
-                />
-                <span className="warp-ring" />
-              </div>
-              <div className="warp-rocket" aria-hidden="true">
-                <svg viewBox="0 0 64 64" width="64" height="64">
-                  <path
-                    d="M32 4c8 7 12 17 12 28l-6 8H26l-6-8C20 21 24 11 32 4Z"
-                    fill="#e9eeff"
-                    stroke="#7fe7ff"
-                    strokeWidth="1.6"
-                  />
-                  <circle cx="32" cy="24" r="5" fill="#08101f" stroke="#ffd166" strokeWidth="2" />
-                  <path d="M26 40 18 52l10-3M38 40l8 12-10-3" fill="#ff6b7a" />
-                  <path d="M32 46v13" stroke="#ffd166" strokeWidth="4" strokeLinecap="round" />
-                </svg>
-              </div>
-              <div className="warp-copy">
-                <span className="eyebrow">COURSE LOCKED</span>
-                <strong>{travel.planet}</strong>
-                <span className="warp-sub">ENTERING ORBIT</span>
-              </div>
-            </div>
-          ) : null}
-        </section>
-
-        <aside className="rail rail-systems" aria-label="Ship systems">
-          <div className="systems-nav">
-            <div className="module-tabs is-core" role="tablist" aria-label="Four required missions">
-              {requiredModules.map((entry) => {
-                const step = flight.find((item) => item.id === entry.id);
-                return (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={activeModule === entry.id}
-                    className={`module-tab is-${step?.status ?? "pending"}`}
-                    onClick={() => selectModule(entry.id)}
-                    title={entry.blurb}
-                  >
-                    <span className="module-glyph" aria-hidden="true">
-                      {entry.glyph}
-                    </span>
-                    <span className="module-label">{entry.short}</span>
-                    <span className="module-dot" aria-hidden="true" />
-                  </button>
-                );
-              })}
-            </div>
-
-            <details
-              className="archive-tabs"
-              data-testid="archive-tabs"
-              open={archiveOpen}
-              onToggle={(event) => setArchiveOpen(event.currentTarget.open)}
-            >
-              <summary>
-                <span className="archive-title">ARCHIVE</span>
-                <span className="archive-note">FILING FEES · OPTIONAL</span>
-                <span className="integrity-chevron" aria-hidden="true">
-                  ⌄
-                </span>
-              </summary>
-              <div className="module-tabs is-archive" role="tablist" aria-label="Optional archive systems">
-                {archiveModules.map((entry) => {
-                  const step = flight.find((item) => item.id === entry.id);
-                  return (
-                    <button
-                      key={entry.id}
-                      type="button"
-                      role="tab"
-                      aria-selected={activeModule === entry.id}
-                      className={`module-tab is-${step?.status ?? "pending"}`}
-                      onClick={() => selectModule(entry.id)}
-                      title={entry.blurb}
-                    >
-                      <span className="module-glyph" aria-hidden="true">
-                        {entry.glyph}
-                      </span>
-                      <span className="module-label">{entry.short}</span>
-                      <span className="module-dot" aria-hidden="true" />
-                    </button>
-                  );
-                })}
-              </div>
-            </details>
-          </div>
-
-          <div className="panel module-panel" data-active-module={activeModule}>
-            <div className="module-head">
-              <span className="eyebrow">
-                SYSTEM {activeMeta.code} · {activeMeta.label.toUpperCase()}
-              </span>
-              <span className={`chip chip-${activeStep.status}`}>
-                {flightStatusLabel(activeStep.status)}
-              </span>
-            </div>
-
-            <div data-beat="jurisdiction" hidden={activeModule !== "jurisdiction"}>
-              <JurisdictionTable
-                rows={view.jurisdictions}
-                selected={view.selectedJurisdiction}
-                focus={view.focusJurisdiction}
-                focusReason={view.focusReason}
-                onSelect={handleSelectJurisdiction}
-              />
-            </div>
-
-            <div data-beat="equity" hidden={activeModule !== "equity"}>
-              <EquitySlider
-                founders={view.founders}
-                equityNote={view.equityNote}
-                onShareChange={(index, percent) => updateEquity(index, percent, "slider")}
-                onOwnerCountChange={updateOwnerCount}
-              />
-            </div>
-
-            <div data-beat="checklist" hidden={activeModule !== "checklist"}>
-              <FilingChecklist
-                items={view.checklist}
-                onToggle={updateChecklistItem}
-                flags={checklistFlags}
-              />
-            </div>
-
-            <div data-beat="name" hidden={activeModule !== "name"}>
-              <section className="panel module-card" aria-label="Company name approval">
-                <span className="eyebrow">COMPANY NAME · DEMO</span>
-                <h3 className="module-card-title">{view.companyName || DEMO_COMPANY_NAME}</h3>
-                <p className="module-card-copy">
-                  {view.companyName
-                    ? "Approved by voice. This name appears in the lawyer summary."
-                    : "Say “Approve Galactic Bagels”, or “Call it” and a fictional name. The name is approved right after the home base, before equity."}
-                </p>
-                {!view.companyName ? (
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    data-testid="rail-approve-name"
-                    onClick={() => approveCompanyName(DEMO_COMPANY_NAME)}
-                  >
-                    APPROVE GALACTIC BAGELS
-                  </button>
-                ) : (
-                  <p className="module-card-ok" data-testid="name-approved">
-                    Approved: {view.companyName}
-                  </p>
-                )}
-              </section>
-            </div>
-
-            <div data-beat="filingsteps" hidden={activeModule !== "filingsteps"}>
-              <FilingSteps
-                card={view.filingStepsCard}
-                filingStepsNote={view.filingStepsNote}
-                flagReason={filingFlag ? `${filingFlag.reason}: ${filingFlag.detail}` : null}
-              />
-            </div>
-
-            <div data-beat="summary" hidden={activeModule !== "summary"}>
-              <LawyerSummary
-                view={view}
-                companyName={view.companyName || DEMO_COMPANY_NAME}
-                lawyerPackage={view.lawyerPackage}
-                lawyerNote={view.lawyerNote}
-                onPrepare={() => prepareLawyerPackage(true)}
-              />
-            </div>
-          </div>
-
-          <TrustStrip result={verification} />
-        </aside>
+        <SystemsRail
+          view={view}
+          flight={flight}
+          requiredModules={requiredModules}
+          archiveModules={archiveModules}
+          activeModule={activeModule}
+          activeMeta={activeMeta}
+          activeStep={activeStep}
+          archiveOpen={archiveOpen}
+          setArchiveOpen={setArchiveOpen}
+          selectModule={selectModule}
+          handleSelectJurisdiction={handleSelectJurisdiction}
+          onShareChange={(index, percent) => updateEquity(index, percent, "slider")}
+          updateOwnerCount={updateOwnerCount}
+          updateChecklistItem={updateChecklistItem}
+          onApproveName={() => approveCompanyName(DEMO_COMPANY_NAME)}
+          onPrepareSummary={() => prepareLawyerPackage(true)}
+          verification={verification}
+          checklistFlags={checklistFlags}
+          filingFlag={filingFlag}
+        />
       </div>
 
       <footer className="deck" data-testid="command-deck" data-phase={turnPhase}>
         {dockOpen ? (
-          <div className="deck-popout" data-testid="dock-popout">
-            <div className="popout-head">
-              <span className="eyebrow">FLIGHT CONTROLS</span>
-              <button type="button" className="link-btn" onClick={() => setDockOpen(false)}>
-                CLOSE
-              </button>
-            </div>
-            <div className="popout-grid">
-              <button
-                type="button"
-                className="btn"
-                data-testid="convo-toggle"
-                aria-pressed={convoOn}
-                onClick={() => {
-                  const next = !convoOn;
-                  setConvoOn(next);
-                  if (!next) {
-                    convoRef.current = false;
-                    setConvoActive(false);
-                    dropQueuedTurn();
-                  }
-                }}
-              >
-                Conversation auto-listen: {convoOn ? "on" : "off"}
-              </button>
-              <button
-                type="button"
-                className="btn"
-                data-testid="restart-conversation"
-                onClick={() => window.location.reload()}
-              >
-                Restart conversation
-              </button>
-            </div>
-
-            <div className="popout-section">
-              <span className="eyebrow">QUICK COMMANDS</span>
-              <div className="popout-chips">
-                {EXAMPLE_COMMANDS.map((chip) => (
-                  <button
-                    key={chip.label}
-                    type="button"
-                    className="chip-btn"
-                    data-testid={`example-chip-${chip.label}`}
-                    disabled={!canSend}
-                    onClick={async () => {
-                      await sendToAgent(chip.command);
-                    }}
-                  >
-                    {chip.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="popout-section">
-              <span className="eyebrow">VOICE &amp; SOUND</span>
-              <div className="popout-grid">
-                <button
-                  type="button"
-                  className="hud-btn"
-                  data-testid="sound-toggle"
-                  aria-pressed={soundOn}
-                  onClick={() => updateVoiceSettings({ soundOn: !soundOn })}
-                >
-                  <span aria-hidden="true">{soundOn ? "◉" : "○"}</span> SFX
-                </button>
-                <button
-                  type="button"
-                  className="hud-btn"
-                  data-testid="voice-toggle"
-                  aria-pressed={voiceOn}
-                  onClick={() => {
-                    if (voiceOn) cancelSpeech();
-                    updateVoiceSettings({ voiceOn: !voiceOn });
-                  }}
-                >
-                  <span aria-hidden="true">{voiceOn ? "◉" : "○"}</span> VOX
-                </button>
-              </div>
-              <HostVoicePicker
-                voiceOn={voiceOn}
-                onSelect={selectHostVoice}
-                onPreview={previewHostVoice}
-              />
-              <button type="button" className="btn" data-testid="test-voice" onClick={previewHostVoice}>
-                TEST VOICE
-              </button>
-              <p className="popout-clock" aria-label={`Mission clock ${clockLabel}`}>
-                MISSION CLOCK T+{clockLabel}
-              </p>
-            </div>
-
-            <p data-testid="recording-hint" className="micro">
-              Say one short command — it paints live as you speak and sends itself when you pause.
-              Space starts the mic; 1–6 opens a system panel.
-            </p>
-            {shownTranscript ? (
-              <p data-testid="last-transcript" className="micro">
-                Last transcript: <q>{shownTranscript}</q>
-              </p>
-            ) : null}
-          </div>
-        ) : null}
-
-        <div className="deck-status">
-          <span data-testid="turn-phase" className={`deck-phase phase-${turnPhase}`}>
-            {recovery
-              ? "Recovering…"
-              : rearming
-                ? "Re-arming…"
-                : hostSpeaking
-                  ? "Host speaking…"
-                  : turnPhase === "recording"
-                    ? "Recording…"
-                    : turnPhase === "transcribing"
-                      ? "Transcribing…"
-                      : turnPhase === "sending"
-                        ? "Sending…"
-                        : turnPhase === "agent-busy"
-                          ? `Agent working… ${elapsed}s`
-                          : "Ready"}
-          </span>
-          <span data-testid="convo-status" className="deck-convo" data-phase={captionState}>
-            {captionPhaseLabel(captionState).label}
-          </span>
-          <span data-testid="flow-status" className="deck-flow">
-            {flowStatus}
-          </span>
-          <span data-testid="voice-settings" className="deck-settings" aria-label="Voice settings">
-            {settingsSummary(settings)}
-          </span>
-          <span
-            data-testid="host-audio"
-            className={`deck-host-audio${!voiceAudiblyOn || hostSilent ? " is-silent" : hostSpeaking ? " is-speaking" : ""}`}
-          >
-            {!voiceAudiblyOn
-              ? "HOST AUDIO OFF"
-              : hostSilent
-                ? "HOST AUDIO SILENT"
-                : hostSpeaking
-                  ? "HOST AUDIO SPEAKING"
-                  : "HOST AUDIO READY"}
-          </span>
-          {savedNotice ? (
-            <span data-testid="autosave" className="deck-saved">
-              {savedNotice}
-            </span>
-          ) : null}
-          {!voiceOn ? (
-            <span className="deck-vox-off" data-testid="vox-off">
-              VOX OFF
-            </span>
-          ) : null}
-        </div>
-
-        {/* One live region for the turn story. Visual statuses above stay
-            visible but are not live; this prevents a polite-region pile-up
-            while keeping "heard" + result available to a screen reader. */}
-        <p
-          className="visually-hidden"
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-          data-testid="turn-announcement"
-        >
-          {announcement?.text ?? ""}
-        </p>
-
-        {recovery ? (
-          <div
-            className="recovery-banner"
-            data-testid="recovery-banner"
-            data-kind={recovery.kind}
-            role="alert"
-          >
-            <span className="recovery-kicker">RECOVERY</span>
-            <div className="recovery-copy">
-              <strong>{recovery.headline}</strong>
-              {recovery.detail ? <span className="recovery-detail">{recovery.detail}</span> : null}
-              <span className="recovery-next">{recovery.nextStep}</span>
-            </div>
-            {rearming ? <span className="recovery-rearm">MIC RE-ARMING</span> : null}
-          </div>
-        ) : null}
-
-        {!voiceAudiblyOn ? (
-          <p data-testid="host-audio-off" className="alert" role="alert">
-            Host voice is off. Say “voice on” or “test voice” — I will turn it back on.
-          </p>
-        ) : hostSilent && recovery?.kind !== "host-silent" ? (
-          <p data-testid="host-audio-error" className="alert" role="alert">
-            No host audio started. Check the tab mute and the system output device, then say “test
-            voice” — I will retry with the system default voice.
-          </p>
-        ) : null}
-        {turnError && !recovery ? (
-          <p data-testid="turn-error" className="alert" role="alert">
-            {turnError}
-          </p>
-        ) : null}
-        {transcribeFailure ? (
-          <div data-testid="transcribe-failure" className="alert">
-            <p role="alert">
-              {transcribeFailure.plain}{" "}
-              <span data-testid="transcribe-failure-detail">
-                Transcribe failed: {transcribeFailure.detail}
-              </span>
-            </p>
-            {hasLastAudio ? (
-              <button
-                type="button"
-                className="btn"
-                data-testid="retry-transcribe"
-                disabled={recording || transcribing || sending || isLoading}
-                onClick={retryTranscribe}
-              >
-                Retry
-              </button>
-            ) : (
-              <p data-testid="typed-fallback-hint" className="micro">
-                Type the command below to send it without voice.
-              </p>
-            )}
-          </div>
-        ) : null}
-        {notice ? (
-          <p className="deck-notice" role="status" aria-live="polite" data-testid="deck-notice">
-            {notice}
-          </p>
-        ) : null}
-
-        <div className="deck-main">
-          <button
-            type="button"
-            className={`mic-orb${recording ? " is-live" : ""}${convoActive ? " is-convo" : ""}`}
-            data-testid="mic-button"
-            onClick={() => {
-              void toggleRecording();
+          <ControlsPopout
+            convoOn={convoOn}
+            canSend={canSend}
+            soundOn={soundOn}
+            voiceOn={voiceOn}
+            clockLabel={clockLabel}
+            shownTranscript={shownTranscript}
+            onClose={() => setDockOpen(false)}
+            onToggleConvo={() => {
+              const next = !convoOn;
+              setConvoOn(next);
+              if (!next) {
+                turn.dispatch({ type: "CONVO_END" });
+                dropQueuedTurn();
+              }
             }}
-            disabled={!recording && !convoActive && (transcribing || sending || isLoading)}
-            aria-label={micLabel}
-            title={micLabel}
-          >
-            <span className="mic-ring" aria-hidden="true" />
-            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-              <path
-                d="M12 15a4 4 0 0 0 4-4V6a4 4 0 0 0-8 0v5a4 4 0 0 0 4 4Z"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.7"
-              />
-              <path
-                d="M5 11a7 7 0 0 0 14 0M12 18v3"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-              />
-            </svg>
-            <span className="mic-caption">
-              {recording ? "STOP" : convoActive && busy ? "WAIT" : "TALK"}
-            </span>
-          </button>
+            onChipCommand={(command) => void sendToAgent(command)}
+            onToggleSound={() => updateVoiceSettings({ soundOn: !soundOn })}
+            onToggleVoice={() => {
+              if (voiceOn) cancelSpeech();
+              updateVoiceSettings({ voiceOn: !voiceOn });
+            }}
+            selectHostVoice={selectHostVoice}
+            previewHostVoice={previewHostVoice}
+          />
+        ) : null}
 
-          <div className="deck-readout">
-            <CaptionConsole
-              hostText={hostDisplay}
-              heardText={heardText}
-              heardState={heardState}
-              phase={captionState}
-              hostHealth={hostHealth}
-              ack={ack}
-              holdText={showHold ? continuation?.text ?? null : null}
-              summaryBuild={summaryBuild}
-            />
-            <div className="deck-kicker">
-              <span className="deck-mode">{convoActive ? "CONVERSATION" : "PUSH TO TALK"}</span>
-              <span className="deck-hint">SPACE to talk · 1–6 systems</span>
-            </div>
+        <DeckStatus
+          turnPhase={turnPhase}
+          recovery={recovery}
+          rearming={rearming}
+          hostSpeaking={hostSpeaking}
+          elapsed={elapsed}
+          captionState={captionState}
+          flowStatus={flowStatus}
+          settings={settings}
+          voiceAudiblyOn={voiceAudiblyOn}
+          hostSilent={hostSilent}
+          savedNotice={savedNotice}
+          voiceOn={voiceOn}
+          announcement={announcement}
+          turnError={turnError}
+          transcribeFailure={transcribeFailure}
+          hasLastAudio={hasLastAudio}
+          retryDisabled={recording || transcribing || sending || isLoading}
+          retryTranscribe={retryTranscribe}
+          notice={notice}
+        />
 
-            {recording || livePreview ? (
-              <div data-testid="live-voice-panel" className="live-panel">
-                {recording ? (
-                  <div
-                    data-testid="mic-meter"
-                    className="meter"
-                    aria-label={`Microphone level, recording ${recordSeconds} seconds`}
-                  >
-                    {[0.15, 0.35, 0.55, 0.75, 0.95].map((bar) => (
-                      <span key={bar} className={micLevel >= bar ? "is-on" : ""} />
-                    ))}
-                    <span className="meter-time">
-                      ● {recordSeconds}s {micLevel > 0.05 ? "— HEARING YOU" : "— LISTENING"}
-                    </span>
-                  </div>
-                ) : null}
-                {livePreview ? (
-                  <p data-testid="live-preview" className="live-preview">
-                    {livePreview.status === "confirmed"
-                      ? `Confirmed — ${livePreview.label.replace(/…$/, "")}`
-                      : `${livePreview.label}${
-                          livePreview.status === "confirming" ? " · confirming" : " · provisional"
-                        }`}
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="deck-input">
-            <input
-              value={typed}
-              disabled={recording || transcribing || sending || isLoading}
-              onChange={(event) => setTyped(event.target.value)}
-              onKeyDown={async (event) => {
-                if (event.key === "Enter") {
-                  await sendToAgent(typed);
-                  setTyped("");
-                }
-              }}
-              placeholder="Or type a command for the agent"
-              aria-label="Type a command for the agent"
-            />
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={!canSend || !typed.trim()}
-              onClick={async () => {
-                await sendToAgent(typed);
-                setTyped("");
-              }}
-            >
-              {busy ? "WORKING" : "SEND"}
-            </button>
-          </div>
-
-          <div className="deck-tools">
-            <button
-              type="button"
-              className="btn"
-              data-testid="undo-button"
-              disabled={historySize === 0}
-              onClick={() => {
-                undoLast();
-              }}
-            >
-              UNDO
-            </button>
-            <button
-              type="button"
-              className="btn"
-              data-testid="transcript-toggle"
-              aria-expanded={transcriptOpen}
-              onClick={() => setTranscriptVisibility(!transcriptOpen)}
-            >
-              {transcriptOpen ? "HIDE TRANSCRIPT" : "TRANSCRIPT"}
-            </button>
-            <button
-              type="button"
-              className="btn"
-              data-testid="dock-expand"
-              aria-expanded={dockOpen}
-              aria-label="Controls — host voice, sound, quick commands"
-              title="Controls — host voice, sound, quick commands"
-              onClick={toggleControls}
-            >
-              {dockOpen ? "CLOSE" : "CONTROLS"}
-            </button>
-          </div>
-        </div>
+        <DeckMain
+          recording={recording}
+          convoActive={convoActive}
+          micDisabled={!recording && !convoActive && (transcribing || sending || isLoading)}
+          micLabel={micLabel}
+          busy={busy}
+          onToggleRecording={() => {
+            void toggleRecording();
+          }}
+          hostText={hostDisplay}
+          heardText={heardText}
+          heardState={heardState}
+          captionState={captionState}
+          hostHealth={hostHealth}
+          ack={ack}
+          holdText={showHold ? continuation?.text ?? null : null}
+          summaryBuild={summaryBuild}
+          recordSeconds={recordSeconds}
+          micLevel={micLevel}
+          livePreview={livePreview}
+          typed={typed}
+          setTyped={setTyped}
+          inputDisabled={recording || transcribing || sending || isLoading}
+          canSend={canSend}
+          onSendTyped={async () => {
+            await sendToAgent(typed);
+            setTyped("");
+          }}
+          historySize={historySize}
+          onUndo={() => {
+            undoLast();
+          }}
+          transcriptOpen={transcriptOpen}
+          onToggleTranscript={() => setTranscriptVisibility(!transcriptOpen)}
+          dockOpen={dockOpen}
+          toggleControls={toggleControls}
+        />
 
         <p className="deck-legal">
           DEMO ONLY · NOT LEGAL ADVICE · NOT A FILING · NOTHING SUBMITTED · NO EMAIL
@@ -4579,36 +3468,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       </footer>
 
       {transcriptOpen ? (
-        <section
-          className="transcript-panel"
-          data-testid="transcript-panel"
-          aria-label="Full conversation transcript"
-        >
-          <header className="transcript-head">
-            <div>
-              <span className="eyebrow">FULL TRANSCRIPT</span>
-              <h2>Everything said, both sides</h2>
-            </div>
-            <button type="button" className="btn" onClick={() => setTranscriptVisibility(false)}>
-              CLOSE
-            </button>
-          </header>
-          <ol className="transcript-list" data-testid="transcript-list">
-            {log.length === 0 ? (
-              <li className="transcript-empty">Nothing said yet. Say “Enter the Bridge” or “Pick Mars”.</li>
-            ) : (
-              log.map((entry, index) => (
-                <li key={`${entry.at}-${index}`} className={`transcript-entry is-${entry.role}`}>
-                  <span className="transcript-who">{entry.role === "you" ? "YOU" : "HOST"}</span>
-                  <p>{entry.text}</p>
-                </li>
-              ))
-            )}
-          </ol>
-          <p className="transcript-foot">
-            Demo transcript. Nothing here is legal advice, a filing, or a submission.
-          </p>
-        </section>
+        <TranscriptPanel log={log} onClose={() => setTranscriptVisibility(false)} />
       ) : null}
     </main>
   );
@@ -4617,15 +3477,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
 export default function CanvasHost(props: CanvasProps = {}) {
   return (
-    <CopilotKit
+    <CopilotKitProvider
       runtimeUrl="/api/copilotkit"
-      showDevConsole={false}
-      enableInspector={false}
+      agentId="vvb"
       headers={() => ({
         "X-Voice-Turn": activeVoiceTurnRef.current ? "1" : "0",
       })}
     >
       <Canvas {...props} />
-    </CopilotKit>
+    </CopilotKitProvider>
   );
 }

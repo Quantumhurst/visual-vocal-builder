@@ -65,6 +65,10 @@ const OPEN_ENDINGS = new Set([
   "your",
 ]);
 
+// After one of these, a command word is a noun ("the split", "a build",
+// "our call"): the phrase is complete, not waiting for an object.
+const DETERMINERS = new Set(["a", "an", "the", "this", "that", "our", "my", "your", "its", "their"]);
+
 // A bare command verb with no object is still a beginning.
 const OPEN_VERBS = new Set([
   "approve",
@@ -140,18 +144,23 @@ export function looksUnfinishedTranscript(text: string): boolean {
   if (OPEN_ENDINGS.has(tail)) return true;
   // "Pick" / "make" / "build" alone: a verb that still needs its object.
   if (words.length === 1 && OPEN_VERBS.has(tail)) return true;
-  // "I would like to pick": the last word is a transitive verb.
-  if (words.length >= 2 && OPEN_VERBS.has(tail)) return true;
+  // "I would like to pick": the last word is a transitive verb. But
+  // "confirm the split" ends on a noun, not a verb waiting for its object.
+  if (words.length >= 2 && OPEN_VERBS.has(tail) && !DETERMINERS.has(words[words.length - 2])) return true;
 
   return false;
 }
 
 /**
  * Join the held beginning and the new final into one utterance.
- * Trailing pause punctuation is dropped; a doubled seam word is not.
+ * Trailing punctuation on the held half is dropped; a doubled seam word
+ * is not repeated.
  */
 export function mergeContinuation(first: string, second: string): string {
-  const a = stripAsrAnnotations(first).replace(/[,;:\-–—]+$/g, "").trim();
+  // The held half is unfinished by definition, so a trailing period or
+  // ellipsis on it is the recognizer's, not the speaker's ("The planet I
+  // want is." + "Mars" must not read "is. Mars").
+  const a = stripAsrAnnotations(first).replace(/[.…,;:\-–—\s]+$/g, "").trim();
   let b = stripAsrAnnotations(second).trim();
   if (!a) return b;
   if (!b) return a;

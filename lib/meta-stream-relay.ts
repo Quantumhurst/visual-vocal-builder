@@ -7,6 +7,8 @@ export interface StreamRelayOptions {
   silenceIntervalMs?: number;
   silenceThresholdMs?: number;
   maxSessionAgeMs?: number;
+  handshakeTimeoutMs?: number;
+  maxPendingBytes?: number;
   log?: (msg: string, extra?: unknown) => void;
 }
 
@@ -17,6 +19,13 @@ const DEFAULT_SILENCE_INTERVAL_MS = 500;
 const DEFAULT_SILENCE_THRESHOLD_MS = 1200;
 // Re-handshake before Meta's 60-minute limit
 const DEFAULT_MAX_SESSION_AGE_MS = 50 * 60 * 1000;
+// If Meta has not acknowledged the handshake by now, tell the client so it
+// falls back to buffered transcription instead of streaming into a void.
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
+// Audio held while the upstream session is connecting. 10 s of PCM16 at
+// 16 kHz is far more than a handshake takes; past it the oldest audio is
+// dropped so a stalled upstream cannot grow server memory without bound.
+const DEFAULT_MAX_PENDING_BYTES = 16_000 * 2 * 10;
 
 export function handleStreamClient(clientWs: WebSocket, options: StreamRelayOptions = {}) {
   const apiKey = options.apiKey ?? process.env.META_API_KEY;
@@ -24,6 +33,8 @@ export function handleStreamClient(clientWs: WebSocket, options: StreamRelayOpti
   const silenceIntervalMs = options.silenceIntervalMs ?? DEFAULT_SILENCE_INTERVAL_MS;
   const silenceThresholdMs = options.silenceThresholdMs ?? DEFAULT_SILENCE_THRESHOLD_MS;
   const maxSessionAgeMs = options.maxSessionAgeMs ?? DEFAULT_MAX_SESSION_AGE_MS;
+  const handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+  const maxPendingBytes = options.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES;
   const log = options.log ?? ((msg: string, extra?: unknown) => {
     if (process.env.DEBUG_ASR) console.log(`[asr-relay] ${msg}`, extra ?? "");
   });
@@ -38,9 +49,19 @@ export function handleStreamClient(clientWs: WebSocket, options: StreamRelayOpti
   let lastAudioSentTime = Date.now();
   let silenceTimer: NodeJS.Timeout | null = null;
   let rehandshakeTimer: NodeJS.Timeout | null = null;
+  let handshakeTimer: NodeJS.Timeout | null = null;
   let isClosed = false;
   let handshakeAcknowledged = false;
   const pendingBuffer: Buffer[] = [];
+  let pendingBytes = 0;
+
+  function bufferPending(chunk: Buffer) {
+    pendingBuffer.push(chunk);
+    pendingBytes += chunk.length;
+    while (pendingBytes > maxPendingBytes && pendingBuffer.length > 0) {
+      pendingBytes -= pendingBuffer.shift()!.length;
+    }
+  }
 
   function sendToMeta(data: Buffer | string) {
     if (metaWs && metaWs.readyState === WebSocket.OPEN) {
@@ -49,7 +70,7 @@ export function handleStreamClient(clientWs: WebSocket, options: StreamRelayOpti
         lastAudioSentTime = Date.now();
       }
     } else if (typeof data !== "string") {
-      pendingBuffer.push(data);
+      bufferPending(data);
     }
   }
 
@@ -109,9 +130,12 @@ export function handleStreamClient(clientWs: WebSocket, options: StreamRelayOpti
 
         if (msg.sessionId || type === "sessionAck") {
           handshakeAcknowledged = true;
+          if (handshakeTimer) clearTimeout(handshakeTimer);
+          handshakeTimer = null;
           // Flush any audio buffered during connection/handshake
           while (pendingBuffer.length > 0) {
             const chunk = pendingBuffer.shift();
+            if (chunk) pendingBytes -= chunk.length;
             if (chunk && metaWs && metaWs.readyState === WebSocket.OPEN) {
               metaWs.send(chunk);
               lastAudioSentTime = Date.now();
@@ -179,6 +203,16 @@ export function handleStreamClient(clientWs: WebSocket, options: StreamRelayOpti
         }
       });
 
+      if (handshakeTimer) clearTimeout(handshakeTimer);
+      handshakeTimer = setTimeout(() => {
+        if (isClosed || handshakeAcknowledged) return;
+        log("Meta ASR handshake timed out");
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(JSON.stringify({ type: "error", message: "ASR upstream handshake timed out" }));
+          clientWs.close(1011, "Upstream handshake timeout");
+        }
+      }, handshakeTimeoutMs);
+
       // Schedule seamless re-handshake before 60-min session age limit
       if (rehandshakeTimer) clearTimeout(rehandshakeTimer);
       rehandshakeTimer = setTimeout(() => {
@@ -221,6 +255,9 @@ export function handleStreamClient(clientWs: WebSocket, options: StreamRelayOpti
     isClosed = true;
     if (silenceTimer) clearInterval(silenceTimer);
     if (rehandshakeTimer) clearTimeout(rehandshakeTimer);
+    if (handshakeTimer) clearTimeout(handshakeTimer);
+    pendingBuffer.length = 0;
+    pendingBytes = 0;
     if (metaWs) {
       try {
         metaWs.terminate();
@@ -235,6 +272,9 @@ export function handleStreamClient(clientWs: WebSocket, options: StreamRelayOpti
     isClosed = true;
     if (silenceTimer) clearInterval(silenceTimer);
     if (rehandshakeTimer) clearTimeout(rehandshakeTimer);
+    if (handshakeTimer) clearTimeout(handshakeTimer);
+    pendingBuffer.length = 0;
+    pendingBytes = 0;
     if (metaWs) {
       try { metaWs.terminate(); } catch { /* ignore */ }
       metaWs = null;

@@ -71,3 +71,35 @@ test("demo package contains both sections, the company name, and the disclaimer"
   assert.ok(text.includes(FILE_DISCLAIMER));
   assert.match(text, /End of demo package/);
 });
+
+test("planDownload says why when there is nothing to save", async () => {
+  const { planDownload } = await import("../lib/downloads.ts");
+  const empty = { companyName: "Galactic Bagels Inc. (fictional)", lawyerPackage: "" };
+  assert.deepEqual(planDownload("summary", empty, []), { ok: false, line: "No lawyer summary yet. Prepare the summary first." });
+  assert.deepEqual(planDownload("transcript", empty, []), { ok: false, line: "No transcript yet. Say something first." });
+  assert.equal(planDownload("package", empty, []).ok, false);
+});
+
+test("planDownload names each file for the company and fills it", async () => {
+  const { planDownload, downloadedLine } = await import("../lib/downloads.ts");
+  const state = { companyName: "Galactic Bagels Inc. (fictional)", lawyerPackage: "Summary body" };
+  const entries = [{ role: "you", text: "Pick Mars", at: 1 }];
+  const summary = planDownload("summary", state, entries);
+  assert.equal(summary.ok, true);
+  assert.equal(summary.filename, "galactic-bagels-summary.txt");
+  assert.equal(summary.text, "Summary body");
+  const transcript = planDownload("transcript", state, entries);
+  assert.equal(transcript.filename, "galactic-bagels-transcript.txt");
+  assert.match(transcript.text, /Pick Mars/);
+  const pkg = planDownload("package", state, entries);
+  assert.equal(pkg.filename, "galactic-bagels-demo-package.txt");
+  assert.match(pkg.text, /Summary body/);
+  assert.match(pkg.text, /Pick Mars/);
+  assert.equal(downloadedLine(pkg.filename), "Downloaded galactic-bagels-demo-package.txt.");
+});
+
+test("planDownload saves the package when only the transcript exists", async () => {
+  const { planDownload } = await import("../lib/downloads.ts");
+  const plan = planDownload("package", { companyName: "", lawyerPackage: "" }, [{ role: "host", text: "Hello", at: 1 }]);
+  assert.equal(plan.ok, true);
+});

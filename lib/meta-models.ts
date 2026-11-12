@@ -1,3 +1,5 @@
+import { ASR_KEYWORDS } from "./asr-vocabulary.ts";
+
 // Meta Model API model choices — one place, unit-testable.
 //
 // Audit (dev.meta.ai/docs/models, checked 2026-11-02):
@@ -17,48 +19,10 @@
 export const BRAIN_MODEL = "muse-spark-1.3";
 export const ASR_MODEL = "muse-voice-transcribe-1.0";
 
-// Domain vocabulary for ASR keyword biasing (handshake-only; it cannot
-// change mid-session, per the speech-to-text docs). Biasing steers
-// recognition toward these spellings — it does not guarantee them, so
-// the final transcript is still what gets sent to the agent.
-export const ASR_KEYWORDS = [
-  "Mars",
-  "Europa",
-  "Andromeda Galaxy",
-  "Galactic Bagels",
-  "Nova",
-  "Orbit",
-  "Vega",
-  "Lyra",
-  "Orion",
-  "Altair",
-  "Rigel",
-  "owners",
-  "founders",
-  "one owner",
-  "two owners",
-  "three owners",
-  "four owners",
-  "five owners",
-  "three people",
-  "four people",
-  "five people",
-  "confirm",
-  "confirm split",
-  "confirm this split",
-  "confirm the split",
-  "the split",
-  "change",
-  "tick next step",
-  "finish the build",
-  "zero",
-  "none of them",
-  "start over",
-  "undo",
-  "cheapest",
-  "filing steps",
-  "lawyer summary",
-] as const;
+// Domain vocabulary lives in lib/asr-vocabulary.ts (shared with the
+// Gemini transcriber). For Meta it is handshake-only keyword biasing: it
+// cannot change mid-session, per the speech-to-text docs.
+export { ASR_KEYWORDS };
 
 export const ASR_LANGUAGE_BIAS = ["English"] as const;
 

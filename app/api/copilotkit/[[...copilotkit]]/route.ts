@@ -1,120 +1,100 @@
 import {
+  BuiltInAgent,
   CopilotRuntime,
-  OpenAIAdapter,
-  copilotRuntimeNextJSAppRouterEndpoint,
-} from "@copilotkit/runtime";
-import { BuiltInAgent } from "@copilotkit/runtime/v2";
-import OpenAI from "openai";
+  createCopilotRuntimeHandler,
+} from "@copilotkit/runtime/v2";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createOpenAI } from "@ai-sdk/openai";
 import { checkOrigin, clientKey, createRateLimiter } from "../../../../lib/request-guard";
 import { VVB_SYSTEM_PROMPT } from "../../../../lib/agent-prompt";
-import { BRAIN_MODEL } from "../../../../lib/meta-models";
+import { BRAIN_MODEL as GEMINI_BRAIN_MODEL, VOICE_TURN_THINKING_BUDGET } from "../../../../lib/gemini-models";
+import { BRAIN_MODEL as META_BRAIN_MODEL } from "../../../../lib/meta-models";
+import { isOfflineProvider, resolveProvider, type VoiceProvider } from "../../../../lib/provider";
+import { createFakeBrain } from "../../../../lib/fake-provider";
+
+type BrainModel = ReturnType<ReturnType<typeof createGoogleGenerativeAI>>;
 
 const copilotLimiter = createRateLimiter({ limit: 60, windowMs: 60_000 });
 
 function guard(req: Request): Response | null {
-  if (!checkOrigin(req.headers.get("origin"), req.headers.get("host"))) return Response.json({ error: "forbidden origin" }, { status: 403 });
+  // POST runs the model, so it must come from this app's page. GET is
+  // agent discovery only; same-origin GETs may omit Origin.
+  const requireOrigin = req.method !== "GET";
+  if (!checkOrigin(req.headers.get("origin"), req.headers.get("host"), { requireOrigin })) return Response.json({ error: "forbidden origin" }, { status: 403 });
   const rl = copilotLimiter(clientKey(req));
   if (!rl.ok) return Response.json({ error: "rate limited" }, { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } });
   return null;
 }
 
-// Server-only route. The key is read from the server environment and never
-// leaves the server. CopilotKit is the frontend SDK; the brain is Muse Spark
-// via the Meta Model API (OpenAI-compatible surface, baseURL api.meta.ai).
-// The adapter and endpoint are constructed per request, after the key check,
-// so importing this route never throws in a keyless dev boot.
-//
-// Note: the installed 1.81.0 default import path is the v1 SDK, marked
-// deprecated since 1.68.2 in favor of v2. The v1 path is still shipped and
-// typed in the pinned version, and it matches this brief's specified wiring
-// (provider + useCoAgent + frontend actions). A v2 migration is a later
-// decision, not Day 1 scope.
-function buildHandler(isVoiceTurn = false) {
-  const apiKey = process.env.META_API_KEY;
-  if (!apiKey) return null;
-  const wireFetch: typeof fetch = async (url, init) => {
-    try {
-      const parsedBody = init?.body && typeof init.body === "string" ? JSON.parse(init.body) : null;
-      console.log("[META WIRE INSPECT]", JSON.stringify({
-        url: String(url),
-        method: init?.method,
-        isVoiceTurn,
-        reasoning_effort: parsedBody?.reasoning_effort,
-        reasoning: parsedBody?.reasoning,
-        model: parsedBody?.model,
-        hasTools: Boolean(parsedBody?.tools?.length),
-        bodyKeys: parsedBody ? Object.keys(parsedBody) : [],
-      }, null, 2));
-    } catch (e) {
-      console.log("[META WIRE INSPECT ERROR]", e);
-    }
-    return fetch(url, init);
-  };
-  const serviceAdapter = new OpenAIAdapter({
-    openai: new OpenAI({
-      baseURL: "https://api.meta.ai/v1",
-      apiKey,
-      fetch: wireFetch,
-    }),
-    model: BRAIN_MODEL,
-  });
-
-  // For voice turns only, configure reasoning effort to "low".
-  // Using forceReasoning: true ensures the AI SDK treats muse-spark-1.3 as a
-  // reasoning model and transmits reasoning: { effort: "low" } on the wire to
-  // Meta's Responses API instead of dropping it as an unsupported non-reasoning model.
-  const agentConfig = {
-    model: serviceAdapter.getLanguageModel(),
+// The brain for the selected provider (lib/provider.ts):
+// - fake:   the offline test model (lib/fake-provider.ts).
+// - gemini: Gemini Flash via the Google Generative AI API.
+// - meta:   Muse Spark via the Meta Model API (OpenAI-compatible surface,
+//           baseURL api.meta.ai). Voice turns run at low reasoning effort;
+//           forceReasoning makes the AI SDK send that effort on the wire
+//           instead of dropping it for a model it does not know reasons.
+function agentConfigFor(provider: VoiceProvider, apiKey: string, isVoiceTurn: boolean) {
+  if (isOfflineProvider(provider)) {
+    // Offline test mode (lib/fake-provider.ts): one fixed reply, no network.
+    const model: BrainModel = createFakeBrain();
+    return { model, prompt: VVB_SYSTEM_PROMPT };
+  }
+  if (provider === "meta") {
+    const model = createOpenAI({ baseURL: "https://api.meta.ai/v1", apiKey })(META_BRAIN_MODEL);
+    return {
+      model,
+      prompt: VVB_SYSTEM_PROMPT,
+      ...(isVoiceTurn
+        ? { providerOptions: { openai: { reasoningEffort: "low" as const, forceReasoning: true } } }
+        : {}),
+    };
+  }
+  const model = createGoogleGenerativeAI({ apiKey })(GEMINI_BRAIN_MODEL);
+  return {
+    model,
     prompt: VVB_SYSTEM_PROMPT,
     ...(isVoiceTurn
-      ? {
-          providerOptions: {
-            openai: {
-              reasoningEffort: "low" as const,
-              forceReasoning: true,
-            },
-          },
-        }
+      ? { providerOptions: { google: { thinkingConfig: { thinkingBudget: VOICE_TURN_THINKING_BUDGET } } } }
       : {}),
   };
-  // Register the agent the UI binds to (useCoAgent name "vvb") alongside
-  // "default" (useCopilotChat's implicit agent). Both use the same model
-  // construction the runtime itself uses for its auto-created default.
+}
+
+// Server-only route. The key is read from the server environment and never
+// leaves the server. The runtime and its agents are constructed per
+// request, after the key check, so importing this route never throws in a
+// keyless dev boot.
+function buildHandler(isVoiceTurn = false) {
+  const resolved = resolveProvider();
+  if (!resolved.ok) return { error: resolved.error };
+
+  const agentConfig = agentConfigFor(resolved.provider, resolved.apiKey, isVoiceTurn);
+
+  // Register the agent the UI binds to (useAgent agentId "vvb") alongside
+  // "default" (the provider default). Both share the same model
+  // construction and prompt.
   const runtime = new CopilotRuntime({
     agents: {
       default: new BuiltInAgent(agentConfig),
       vvb: new BuiltInAgent(agentConfig),
     },
   });
-  const { handleRequest } = copilotRuntimeNextJSAppRouterEndpoint({
-    runtime,
-    serviceAdapter,
-    endpoint: "/api/copilotkit",
-  });
-  return handleRequest;
+  return { handle: createCopilotRuntimeHandler({ runtime, basePath: "/api/copilotkit" }) };
 }
 
-const KEY_MISSING = () =>
-  Response.json(
-    { error: "META_API_KEY is not configured on the server" },
-    { status: 500 },
-  );
+async function serve(req: Request, isVoiceTurn: boolean) {
+  const blocked = guard(req);
+  if (blocked) return blocked;
+  const built = buildHandler(isVoiceTurn);
+  if (!built.handle) return Response.json({ error: built.error }, { status: 500 });
+  return built.handle(req);
+}
 
 export async function POST(req: Request) {
-  const blocked = guard(req); if (blocked) return blocked;
-  const isVoiceTurn = req.headers.get("x-voice-turn") === "1";
-  const handleRequest = buildHandler(isVoiceTurn);
-  if (!handleRequest) return KEY_MISSING();
-  return handleRequest(req);
+  return serve(req, req.headers.get("x-voice-turn") === "1");
 }
 
-// The 1.81 client probes GET /api/copilotkit/info for agent discovery.
-// This catch-all segment forwards that probe (and every other subpath)
-// to the same runtime handler; the runtime answers discovery via its
-// single-route POST envelope, which the client falls back to on non-2xx.
+// Agent discovery (GET /api/copilotkit/info) and every other subpath of
+// this catch-all segment are served by the same multi-route handler.
 export async function GET(req: Request) {
-  const blocked = guard(req); if (blocked) return blocked;
-  const handleRequest = buildHandler(false);
-  if (!handleRequest) return KEY_MISSING();
-  return handleRequest(req);
+  return serve(req, false);
 }

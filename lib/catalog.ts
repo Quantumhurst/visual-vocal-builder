@@ -25,7 +25,7 @@ export const CATALOG: CatalogEntry[] = [
     component: "JurisdictionTable",
     beat: "jurisdiction",
     stateSlice: "jurisdictions + selectedJurisdiction",
-    drivenBy: "useCoAgent shared state; agent action showJurisdictionComparison",
+    drivenBy: "useAgent shared state; frontend tool showJurisdictionComparison",
     grounding: "lib/demo-data.ts (DEMO fictional places)",
     description:
       "Comparison table of fictional places (Mars, Europa, Andromeda Galaxy). DEMO data on the page and in the data file.",
@@ -36,7 +36,7 @@ export const CATALOG: CatalogEntry[] = [
     beat: "equity",
     stateSlice: "founders + equityNote",
     drivenBy:
-      "useCoAgent shared state; slider drags and the agent action setFounderEquity both call setFounderShare() in lib/equity.ts",
+      "useAgent shared state; slider drags and the frontend tool setFounderEquity both call setFounderShare() in lib/equity.ts",
     grounding: "lib/demo-data.ts DEMO founders; invariant in lib/equity.ts",
     description:
       "Draggable founder equity sliders. Splits always total 100%, enforced in both directions through the one shared-state update path.",
@@ -47,7 +47,7 @@ export const CATALOG: CatalogEntry[] = [
     beat: "checklist",
     stateSlice: "checklist",
     drivenBy:
-      "useCoAgent shared state; clicks and the agent actions setChecklistItem / advanceChecklist share one update path",
+      "useAgent shared state; clicks and the frontend tools setChecklistItem / advanceChecklist share one update path",
     grounding: "orbital-foundry-colony-build-v1 in lib/knowledge.ts (fictional colony steps)",
     description:
       "Guided colony build: five fictional structures, asked one at a time with an explicit spoken yes before each is raised.",
@@ -58,7 +58,7 @@ export const CATALOG: CatalogEntry[] = [
     beat: "name",
     stateSlice: "companyName",
     drivenBy:
-      "useCoAgent shared state; the voice approval and the agent action approveCompanyName share applyCompanyName()",
+      "useAgent shared state; the voice approval and the frontend tool approveCompanyName share applyCompanyName()",
     grounding: "fictional demo name in lib/demo-data.ts; custom names are forced to carry '(fictional)'",
     description:
       "Company-name approval immediately after the home base, before equity and the build. The screen asks for the exact spoken approval; the approved name feeds the lawyer summary.",
@@ -69,7 +69,7 @@ export const CATALOG: CatalogEntry[] = [
     beat: "filingsteps",
     stateSlice: "filingStepsCard",
     drivenBy:
-      "useCoAgent shared state; agent action showFilingSteps looks facts up in the filing-steps pack — unknown ids show no card",
+      "useAgent shared state; frontend tool showFilingSteps looks facts up in the filing-steps pack — unknown ids show no card",
     grounding: "corp-plan-filing-steps-fees-v1 in lib/knowledge.ts",
     description:
       "Grounded filing-steps/fees card. Shows its pack id and fact ids on the card; every fee figure stays DEMO-labeled and fictional.",
@@ -80,7 +80,7 @@ export const CATALOG: CatalogEntry[] = [
     beat: "summary",
     stateSlice: "lawyerPackage",
     drivenBy:
-      "useCoAgent shared state; the Prepare button and the agent action prepareLawyerSummary both call buildLawyerSummary() in lib/lawyer-summary.ts",
+      "useAgent shared state; the Prepare button and the frontend tool prepareLawyerSummary both call buildLawyerSummary() in lib/lawyer-summary.ts",
     grounding: "shared session state (jurisdiction choice, equity split, checklist state)",
     description:
       "Lawyer-summary package display: beat 5's prepared package rendered on the canvas from shared state. Prep only — no send path.",

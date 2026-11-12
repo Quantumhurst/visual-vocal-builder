@@ -4,7 +4,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const canvas = readFileSync(new URL("../components/Canvas.tsx", import.meta.url), "utf8");
+// The brand mark lives in the HUD header component.
+const canvas = readFileSync(new URL("../components/HudHeader.tsx", import.meta.url), "utf8");
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
 
 test("the HUD brand has a contained spin ring", () => {

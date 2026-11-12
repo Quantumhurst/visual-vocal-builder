@@ -13,13 +13,20 @@ function freshDeps(logs, transcript = "hello world") {
 function makeReq(bodyParts, headers = {}) {
   const form = new FormData();
   for (const [k, v] of Object.entries(bodyParts)) form.append(k, v);
-  return new Request("http://localhost:3000/api/transcribe", { method: "POST", body: form, headers: { host: "localhost:3000", ...headers } });
+  return new Request("http://localhost:3000/api/transcribe", { method: "POST", body: form, headers: { host: "localhost:3000", origin: "http://localhost:3000", ...headers } });
 }
 
 test("403 bad origin", async () => {
   const logs = [];
   const req = makeReq({ audio: new Blob([new Uint8Array([0,0])]) }, { origin: "https://evil.example" });
   const res = await handleTranscribe(req, freshDeps(logs));
+  assert.equal(res.status, 403);
+});
+test("403 when a POST carries no Origin (a script, not the page)", async () => {
+  const form = new FormData();
+  form.append("audio", new Blob([new Uint8Array([0, 0])]));
+  const req = new Request("http://localhost:3000/api/transcribe", { method: "POST", body: form, headers: { host: "localhost:3000" } });
+  const res = await handleTranscribe(req, freshDeps([]));
   assert.equal(res.status, 403);
 });
 test("429 over limit", async () => {
@@ -52,4 +59,16 @@ test("200 with stubbed transcribe, no transcript text in log", async () => {
   assert.equal(JSON.stringify(logs).includes("SECRET_TRANSCRIPT_TEXT"), false);
   assert.deepEqual(Object.keys(logs[0]).sort(), ["audioBytes", "transcriptLength"]);
   assert.equal(logs[0].transcriptLength, "SECRET_TRANSCRIPT_TEXT".length);
+});
+
+test("502 hides upstream detail from the browser and logs it on the server", async () => {
+  const errors = [];
+  const res = await handleTranscribe(makeReq({ audio: new Blob([new Uint8Array([0,0,1,0])]) }), {
+    transcribe: async () => { throw new Error("upstream body with SECRET_DETAIL"); },
+    log: () => {},
+    logError: (m) => errors.push(m),
+  });
+  assert.equal(res.status, 502);
+  assert.deepEqual(await res.json(), { error: "transcription failed" });
+  assert.equal(errors.length, 1);
 });

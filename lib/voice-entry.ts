@@ -27,8 +27,8 @@ export function parseEntryIntent(text: string): EntryIntent {
     return { mode: "resume", phrase: "resume" };
   }
   if (
-    /\b(?:enter|open|cross|board)\b.*\b(?:bridge|door|ship|foundry)\b/.test(t) ||
-    /\b(?:bridge|door)\b.*\b(?:enter|open|please)\b/.test(t)
+    /\b(?:enter|open|cross|board|into|in|access|go\s+to)\b.*\b(?:bridge|door|ship|foundry)\b/.test(t) ||
+    /\b(?:bridge|door)\b.*\b(?:enter|open|please|in)\b/.test(t)
   ) {
     return { mode: "resume", phrase: "enter the bridge" };
   }

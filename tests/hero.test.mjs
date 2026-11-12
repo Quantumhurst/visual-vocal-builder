@@ -53,7 +53,7 @@ test("unmount destroys the Pixi app (idempotent, ticker stopped)", () => {
   const src = readFileSync(new URL("../components/GalaxyHero.tsx", import.meta.url), "utf8");
   assert.match(src, /app\.ticker\.stop\(\)/);
   assert.match(src, /app\.destroy\(true/);
-  const canvasSrc = readFileSync(new URL("../components/Canvas.tsx", import.meta.url), "utf8");
+  const canvasSrc = readFileSync(new URL("../components/ShipViewport.tsx", import.meta.url), "utf8");
   assert.match(canvasSrc, /dynamic\(.*GalaxyHero.*ssr: false/s);
   const lifecycle = createHeroLifecycle();
   let calls = 0;
