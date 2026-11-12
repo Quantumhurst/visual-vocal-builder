@@ -19,6 +19,7 @@ import { useNeuralPlayback } from "./hooks/useNeuralPlayback";
 import { useSoundCues } from "./hooks/useSoundCues";
 import { useHostSpeech } from "./hooks/useHostSpeech";
 import { useTurnStore } from "./hooks/useTurnStore";
+import { useMicCapture, type MicBlock } from "./hooks/useMicCapture";
 import { canRearm, isBusy, micHot } from "../lib/turn-machine";
 import HudHeader from "./HudHeader";
 import MissionObjective from "./MissionObjective";
@@ -84,12 +85,12 @@ import {
   shouldTriggerNoSpeech,
   shouldCapUtterance,
 } from "../lib/voice-reliability";
-import { loadPcmWorklet, micFailureNotice } from "../lib/mic";
+import { micFailureNotice } from "../lib/mic";
 import { isCompanyNameQuestion, companyNameReply, isNameApproval, isNameCancel } from "../lib/checklist-answers";
 import { turnResultSignature } from "../lib/scroll";
 import confetti from "canvas-confetti";
 import { MAX_PCM_BYTES } from "../lib/request-guard";
-import { parseLiveIntent, rmsLevel, nextVoiceActivity, shouldAutoStop, autoStopSilence, IDLE_ACTIVITY, MIN_SPEECH_MS, type LiveIntent, type VoiceActivity } from "../lib/live-intent";
+import { parseLiveIntent, nextVoiceActivity, shouldAutoStop, autoStopSilence, IDLE_ACTIVITY, MIN_SPEECH_MS, type LiveIntent, type VoiceActivity } from "../lib/live-intent";
 import { queueTurn, flushQueuedTurn, QUEUED_TURN_NOTICE } from "../lib/turn-queue";
 import { AnnouncementBudget } from "../lib/announcements";
 import { cueForChange, type CueName } from "../lib/sound-cues";
@@ -257,22 +258,15 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const [micLevel, setMicLevel] = useState(0);
   const [recordSeconds, setRecordSeconds] = useState(0);
   const lastAudioRef = useRef<ArrayBuffer | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const chunksRef = useRef<Float32Array[]>([]);
   const finishingRef = useRef(false);
   const messageIdRef = useRef(0);
   const activityRef = useRef<VoiceActivity>(IDLE_ACTIVITY);
-  const levelRef = useRef(0);
   const previewKeyRef = useRef<string | null>(null);
   const committedKeyRef = useRef<string | null>(null);
   const webSpeechFailedRef = useRef(false);
   const recognitionRef = useRef<{ stop: () => void; onresult: unknown; onerror: unknown; onend: unknown } | null>(null);
   const liveTranscriptRef = useRef("");
   const confirmationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const peakLevelRef = useRef(0);
   const listeningStallShownRef = useRef(false);
   const noSpeechAttemptsRef = useRef(0);
   const asrSocketRef = useRef<WebSocket | null>(null);
@@ -571,7 +565,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const lastSpokenRef = useRef("");
   const lastHostLineRef = useRef("");
   const eventsRef = useRef<string[]>([]);
-  const audioStatsRef = useRef({ blocks: 0, hostDropped: 0, listeningDropped: 0 });
   function logEvent(line: string) {
     eventsRef.current.push(`${Math.round(performance.now())} ${line}`);
     if (eventsRef.current.length > 300) eventsRef.current.shift();
@@ -597,6 +590,13 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     onCancel: clearRearmTimer,
   });
   const hostSilent = host.hostSilent;
+  // The microphone hardware (components/hooks/useMicCapture.ts).
+  const mic = useMicCapture({
+    isListening: () => isTurnListeningRef.current,
+    isHostAudible: () => turn.get().hostSpeaking || speechQueue.isSpeaking(),
+    streamSocket: () => asrSocketRef.current,
+    onBlock: onMicBlock,
+  });
   const prevDoneCountRef = useRef(-1);
   // Voice pre-warm: cache the picked system voice, re-pick once when
   // the browser finishes loading voices, preload on first gesture.
@@ -2225,30 +2225,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
     asrSocketRef.current = null;
     streamingReadyRef.current = false;
-    try {
-      workletNodeRef.current?.disconnect();
-    } catch {
-      // ignore
-    }
-    try {
-      if (workletNodeRef.current) workletNodeRef.current.port.onmessage = null;
-    } catch {
-      // ignore
-    }
-    workletNodeRef.current = null;
-    try {
-      sourceNodeRef.current?.disconnect();
-    } catch {
-      // ignore
-    }
-    sourceNodeRef.current = null;
-    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-    mediaStreamRef.current = null;
-    const ctx = audioContextRef.current;
-    audioContextRef.current = null;
-    if (ctx && ctx.state !== "closed") {
-      void ctx.close().catch(() => undefined);
-    }
+    mic.stop();
   }
 
   async function fetchTranscript(buf: ArrayBuffer): Promise<string> {
@@ -2378,14 +2355,14 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   useEffect(() => {
     if (!recording) return;
     const meter = setInterval(() => {
-      setMicLevel(Math.min(1, levelRef.current * 3.5));
+      setMicLevel(Math.min(1, mic.level() * 3.5));
     }, 200);
     const clock = setInterval(() => setRecordSeconds((s) => s + 1), 1000);
     return () => {
       clearInterval(meter);
       clearInterval(clock);
     };
-  }, [recording]);
+  }, [recording, mic]);
 
   // A long turn with audible speech but no transcript is a visible
   // recovery, not an endless LISTENING screen. The mic is left open: a
@@ -2400,7 +2377,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       isListeningStall({
         recording: true,
         hasTranscript: Boolean(liveTranscript),
-        heardAudio: peakLevelRef.current > 0.02,
+        heardAudio: mic.peak() > 0.02,
         listenedMs: recordSeconds * 1000,
       })
     ) {
@@ -2454,10 +2431,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // through the reliable batch endpoint instead of dropping the turn.
   // Returns true when the turn was sent (even if the transcript is empty).
   async function sendBufferedChunks(): Promise<boolean> {
-    const chunks = chunksRef.current;
-    chunksRef.current = [];
+    const { chunks, rate: inputRate } = mic.takeBuffered();
     if (chunks.length === 0) return false;
-    const inputRate = audioContextRef.current?.sampleRate ?? 0;
     if (!inputRate || inputRate <= 0) return false;
     const samples = concatFloat32(chunks);
     if (samples.length === 0) return false;
@@ -2510,7 +2485,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     // Meta: the recogniser is only a preview; Meta's transcript decides.
     const recognized = providerRef.current.provider === "meta" ? "" : liveTranscriptRef.current.trim();
     if (recognized) {
-      chunksRef.current = [];
+      mic.discardBuffered();
       stampTiming("finalTranscript");
       try {
         const text = holdOrMerge(recognized);
@@ -2521,10 +2496,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       return;
     }
 
-    const ctx = audioContextRef.current;
-    const inputRate = ctx?.sampleRate ?? 0;
-    const chunks = chunksRef.current;
-    chunksRef.current = [];
+    const { chunks, rate: inputRate } = mic.takeBuffered();
     try {
       if (!inputRate || inputRate <= 0) {
         setTranscribeFailure(makeTranscribeFailure("microphone capture failed (no audio context)"));
@@ -2550,7 +2522,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       lastAudioRef.current = buf;
       setHasLastAudio(true);
       console.info(
-        `[vvb-timing] turn ended, peak RMS: ${peakLevelRef.current.toFixed(4)}, speechMs: ${activityRef.current.speechMs.toFixed(0)}ms`,
+        `[vvb-timing] turn ended, peak RMS: ${mic.peak().toFixed(4)}, speechMs: ${activityRef.current.speechMs.toFixed(0)}ms`,
       );
       await transcribeAndSend(buf);
     } finally {
@@ -2660,125 +2632,55 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     await startRecording();
   }
 
-  async function ensureAudioPipeline() {
-    if (audioContextRef.current && mediaStreamRef.current && workletNodeRef.current) {
-      if (audioContextRef.current.state === "suspended") {
-        await audioContextRef.current.resume();
-      }
+  // The turn's decisions for each captured block (components/hooks/
+  // useMicCapture.ts owns the hardware): no-speech, the length cap, the
+  // streaming watchdog, and local end-of-speech.
+  function onMicBlock({ level, now, blockMs }: MicBlock) {
+    endpointerRef.current?.onAudioRms(level, now);
+    const listened = now - (turnTimingRef.current.micStart ?? now);
+
+    // Guard 1: No speech detected after 8s -> close quietly, say "Didn't hear anything — say it again", re-arm once
+    if (shouldTriggerNoSpeech(activityRef.current.hasSpoken, listened)) {
+      void handleNoSpeechTimeout();
       return;
     }
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-    });
-    mediaStreamRef.current = stream;
-    let ctx: AudioContext;
-    try {
-      ctx = new AudioContext({ sampleRate: 16000 });
-    } catch {
-      ctx = new AudioContext();
+
+    // Guard 2: Max utterance length (15s cap) -> force finish recording
+    if (shouldCapUtterance(listened)) {
+      void finishRecording();
+      return;
     }
-    audioContextRef.current = ctx;
-    await loadPcmWorklet((url) => ctx.audioWorklet.addModule(url));
-    const node = new AudioWorkletNode(ctx, "pcm-capture");
-    workletNodeRef.current = node;
 
-    node.port.onmessage = (event: MessageEvent) => {
-      const block = event.data as Float32Array;
-      if (!block || block.length === 0) return;
-      if (!isTurnListeningRef.current) {
-        audioStatsRef.current.listeningDropped += 1;
-        return;
-      }
-      // Mic gated during host playback to eliminate acoustic self-echo
-      if (turn.get().hostSpeaking || speechQueue.isSpeaking()) {
-        audioStatsRef.current.hostDropped += 1;
-        return;
-      }
-      audioStatsRef.current.blocks += 1;
+    // Guard 3 (streaming watchdog): the user spoke, the mic is quiet,
+    // and Meta has not reported a turn for several seconds. Do not wait
+    // forever or drop the turn: transcribe the buffered audio instead.
+    if (
+      streamingReadyRef.current &&
+      activityRef.current.hasSpoken &&
+      activityRef.current.lastSpeechAt !== null &&
+      now - activityRef.current.lastSpeechAt > 1800 &&
+      now - asrLastEventAtRef.current > 3800
+    ) {
+      logEvent("streaming watchdog → buffered fallback");
+      void finishRecording();
+      return;
+    }
 
-      chunksRef.current.push(block);
-      const rate = audioContextRef.current?.sampleRate ?? 0;
+    activityRef.current = nextVoiceActivity(activityRef.current, level, now, blockMs);
 
-      // Stream binary PCM16 over WebSocket to Meta ASR relay if connected
-      if (asrSocketRef.current && asrSocketRef.current.readyState === WebSocket.OPEN) {
-        let pcm: Int16Array;
-        if (rate === 16000) {
-          pcm = new Int16Array(block.length);
-          for (let i = 0; i < block.length; i++) {
-            const s = Math.max(-1, Math.min(1, block[i]));
-            pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-          }
-        } else if (rate > 0) {
-          pcm = toPcm16k(block, rate);
-        } else {
-          pcm = new Int16Array(0);
-        }
-        if (pcm.length > 0) {
-          asrSocketRef.current.send(pcm.buffer);
-        }
-      }
-
-      const level = rmsLevel(block);
-      levelRef.current = level;
-      peakLevelRef.current = Math.max(peakLevelRef.current, level);
-      const now = performance.now();
-      endpointerRef.current?.onAudioRms(level, now);
-      const listened = now - (turnTimingRef.current.micStart ?? now);
-
-      // Guard 1: No speech detected after 8s -> close quietly, say "Didn't hear anything — say it again", re-arm once
-      if (shouldTriggerNoSpeech(activityRef.current.hasSpoken, listened)) {
-        void handleNoSpeechTimeout();
-        return;
-      }
-
-      // Guard 2: Max utterance length (15s cap) -> force finish recording
-      if (shouldCapUtterance(listened)) {
+    // Demote client RMS/silence gate:
+    // When streaming ASR is active, Meta endpointing is the authority for turn end.
+    // If streaming is not active, fall back to local auto-stop.
+    if (!streamingReadyRef.current) {
+      const silence = autoStopSilence(settingsRef.current.slowMode, intentMatchedRef.current);
+      if (shouldAutoStop(activityRef.current, now, silence)) {
         void finishRecording();
         return;
       }
+    }
 
-      // Guard 3 (streaming watchdog): the user spoke, the mic is quiet,
-      // and Meta has not reported a turn for several seconds. Do not wait
-      // forever or drop the turn: transcribe the buffered audio instead.
-      if (
-        streamingReadyRef.current &&
-        activityRef.current.hasSpoken &&
-        activityRef.current.lastSpeechAt !== null &&
-        now - activityRef.current.lastSpeechAt > 1800 &&
-        now - asrLastEventAtRef.current > 3800
-      ) {
-        logEvent("streaming watchdog → buffered fallback");
-        void finishRecording();
-        return;
-      }
-
-      activityRef.current = nextVoiceActivity(activityRef.current, level, now, rate > 0 ? (block.length / rate) * 1000 : 0);
-
-      // Demote client RMS/silence gate:
-      // When streaming ASR is active, Meta endpointing is the authority for turn end.
-      // If streaming is not active, fall back to local auto-stop.
-      if (!streamingReadyRef.current) {
-        const silence = autoStopSilence(settingsRef.current.slowMode, intentMatchedRef.current);
-        if (shouldAutoStop(activityRef.current, now, silence)) {
-          void finishRecording();
-          return;
-        }
-      }
-
-      if (rate > 0) {
-        const total = chunksRef.current.reduce((s, c) => s + c.length, 0);
-        const estBytes = Math.round(total / (rate / 16000)) * 2;
-        if (estBytes > MAX_PCM_BYTES) {
-          void finishRecording();
-        }
-      }
-    };
-
-    const source = ctx.createMediaStreamSource(stream);
-    sourceNodeRef.current = source;
-    source.connect(node);
-    if (ctx.state === "suspended") {
-      await ctx.resume();
+    if (mic.bufferedPcmBytes() > MAX_PCM_BYTES) {
+      void finishRecording();
     }
   }
 
@@ -2792,7 +2694,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   }
 
   async function openMic() {
-    audioStatsRef.current = { blocks: 0, hostDropped: 0, listeningDropped: 0 };
+    mic.resetTurn();
     asrLastEventAtRef.current = performance.now();
     bufferedFallbackTurnRef.current = null;
     logEvent(`startRecording streaming=${streamingReadyRef.current} socket=${asrSocketRef.current?.readyState ?? -1}`);
@@ -2811,8 +2713,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     lastAudioRef.current = null;
     setHasLastAudio(false);
     activityRef.current = IDLE_ACTIVITY;
-    levelRef.current = 0;
-    peakLevelRef.current = 0;
     previewKeyRef.current = null;
     committedKeyRef.current = null;
     intentMatchedRef.current = false;
@@ -2821,11 +2721,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     setLivePreview(null);
     setMicLevel(0);
     setRecordSeconds(0);
-    chunksRef.current = [];
     finishingRef.current = false;
 
     try {
-      await ensureAudioPipeline();
+      await mic.ensure();
       if (settingsRef.current.slowMode) {
         // Slow mode: the local, generous silence window is the authority.
         // No streaming socket, so Meta cannot end the turn on a short pause.
@@ -3086,7 +2985,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       getSettings: () => ({ ...settingsRef.current }),
       getLastSpoken: () => lastHostLineRef.current,
       getEvents: () => [...eventsRef.current],
-      getAudioStats: () => ({ ...audioStatsRef.current }),
+      getAudioStats: () => mic.stats(),
       getHostAudio: () => host.stats(),
       getAsrState: () => ({
         ready: streamingReadyRef.current,
