@@ -19,6 +19,7 @@ import { useNeuralPlayback } from "./hooks/useNeuralPlayback";
 import { useSoundCues } from "./hooks/useSoundCues";
 import { useHostSpeech } from "./hooks/useHostSpeech";
 import { useTurnStore } from "./hooks/useTurnStore";
+import { canRearm, isBusy, micHot } from "../lib/turn-machine";
 import HudHeader from "./HudHeader";
 import MissionObjective from "./MissionObjective";
 import ShipViewport from "./ShipViewport";
@@ -215,7 +216,19 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   function stopGeneration() {
     agent?.abortRun();
   }
-  const [recording, setRecording] = useState(false);
+  // The conversation turn (lib/turn-machine.ts). turn.get() is the
+  // synchronous truth for timers and audio callbacks; turnState renders.
+  const { store: turn, state: turnState } = useTurnStore();
+  // Capturing (the pipeline is live), not merely requested.
+  const recording = turnState.mic === "open";
+  // True while the host voice is actually speaking. The mic stays closed
+  // during this window, and the deck says so instead of claiming LIVE.
+  const hostSpeaking = turnState.hostSpeaking;
+  // True during the gap between a host line ending (or a recovery) and the
+  // mic reopening. The caption says MIC RE-ARMING instead of pretending LIVE.
+  const rearming = turnState.rearm !== "none";
+  // Conversation auto-listen: the mic re-opens by itself after each turn.
+  const convoActive = turnState.convo;
   const [typed, setTyped] = useState("");
   const [notice, setNotice] = useState("");
   const [sending, setSending] = useState(false);
@@ -255,7 +268,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const levelRef = useRef(0);
   const previewKeyRef = useRef<string | null>(null);
   const committedKeyRef = useRef<string | null>(null);
-  const recordingRef = useRef(false);
   const webSpeechFailedRef = useRef(false);
   const recognitionRef = useRef<{ stop: () => void; onresult: unknown; onerror: unknown; onend: unknown } | null>(null);
   const liveTranscriptRef = useRef("");
@@ -333,9 +345,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const [recovery, setRecovery] = useState<RecoveryNotice | null>(null);
   const recoveryTrackerRef = useRef(new RecoveryTracker());
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // True during the short gap between a host line ending and the mic
-  // reopening. The caption says MIC RE-ARMING instead of pretending LIVE.
-  const [rearming, setRearming] = useState(false);
   // A clearly unfinished final ("I would like to pick …") is held here
   // and merged with the next final instead of being sent as a command.
   const [continuation, setContinuation] = useState<{ text: string } | null>(null);
@@ -392,6 +401,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       clearTimeout(recoveryTimerRef.current);
       recoveryTimerRef.current = null;
     }
+    turn.dispatch({ type: "RECOVERY_CLEAR" });
   }
 
   function surfaceRecovery(kind: Parameters<typeof recoveryNotice>[0], detail = "") {
@@ -400,14 +410,17 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (decision.escalate) {
       setNotice("Voice keeps dropping — the mic stays open. Say “help” if you want the control list.");
     }
-    if (!decision.rearm || !convoRef.current) return;
-    setRearming(true);
+    turn.dispatch({ type: "RECOVERY", kind, rearm: decision.rearm });
+    if (turn.get().rearm !== "recovery") return;
     if (recoveryTimerRef.current !== null) clearTimeout(recoveryTimerRef.current);
     recoveryTimerRef.current = setTimeout(() => {
       recoveryTimerRef.current = null;
-      setRearming(false);
-      if (!convoRef.current || recordingRef.current || busyRef.current || turn.get().hostSpeaking) return;
-      void startRecording();
+      // The machine applies the recovery rule (lib/turn-machine.ts
+      // canRecoveryRearm): conversation on, mic closed, nothing in
+      // flight, host quiet. It does not wait on the error it recovers.
+      const before = turn.get();
+      const after = turn.dispatch({ type: "REARM_FIRE", via: "recovery" });
+      if (before.mic === "closed" && after.mic === "opening") void openMic();
     }, RECOVERY_REARM_MS);
   }
 
@@ -465,18 +478,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     return decision.text;
   }
 
-  // The conversation turn (lib/turn-machine.ts). turn.get() is the
-  // synchronous truth for timers and audio callbacks; turnState renders.
-  const { store: turn, state: turnState } = useTurnStore();
-  // True while the host voice is actually speaking. The mic stays closed
-  // during this window, and the deck says so instead of claiming LIVE.
-  const hostSpeaking = turnState.hostSpeaking;
   // Continuous conversation (OpenClaw pattern): talk, agent answers
   // out loud, mic re-opens by itself. On by default; a manual Stop
   // ends it. The full control set lives in a pop-out, not the bar.
   const [convoOn, setConvoOn] = useState(true);
-  const [convoActive, setConvoActive] = useState(false);
-  const convoRef = useRef(false);
   const [dockOpen, setDockOpen] = useState(false);
   // Game shell: which system panel is open, which viewport is up, and a
   // light mission clock. These are presentation state only — every fact
@@ -596,8 +601,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // Voice pre-warm: cache the picked system voice, re-pick once when
   // the browser finishes loading voices, preload on first gesture.
   const rearmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const busyRef = useRef(false);
-  const turnErrorRef = useRef(false);
   // Single-slot pending turn: a command sent while the agent is busy is
   // parked here (latest wins) and flushed once when idle — never silently
   // dropped, never double-sent, never sent after the conversation ends.
@@ -671,6 +674,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       clearTimeout(rearmTimerRef.current);
       rearmTimerRef.current = null;
     }
+    if (turn.get().rearm === "pending") turn.dispatch({ type: "REARM_CANCEL" });
   }
 
   function cancelSpeech() {
@@ -683,22 +687,24 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // line caused the 4-owner confirm loop. A cancelled utterance never
   // re-arms: cancelSpeech always runs first and marks it.
   function requestRearm() {
-    if (!convoRef.current) return;
-    if (recordingRef.current) return;
-    if (busyRef.current || turnErrorRef.current) return;
-    if (turn.get().hostSpeaking || speechQueue.isSpeaking()) return;
-    clearRearmTimer();
-    setRearming(true);
+    // The machine owns the rule (lib/turn-machine.ts canRearm). The speech
+    // queue is checked here too: it can still be draining after the host
+    // flag drops.
+    if (!canRearm(turn.get()) || speechQueue.isSpeaking()) return;
+    if (rearmTimerRef.current !== null) clearTimeout(rearmTimerRef.current);
+    turn.dispatch({ type: "REARM_REQUEST" });
     rearmTimerRef.current = setTimeout(() => {
       rearmTimerRef.current = null;
-      if (!convoRef.current) { setRearming(false); return; }
-      if (recordingRef.current) { setRearming(false); return; }
-      if (busyRef.current || turnErrorRef.current) { setRearming(false); return; }
-      if (turn.get().hostSpeaking || speechQueue.isSpeaking()) { setRearming(false); return; }
-      setRearming(false);
+      if (speechQueue.isSpeaking()) {
+        if (turn.get().rearm === "pending") turn.dispatch({ type: "REARM_CANCEL" });
+        return;
+      }
+      const before = turn.get();
+      const after = turn.dispatch({ type: "REARM_FIRE", via: "pending" });
+      if (before.mic !== "closed" || after.mic !== "opening") return;
       stampTiming("rearm");
       console.info(`[vvb-timing] rearm ${summarizeTimings(turnTimingRef.current)}`);
-      void startRecording();
+      void openMic();
     }, 420);
   }
 
@@ -1047,7 +1053,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       // should finish and advance immediately in ~350ms (or 150ms on final), not wait 16+ seconds.
       clearConfirmationTimer();
       confirmationTimerRef.current = setTimeout(() => {
-        if (recordingRef.current && !finishingRef.current) {
+        if (micHot(turn.get()) && !finishingRef.current) {
           if (streamingReadyRef.current && endpointerRef.current) {
             endpointerRef.current.forceFastCommitNow(trimmed);
           } else {
@@ -1065,7 +1071,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       setLivePreview({ key: "approve-name", label: "Approving Galactic Bagels Inc. (fictional)…", status: "live" });
       if (isFinal) {
         setTimeout(() => {
-          if (recordingRef.current && !finishingRef.current) void finishRecording();
+          if (micHot(turn.get()) && !finishingRef.current) void finishRecording();
         }, 150);
       }
       return;
@@ -1076,7 +1082,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       setLivePreview({ key: "company-name-q", label: "Fictional company: Galactic Bagels Inc. (fictional)", status: "live" });
       if (isFinal) {
         setTimeout(() => {
-          if (recordingRef.current && !finishingRef.current) void finishRecording();
+          if (micHot(turn.get()) && !finishingRef.current) void finishRecording();
         }, 150);
       }
       return;
@@ -1089,7 +1095,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       intentMatchedRef.current = true;
       if (isFinal) {
         setTimeout(() => {
-          if (recordingRef.current && !finishingRef.current) void finishRecording();
+          if (micHot(turn.get()) && !finishingRef.current) void finishRecording();
         }, 150);
       }
     }
@@ -1271,8 +1277,8 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   function speakSummaryWhenFree(token: number) {
     if (token !== summaryBuildTokenRef.current) return;
     const busyNow =
-      recordingRef.current ||
-      busyRef.current ||
+      micHot(turn.get()) ||
+      isBusy(turn.get()) ||
       turn.get().hostSpeaking ||
       speechQueue.isSpeaking();
     if (busyNow) {
@@ -1573,25 +1579,24 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         setLocalHost(line);
         lastHostLineRef.current = spokenHostText(line);
         appendLog("host", spokenHostText(line));
-        if (convoRef.current && !recordingRef.current) {
+        if (turn.get().convo && !micHot(turn.get())) {
           setTimeout(() => {
-            if (convoRef.current && !recordingRef.current) void startRecording();
+            if (turn.get().convo && !micHot(turn.get())) void startRecording();
           }, 260);
         }
         return true;
       }
       case "continue": {
-        convoRef.current = true;
-        setConvoActive(true);
+        turn.dispatch({ type: "CONVO_START" });
         setNotice("");
         clearHeldUtterance();
         const line = nextObjectiveHostLine(withDefaults(stateRef.current));
         setLocalHost(line);
         if (voiceOn) {
           speakNative(line, () => {
-            if (convoRef.current && !recordingRef.current) void startRecording();
+            if (turn.get().convo && !micHot(turn.get())) void startRecording();
           });
-        } else if (!recordingRef.current) {
+        } else if (!micHot(turn.get())) {
           void startRecording();
         }
         return true;
@@ -1735,7 +1740,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     // Always-available voice controls run before the busy gate and before
     // any journey handling, so help, repeat, stop, slower, and start over
     // are understood in every state.
-    logEvent(`sendToAgent ${JSON.stringify(trimmed)} phase=${recordingRef.current ? "rec" : "idle"}`);
+    logEvent(`sendToAgent ${JSON.stringify(trimmed)} phase=${micHot(turn.get()) ? "rec" : "idle"}`);
     const control = parseVoiceControl(trimmed);
     if (control) {
       logEvent(`control ${control.kind}`);
@@ -1753,7 +1758,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     // Busy lane: park one turn (latest wins) with a visible notice instead
     // of the old silent drop. The flush effect below sends it once idle.
     if (sending || isLoading) {
-      queuedTurnRef.current = queueTurn(queuedTurnRef.current, trimmed, convoRef.current);
+      queuedTurnRef.current = queueTurn(queuedTurnRef.current, trimmed, turn.get().convo);
       setNotice(QUEUED_TURN_NOTICE);
       return;
     }
@@ -2138,7 +2143,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         logEvent("asr socket closed");
         // A live socket that drops mid-turn is a recovery event, not a
         // console line. The buffered fallback carries the audio.
-        if (wasReady && convoRef.current && recordingRef.current && !finishingRef.current) {
+        if (wasReady && turn.get().convo && micHot(turn.get()) && !finishingRef.current) {
           surfaceRecovery("stream-lost");
         }
       };
@@ -2165,11 +2170,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
     completedStreamingTurnRef.current = turnId;
     finishingRef.current = true;
-    recordingRef.current = false;
+    turn.dispatch({ type: "MIC_CLOSED" });
     isTurnListeningRef.current = false;
     stopWebSpeech();
     setMicLevel(0);
-    setRecording(false);
     stampTiming("finalTranscript");
 
     const trimmed = (transcript ?? "").trim();
@@ -2320,7 +2324,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
             ? intentMatchedRef.current || (equityConfirmRef.current && isConfirmationAnswer(liveTranscriptRef.current))
             : liveTranscriptRef.current.trim().length > 0;
         if (
-          recordingRef.current &&
+          micHot(turn.get()) &&
           !finishingRef.current &&
           turnReady
         ) {
@@ -2329,9 +2333,9 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         }
         // Chrome ends recognition after a pause; re-arm while the mic
         // is still hot so a second sentence is heard too.
-        if (recordingRef.current && !webSpeechFailedRef.current) {
+        if (micHot(turn.get()) && !webSpeechFailedRef.current) {
           setTimeout(() => {
-            if (recordingRef.current) startWebSpeech();
+            if (micHot(turn.get())) startWebSpeech();
           }, 250);
         }
       };
@@ -2478,11 +2482,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         finishingRef.current = false;
         return;
       }
-      recordingRef.current = false;
+      turn.dispatch({ type: "MIC_CLOSED" });
       isTurnListeningRef.current = false;
       stopWebSpeech();
       setMicLevel(0);
-      setRecording(false);
       // Streaming never delivered this turn. Keep the audio usable: send
       // the buffered utterance through the batch recogniser. Tombstone the
       // streamed turn so a late Meta final cannot run the command twice.
@@ -2496,11 +2499,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       return;
     }
 
-    recordingRef.current = false;
+    turn.dispatch({ type: "MIC_CLOSED" });
     isTurnListeningRef.current = false;
     stopWebSpeech();
     setMicLevel(0);
-    setRecording(false);
 
     // Gemini: the browser recogniser already has the words, so the turn
     // goes straight to the brain with no transcription round trip. With no
@@ -2564,11 +2566,10 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (summaryBuildRef.current || summarySpeakTimerRef.current || turn.get().hostSpeaking) return;
     if (finishingRef.current) return;
     finishingRef.current = true;
-    recordingRef.current = false;
+    turn.dispatch({ type: "MIC_CLOSED" });
     isTurnListeningRef.current = false;
     stopWebSpeech();
     setMicLevel(0);
-    setRecording(false);
     // If the user did speak but streaming never reported a turn, the
     // buffered audio still holds the utterance. Transcribe it rather
     // than claiming silence.
@@ -2623,26 +2624,23 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   async function toggleRecording() {
     if (recording) {
       // A manual stop ends the conversation, not just the turn.
-      convoRef.current = false;
-      setConvoActive(false);
+      turn.dispatch({ type: "CONVO_END" });
       dropQueuedTurn();
       await finishRecording();
       cleanupAudio();
       return;
     }
-    if (convoRef.current && (transcribing || sending || isLoading)) {
+    if (turn.get().convo && (transcribing || sending || isLoading)) {
       // Ending a conversation while the agent is mid-turn: just stop
       // re-arming the mic; the current turn finishes on its own.
-      convoRef.current = false;
-      setConvoActive(false);
+      turn.dispatch({ type: "CONVO_END" });
       dropQueuedTurn();
       cleanupAudio();
       return;
     }
     unlockedRef.current = true;
     if (convoOn) {
-      convoRef.current = true;
-      setConvoActive(true);
+      turn.dispatch({ type: "CONVO_START" });
     }
     setDockOpen(false);
 
@@ -2784,19 +2782,25 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
   }
 
+  // Open the mic for a new turn (the user asked, or a greeting ended).
+  // A fired re-arm has already moved the machine to "opening" and calls
+  // openMic directly.
   async function startRecording() {
-    if (recordingRef.current) return;
+    if (micHot(turn.get())) return;
+    turn.dispatch({ type: "MIC_REQUEST" });
+    await openMic();
+  }
+
+  async function openMic() {
     audioStatsRef.current = { blocks: 0, hostDropped: 0, listeningDropped: 0 };
     asrLastEventAtRef.current = performance.now();
     bufferedFallbackTurnRef.current = null;
     logEvent(`startRecording streaming=${streamingReadyRef.current} socket=${asrSocketRef.current?.readyState ?? -1}`);
     clearRearmTimer();
-    setRearming(false);
     clearConfirmationTimer();
     liveTranscriptRef.current = "";
     activeTurnIdRef.current += 1;
     endpointerRef.current?.setActiveTurnId(activeTurnIdRef.current);
-    recordingRef.current = true;
     isTurnListeningRef.current = true;
     turnTimingRef.current = { micStart: performance.now() };
     stampTiming("rearm");
@@ -2835,7 +2839,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       } else {
         ensureAsrStreamSocket();
       }
-      setRecording(true);
+      turn.dispatch({ type: "MIC_OPEN" });
       playCue("listen");
       // Gemini: the browser recogniser supplies the live words. Meta:
       // streaming transcription is the authority, and the browser
@@ -2843,14 +2847,11 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       if (!streamingReadyRef.current) startWebSpeech();
     } catch (error) {
       cleanupAudio();
-      recordingRef.current = false;
       isTurnListeningRef.current = false;
-      setRecording(false);
       // End the loop on a failed capture. Otherwise the UI says
       // "conversation live" while the auto-listen effect retries the
       // same broken context forever. TALK or typing can start again.
-      convoRef.current = false;
-      setConvoActive(false);
+      turn.dispatch({ type: "MIC_FAILED" });
       dropQueuedTurn();
       setNotice(micFailureNotice(error));
     }
@@ -2925,7 +2926,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // its own after the landing gate. No click, no "press TALK" step.
   useEffect(() => {
     if (!autoStart) return;
-    convoRef.current = true;
     unlockedRef.current = true;
     // A saved run must never restore into silence just because VOX was
     // off or the volume was 0. Entering by voice means the founder expects
@@ -2935,14 +2935,16 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }
     refreshCachedVoice();
     const timer = setTimeout(() => {
-      setConvoActive(true);
+      // The conversation starts with the greeting, so the loop cannot
+      // open the mic over it.
+      turn.dispatch({ type: "CONVO_START" });
       const current = withDefaults(stateRef.current);
       const line = resumed
         ? withCommander(resumeSummary(current))
         : withCommander(FIRST_SPEAK_GREETING);
       setLocalHost(line);
       const begin = () => {
-        if (convoRef.current && !recordingRef.current) void startRecording();
+        if (turn.get().convo && !micHot(turn.get())) void startRecording();
       };
       const spoke = speakNative(line, begin);
       if (!spoke) begin();
@@ -2975,13 +2977,16 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Mirrors so the utterance onend handler re-arms with fresh state.
+  // What is in flight, and whether an error is on screen, as the turn
+  // machine sees them (the re-arm rule reads these).
   useEffect(() => {
-    busyRef.current = transcribing || sending || isLoading;
-  }, [transcribing, sending, isLoading]);
+    turn.dispatch({ type: "WORK", key: "transcribing", on: transcribing });
+    turn.dispatch({ type: "WORK", key: "sending", on: sending });
+    turn.dispatch({ type: "WORK", key: "agent", on: isLoading });
+  }, [transcribing, sending, isLoading, turn]);
   useEffect(() => {
-    turnErrorRef.current = Boolean(turnError || transcribeFailure);
-  }, [turnError, transcribeFailure]);
+    turn.dispatch({ type: "ERROR", on: Boolean(turnError || transcribeFailure) });
+  }, [turnError, transcribeFailure, turn]);
 
   // The agent talks back: speak its latest line once a turn completes.
   useEffect(() => {
@@ -2996,7 +3001,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   useEffect(() => {
     if (sending || isLoading) return;
     if (!queuedTurnRef.current) return;
-    const { send, slot } = flushQueuedTurn(queuedTurnRef.current, false, convoRef.current);
+    const { send, slot } = flushQueuedTurn(queuedTurnRef.current, false, turn.get().convo);
     queuedTurnRef.current = slot;
     dropQueuedTurnNotice();
     if (send) void sendToAgent(send);
@@ -3010,19 +3015,19 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (!convoActive || recording || transcribing || sending || isLoading || hostSpeaking) return;
     if (turnError || transcribeFailure) {
       const t = setTimeout(() => {
-        if (!convoRef.current) return;
-        if (recordingRef.current || busyRef.current) return;
+        const now = turn.get();
+        if (!now.convo) return;
+        if (micHot(now) || isBusy(now)) return;
         // Recover hands-free: the error banner has been visible for the
         // recovery beat, so reopen the mic and let the user retry by
         // voice. startRecording clears the stale error state.
-        setRearming(false);
         void startRecording();
       }, RECOVERY_REARM_MS);
       return () => clearTimeout(t);
     }
     // Re-arm on utterance onend/onerror and turn completion, not by polling speechSynthesis.speaking.
     // If not recording and lane is completely idle and no speech is active, request a re-arm.
-    if (convoRef.current && !recordingRef.current && !hostSpeaking) {
+    if (turn.get().convo && !micHot(turn.get()) && !hostSpeaking) {
       requestRearm();
     }
     // requestRearm is an intentional stable closure over refs.
@@ -3072,7 +3077,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (typeof window === "undefined") return;
     const win = window as unknown as Record<string, unknown>;
     win.__vvbVoice = {
-      isRecording: () => recordingRef.current,
+      isRecording: () => micHot(turn.get()),
       getPhase: () =>
         recording ? "recording" : transcribing ? "transcribing" : sending ? "sending" : isLoading ? "agent-busy" : "idle",
       isHostSpeaking: () => Boolean(hostSpeaking || isSpeechActive()),
@@ -3119,8 +3124,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         stopWebSpeech();
         stampTiming("finalTranscript");
         isTurnListeningRef.current = false;
-        recordingRef.current = false;
-        setRecording(false);
+        turn.dispatch({ type: "MIC_CLOSED" });
         setMicLevel(0);
         await sendToAgent(text, true);
       },
@@ -3484,8 +3488,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
               const next = !convoOn;
               setConvoOn(next);
               if (!next) {
-                convoRef.current = false;
-                setConvoActive(false);
+                turn.dispatch({ type: "CONVO_END" });
                 dropQueuedTurn();
               }
             }}
