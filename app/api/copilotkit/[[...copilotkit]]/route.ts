@@ -10,6 +10,9 @@ import { VVB_SYSTEM_PROMPT } from "../../../../lib/agent-prompt";
 import { BRAIN_MODEL as GEMINI_BRAIN_MODEL, VOICE_TURN_THINKING_BUDGET } from "../../../../lib/gemini-models";
 import { BRAIN_MODEL as META_BRAIN_MODEL } from "../../../../lib/meta-models";
 import { resolveProvider, type VoiceProvider } from "../../../../lib/provider";
+import { createFakeBrain } from "../../../../lib/fake-provider";
+
+type BrainModel = ReturnType<ReturnType<typeof createGoogleGenerativeAI>>;
 
 const copilotLimiter = createRateLimiter({ limit: 60, windowMs: 60_000 });
 
@@ -24,12 +27,18 @@ function guard(req: Request): Response | null {
 }
 
 // The brain for the selected provider (lib/provider.ts):
+// - fake:   the offline test model (lib/fake-provider.ts).
 // - gemini: Gemini Flash via the Google Generative AI API.
 // - meta:   Muse Spark via the Meta Model API (OpenAI-compatible surface,
 //           baseURL api.meta.ai). Voice turns run at low reasoning effort;
 //           forceReasoning makes the AI SDK send that effort on the wire
 //           instead of dropping it for a model it does not know reasons.
 function agentConfigFor(provider: VoiceProvider, apiKey: string, isVoiceTurn: boolean) {
+  if (provider === "fake") {
+    // Offline test mode (lib/fake-provider.ts): one fixed reply, no network.
+    const model: BrainModel = createFakeBrain();
+    return { model, prompt: VVB_SYSTEM_PROMPT };
+  }
   if (provider === "meta") {
     const model = createOpenAI({ baseURL: "https://api.meta.ai/v1", apiKey })(META_BRAIN_MODEL);
     return {

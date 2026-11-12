@@ -33,6 +33,7 @@ The app runs the same guided voice loop on either provider. Put the key for the 
 | `META_API_KEY` only | Meta |
 | both keys | Gemini, unless `VOICE_PROVIDER=meta` |
 | `VOICE_PROVIDER=gemini` or `meta` | that provider (its key must be set) |
+| `VOICE_PROVIDER=fake` | offline test mode — no key, no network ([see below](#offline-test-mode)) |
 
 Get a Gemini key from [Google AI Studio](https://aistudio.google.com) and a Meta key from the Meta Model API. The server prints the provider it chose when it starts. Restart the server after changing `.env`.
 
@@ -69,6 +70,18 @@ node scripts/headset-walk.mjs
 ```
 
 It runs against whichever provider the server chose (Gemini or Meta). It synthesizes a user voice with macOS `say`, feeds the waveform into a virtual microphone, lets the app's own AudioWorklet and the provider's transcript path drive every step, and verifies the board, host line, and no-click count at each beat. It also checks host *and* heard caption agreement on every turn, the single SAY cue per mission, a two-part slow-speech turn (the first final is held and merged), the async summary progress + spoken completion, the caption scroll lock and new-turn release, host-audio silence recovery, no-speech recovery, tool-timeout recovery, the short resume line, Commander at start/milestones only, and live Chrome voice downloads (company-named summary and transcript files with the in-file disclaimer, generic vs explicit download, safe close, and the nothing-to-download notice). Results land in `proof/headset-walk.json` (ignored by git) and screenshots in `.shots/`.
+
+#### Offline test mode
+
+The same walk runs with no API key and no network calls, so it costs nothing and does not depend on a provider's quota or spending cap:
+
+```bash
+npm run build
+VOICE_PROVIDER=fake NODE_ENV=production node server.mjs   # terminal 1
+node scripts/headset-walk.mjs --headless                  # terminal 2
+```
+
+`VOICE_PROVIDER=fake` replaces only the outside services (`lib/fake-provider.ts`). The microphone pipeline, turn-taking, re-arming, slow-speech hold, recovery and downloads are the real app. Speech-to-text returns the words the walk tells it (`/api/fake`) for each clip it plays, and still returns nothing for silence. The agent answers with one fixed line and the host speaks in the browser voice. The mode is never chosen automatically, and `/api/fake` answers 404 in every other mode. Before merging changes to recognition, the agent prompt, or the neural voice, still run the walk once on a live provider.
 
 Tests import TypeScript sources directly and need Node 22.18+ for type stripping; the app itself runs on Node 20.9+.
 

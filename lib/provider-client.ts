@@ -9,7 +9,7 @@ let pending: Promise<ProviderInfo> | null = null;
 export function parseProviderInfo(data: unknown): ProviderInfo | null {
   if (!data || typeof data !== "object") return null;
   const d = data as Record<string, unknown>;
-  if (d.provider !== "gemini" && d.provider !== "meta") return null;
+  if (d.provider !== "gemini" && d.provider !== "meta" && d.provider !== "fake") return null;
   return {
     provider: d.provider,
     streamingAsr: d.streamingAsr === true,

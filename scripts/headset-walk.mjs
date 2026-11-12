@@ -248,7 +248,37 @@ async function waitMicReady(page, timeout = 30000) {
   }, timeout);
 }
 
+// Offline test mode (VOICE_PROVIDER=fake): the server cannot recognise
+// speech, so the walk tells it the words of each clip just before playing
+// it (lib/fake-provider.ts). Live providers transcribe the audio itself.
+const clipText = new Map();
+let fakeProvider = false;
+
+async function detectProvider() {
+  try {
+    const res = await fetch(`${URL}/api/provider`);
+    const info = await res.json();
+    fakeProvider = info?.provider === "fake";
+    return info?.label || info?.provider || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function expectWords(base64) {
+  if (!fakeProvider) return;
+  const text = clipText.get(base64);
+  if (!text) throw new Error("offline test mode: no words recorded for this clip");
+  const res = await fetch(`${URL}/api/fake`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: new globalThis.URL(URL).origin },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw new Error(`offline test mode: /api/fake answered ${res.status}`);
+}
+
 async function say(page, base64) {
+  await expectWords(base64);
   return page.evaluate((b64) => window.__vvbPlayAudio(b64), base64);
 }
 
@@ -403,7 +433,9 @@ async function main() {
       ["start-over", "Start over"],
     ]) {
       audio[item[0]] = synth(item[1], item[0]);
+      clipText.set(audio[item[0]], item[1]);
     }
+    console.log(`Provider: ${await detectProvider()}`);
 
     console.log("Opening a fresh page…");
     await page.goto(URL, { waitUntil: "networkidle2", timeout: 60000 });

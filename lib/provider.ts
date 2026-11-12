@@ -12,12 +12,17 @@
 //
 // Select with VOICE_PROVIDER=gemini|meta. When it is unset the provider is
 // whichever key is present; Gemini wins when both are.
+//
+// VOICE_PROVIDER=fake is the offline test mode (lib/fake-provider.ts): no
+// key, no network. It is never chosen automatically.
 
-export type VoiceProvider = "gemini" | "meta";
+export type KeyedProvider = "gemini" | "meta";
+export type VoiceProvider = KeyedProvider | "fake";
 
-export const PROVIDERS: readonly VoiceProvider[] = ["gemini", "meta"];
+// The providers chosen automatically from the keys present, in order.
+export const PROVIDERS: readonly KeyedProvider[] = ["gemini", "meta"];
 
-export const PROVIDER_KEY_ENV: Record<VoiceProvider, "GEMINI_API_KEY" | "META_API_KEY"> = {
+export const PROVIDER_KEY_ENV: Record<KeyedProvider, "GEMINI_API_KEY" | "META_API_KEY"> = {
   gemini: "GEMINI_API_KEY",
   meta: "META_API_KEY",
 };
@@ -28,15 +33,16 @@ export type ProviderResolution =
 
 type Env = Record<string, string | undefined>;
 
-function keyFor(env: Env, provider: VoiceProvider): string {
+function keyFor(env: Env, provider: KeyedProvider): string {
   return (env[PROVIDER_KEY_ENV[provider]] ?? "").trim();
 }
 
 export function resolveProvider(env: Env = process.env): ProviderResolution {
   const requested = (env.VOICE_PROVIDER ?? "").trim().toLowerCase();
   if (requested) {
+    if (requested === "fake") return { ok: true, provider: "fake", apiKey: "", source: "explicit" };
     if (requested !== "gemini" && requested !== "meta") {
-      return { ok: false, provider: null, error: "VOICE_PROVIDER must be \"gemini\" or \"meta\"" };
+      return { ok: false, provider: null, error: "VOICE_PROVIDER must be \"gemini\", \"meta\" or \"fake\"" };
     }
     const apiKey = keyFor(env, requested);
     if (!apiKey) {
@@ -70,9 +76,9 @@ export type ProviderInfo = {
 };
 
 export function providerInfo(provider: VoiceProvider): ProviderInfo {
-  return provider === "meta"
-    ? { provider, streamingAsr: true, neuralVoice: false, label: "Meta Muse" }
-    : { provider, streamingAsr: false, neuralVoice: true, label: "Google Gemini" };
+  if (provider === "meta") return { provider, streamingAsr: true, neuralVoice: false, label: "Meta Muse" };
+  if (provider === "fake") return { provider, streamingAsr: false, neuralVoice: false, label: "Offline test" };
+  return { provider, streamingAsr: false, neuralVoice: true, label: "Google Gemini" };
 }
 
 // Used before /api/provider answers, and when it cannot be reached. It
