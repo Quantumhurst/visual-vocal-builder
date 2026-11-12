@@ -17,6 +17,8 @@ import TranscriptPanel from "./TranscriptPanel";
 import { useBrowserVoiceChoice } from "./hooks/useBrowserVoiceChoice";
 import { useNeuralPlayback } from "./hooks/useNeuralPlayback";
 import { useSoundCues } from "./hooks/useSoundCues";
+import { useHostSpeech } from "./hooks/useHostSpeech";
+import { useTurnStore } from "./hooks/useTurnStore";
 import HudHeader from "./HudHeader";
 import MissionObjective from "./MissionObjective";
 import ShipViewport from "./ShipViewport";
@@ -96,14 +98,13 @@ import { MODULES, flightPlan, formatClock, moduleFor, shipLabel } from "../lib/g
 import { spokenHostText } from "../lib/spoken-text";
 import { stripAsrAnnotations } from "../lib/transcript";
 import { resolveVoiceFinal } from "../lib/voice-final";
-import { pickVoice, prosodyFor } from "../lib/voice-select";
 import { TOOL_TIMEOUT_MS, ToolTimeoutError, toolTimeoutLine, withToolTimeout } from "../lib/tool-timeout";
 import { summarizeTimings, type TurnTimings } from "../lib/turn-timing";
 import { HybridEndpointer } from "../lib/voice/hybrid-endpointer";
 import { speechQueue } from "../lib/voice/surviving-speech-queue";
 import { echoFilter } from "../lib/voice/echo-filter";
 import { currentProviderInfo, loadProviderInfo } from "../lib/provider-client";
-import { NEURAL_VOICE_WAIT_MS, hostTts, withDeadline } from "../lib/host-tts";
+import { hostTts } from "../lib/host-tts";
 
 
 
@@ -405,7 +406,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     recoveryTimerRef.current = setTimeout(() => {
       recoveryTimerRef.current = null;
       setRearming(false);
-      if (!convoRef.current || recordingRef.current || busyRef.current || hostSpeakingRef.current) return;
+      if (!convoRef.current || recordingRef.current || busyRef.current || turn.get().hostSpeaking) return;
       void startRecording();
     }, RECOVERY_REARM_MS);
   }
@@ -464,13 +465,12 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     return decision.text;
   }
 
+  // The conversation turn (lib/turn-machine.ts). turn.get() is the
+  // synchronous truth for timers and audio callbacks; turnState renders.
+  const { store: turn, state: turnState } = useTurnStore();
   // True while the host voice is actually speaking. The mic stays closed
   // during this window, and the deck says so instead of claiming LIVE.
-  const [hostSpeaking, setHostSpeaking] = useState(false);
-  const [hostSilent, setHostSilent] = useState(false);
-  const hostSpeakingRef = useRef(false);
-  const hostAttemptSeqRef = useRef(0);
-  const hostStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hostSpeaking = turnState.hostSpeaking;
   // Continuous conversation (OpenClaw pattern): talk, agent answers
   // out loud, mic re-opens by itself. On by default; a manual Stop
   // ends it. The full control set lives in a pop-out, not the bar.
@@ -549,10 +549,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // The conversation loop re-arms the mic only once the host has
   // finished speaking, so it never cancels the reply mid-flight.
   function isSpeechActive(): boolean {
-    return (
-      typeof window !== "undefined" &&
-      Boolean(window.speechSynthesis?.speaking || speechQueue.isSpeaking() || hostSpeakingRef.current)
-    );
+    return host.isActive();
   }
   const [celebrated, setCelebrated] = useState("");
   const unlockedRef = useRef(false);
@@ -560,7 +557,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   // voice, the browser/OS voice choice, and the synthesised sound cues.
   const neural = useNeuralPlayback(settingsRef, settings.volume);
   const voiceChoice = useBrowserVoiceChoice();
-  const cachedVoiceRef = voiceChoice.cachedVoiceRef;
   const refreshCachedVoice = voiceChoice.refresh;
   const playCue = useSoundCues(settingsRef, unlockedRef);
   // The first TALK press is a greeting, not a recording: it announces the
@@ -571,16 +567,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   const lastHostLineRef = useRef("");
   const eventsRef = useRef<string[]>([]);
   const audioStatsRef = useRef({ blocks: 0, hostDropped: 0, listeningDropped: 0 });
-  const hostAudioRef = useRef({
-    started: 0,
-    ended: 0,
-    errors: 0,
-    retries: 0,
-    lastVoice: "",
-    lastVolume: 1,
-    lastRate: 1,
-    lastStartedAt: 0,
-  });
   function logEvent(line: string) {
     eventsRef.current.push(`${Math.round(performance.now())} ${line}`);
     if (eventsRef.current.length > 300) eventsRef.current.shift();
@@ -588,15 +574,27 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       (window as unknown as { __vvbEvents?: string[] }).__vvbEvents = [...eventsRef.current];
     }
   }
+  // The host's voice (components/hooks/useHostSpeech.ts).
+  const host = useHostSpeech({
+    turn,
+    settingsRef,
+    providerRef,
+    neural,
+    voiceChoice,
+    lastHostLineRef,
+    appendLog,
+    logEvent,
+    stampTiming,
+    setNotice,
+    surfaceRecovery,
+    clearSilentRecovery: () => setRecovery((current) => (current?.kind === "host-silent" ? null : current)),
+    requestRearm,
+    onCancel: clearRearmTimer,
+  });
+  const hostSilent = host.hostSilent;
   const prevDoneCountRef = useRef(-1);
   // Voice pre-warm: cache the picked system voice, re-pick once when
   // the browser finishes loading voices, preload on first gesture.
-  const utterCancelledRef = useRef(false);
-  // Keep a reference to the live utterance: Chrome can drop an unreferenced
-  // utterance before firing onend, leaving speechSynthesis.speaking stuck
-  // true and the mic closed forever. The watchdog is the last resort.
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const speechWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rearmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const busyRef = useRef(false);
   const turnErrorRef = useRef(false);
@@ -653,7 +651,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
 
   function previewHostVoice() {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
-    setHostSilent(false);
+    host.setHostSilent(false);
     if (!settingsRef.current.voiceOn || settingsRef.current.volume <= 0.01) {
       updateVoiceSettings({ voiceOn: true, volume: Math.max(0.25, settingsRef.current.volume) });
     }
@@ -668,13 +666,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     setDockOpen((value) => !value);
   }
 
-  function clearSpeechWatchdog() {
-    if (speechWatchdogRef.current !== null) {
-      clearTimeout(speechWatchdogRef.current);
-      speechWatchdogRef.current = null;
-    }
-  }
-
   function clearRearmTimer() {
     if (rearmTimerRef.current !== null) {
       clearTimeout(rearmTimerRef.current);
@@ -683,17 +674,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
   }
 
   function cancelSpeech() {
-    utterCancelledRef.current = true;
-    hostAttemptSeqRef.current += 1;
-    clearSpeechWatchdog();
-    clearHostStartTimer();
-    clearRearmTimer();
-    neural.stop();
-    utteranceRef.current = null;
-    hostSpeakingRef.current = false;
-    setHostSpeaking(false);
-    echoFilter.clear();
-    speechQueue.hardFlushOnBargeIn();
+    host.cancel();
   }
 
   // On-end re-arm (primary path; the poll below is fallback only). Wait a
@@ -705,7 +686,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     if (!convoRef.current) return;
     if (recordingRef.current) return;
     if (busyRef.current || turnErrorRef.current) return;
-    if (hostSpeakingRef.current || speechQueue.isSpeaking()) return;
+    if (turn.get().hostSpeaking || speechQueue.isSpeaking()) return;
     clearRearmTimer();
     setRearming(true);
     rearmTimerRef.current = setTimeout(() => {
@@ -713,7 +694,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       if (!convoRef.current) { setRearming(false); return; }
       if (recordingRef.current) { setRearming(false); return; }
       if (busyRef.current || turnErrorRef.current) { setRearming(false); return; }
-      if (hostSpeakingRef.current || speechQueue.isSpeaking()) { setRearming(false); return; }
+      if (turn.get().hostSpeaking || speechQueue.isSpeaking()) { setRearming(false); return; }
       setRearming(false);
       stampTiming("rearm");
       console.info(`[vvb-timing] rearm ${summarizeTimings(turnTimingRef.current)}`);
@@ -721,243 +702,15 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     }, 420);
   }
 
-  // Voice-out is the curated system voice only: pick the best English
-  // voice actually on this machine (enhanced/natural beats the robotic
-  // default) with question/statement prosody. No downloads, no model.
-  //
-  // A browser can report `speechSynthesis.speaking === true` while the
-  // utterance never starts — that is silence, not a slow start. If no
-  // onstart arrives, cancel and retry once with the system default voice.
-  // If the default also fails, surface a visible host-audio fault instead
-  // of continuing silently.
-  function clearHostStartTimer() {
-    if (hostStartTimerRef.current !== null) {
-      clearTimeout(hostStartTimerRef.current);
-      hostStartTimerRef.current = null;
-    }
-  }
-
-  // Two animation frames is one painted screen. A hidden tab has no
-  // frames, so a timeout is the fallback; speech must never be lost to
-  // a throttled rAF.
-  function afterNextPaint(fn: () => void) {
-    if (typeof window === "undefined" || document.visibilityState === "hidden") {
-      fn();
-      return;
-    }
-    let ran = false;
-    const run = () => {
-      if (ran) return;
-      ran = true;
-      fn();
-    };
-    window.requestAnimationFrame(() => window.requestAnimationFrame(run));
-    window.setTimeout(run, 140);
-  }
-
+  // Speaks one host line (components/hooks/useHostSpeech.ts): paint
+  // first, neural voice when available, browser voice as the fallback,
+  // and a visible fault if no voice ever starts.
   function speakNative(
     text: string,
     onDone?: () => void,
     options: { retry?: number; useDefaultVoice?: boolean } = {},
   ) {
-    if (typeof window === "undefined") return false;
-    const spoken = spokenHostText(text);
-    if (!spoken) return false;
-    const retry = options.retry ?? 0;
-    lastHostLineRef.current = spoken;
-    if (retry === 0) {
-      appendLog("host", spoken);
-      const win = window as unknown as { __vvbLastSpoken?: string; __vvbAllSpoken?: string[] };
-      win.__vvbLastSpoken = spoken;
-      win.__vvbAllSpoken = win.__vvbAllSpoken ?? [];
-      win.__vvbAllSpoken.push(spoken);
-    }
-    // Muted or no speech engine: the line is still visible, logged, and
-    // repeatable. Callers still get their completion callback.
-    if (!settingsRef.current.voiceOn || settingsRef.current.volume <= 0.01) {
-      onDone?.();
-      return true;
-    }
-
-    // Paint first, then speak. Local callers do setLocalHost(...) right
-    // before this call; two frames guarantee the caption is already on
-    // screen when the first word is audible. The mic is gated from this
-    // moment, so the paint gap cannot capture a stray fragment.
-    utterCancelledRef.current = false;
-    hostSpeakingRef.current = true;
-    setHostSpeaking(true);
-    const attempt = ++hostAttemptSeqRef.current;
-
-    const speakAfterPaint = () => {
-      if (attempt !== hostAttemptSeqRef.current || utterCancelledRef.current) return;
-      echoFilter.recordHostSpeech(spoken);
-      clearSpeechWatchdog();
-      clearHostStartTimer();
-
-      const finishSpeech = () => {
-        if (attempt !== hostAttemptSeqRef.current) return;
-        clearSpeechWatchdog();
-        clearHostStartTimer();
-        utteranceRef.current = null;
-        hostSpeakingRef.current = false;
-        setHostSpeaking(false);
-        // Keep the lexical guard only for the brief speaker tail. The mic
-        // is gated during playback, so holding host words for 1.2s after
-        // the line ends only drops the user's natural fast answer.
-        echoFilter.scheduleClear(200);
-        if (utterCancelledRef.current) return;
-        hostAudioRef.current.ended += 1;
-        onDone?.();
-        requestRearm();
-      };
-
-      const speakWithBrowserSynth = () => {
-        try {
-          const synth = window.speechSynthesis;
-          if (!synth) {
-            finishSpeech();
-            return;
-          }
-          if (synth.speaking && !utteranceRef.current) {
-            try { synth.cancel(); } catch { /* ignore */ }
-          }
-          if (utteranceRef.current) {
-            utteranceRef.current = null;
-            try { synth.cancel(); } catch { /* ignore */ }
-            speechQueue.hardFlushOnBargeIn();
-          }
-          refreshCachedVoice();
-          const voice = options.useDefaultVoice
-            ? null
-            : cachedVoiceRef.current ?? pickVoice(synth.getVoices());
-          const base = prosodyFor(spoken);
-          const rate = Math.min(1.6, Math.max(0.5, base.rate * settingsRef.current.rate));
-          const pitch = base.pitch;
-          let started = false;
-
-          const utter = speechQueue.enqueue(spoken, {
-            role: "CONTENT",
-            rate,
-            pitch,
-            volume: settingsRef.current.volume,
-            voice,
-            useDefaultVoice: options.useDefaultVoice,
-            onStart: () => {
-              if (attempt !== hostAttemptSeqRef.current) return;
-              started = true;
-              clearHostStartTimer();
-              setHostSilent(false);
-              setRecovery((current) => (current?.kind === "host-silent" ? null : current));
-              hostAudioRef.current.started += 1;
-              hostAudioRef.current.lastVoice = voice?.name ?? "(browser default)";
-              hostAudioRef.current.lastVolume = settingsRef.current.volume;
-              hostAudioRef.current.lastRate = rate;
-              hostAudioRef.current.lastStartedAt = Date.now();
-              logEvent(`host voice started ${voice?.name ?? "default"}`);
-              speechWatchdogRef.current = setTimeout(() => {
-                speechWatchdogRef.current = null;
-                if (utteranceRef.current !== utter) return;
-                speechQueue.hardFlushOnBargeIn();
-                finishSpeech();
-              }, Math.min(12000, 3000 + spoken.length * 55));
-            },
-            onDone: () => {
-              if (attempt !== hostAttemptSeqRef.current) return;
-              stampTiming("speechEnd");
-              finishSpeech();
-            },
-            onError: (failed) => {
-              if (attempt !== hostAttemptSeqRef.current) return;
-              if (utteranceRef.current !== failed || utterCancelledRef.current) return;
-              hostAudioRef.current.errors += 1;
-              setNotice("Host voice could not play — retrying with the system default.");
-            },
-          });
-
-          if (utter) {
-            utteranceRef.current = utter;
-            hostStartTimerRef.current = setTimeout(() => {
-              hostStartTimerRef.current = null;
-              if (attempt !== hostAttemptSeqRef.current || started) return;
-              utteranceRef.current = null;
-              utterCancelledRef.current = true;
-              speechQueue.hardFlushOnBargeIn();
-              hostSpeakingRef.current = false;
-              setHostSpeaking(false);
-              if (retry < 1) {
-                hostAudioRef.current.retries += 1;
-                logEvent("host voice did not start; retrying system default");
-                setNotice("Host voice did not start — switching to the system default voice.");
-                speakNative(text, onDone, { retry: 1, useDefaultVoice: true });
-              } else {
-                setHostSilent(true);
-                setNotice("");
-                surfaceRecovery("host-silent");
-                onDone?.();
-                requestRearm();
-              }
-            }, 1800);
-          } else {
-            finishSpeech();
-          }
-        } catch {
-          finishSpeech();
-        }
-      };
-
-      // The browser voice is the engine for the Meta provider, for the
-      // "system default" retry, and whenever neural audio is not available.
-      if (!providerRef.current.neuralVoice || options.useDefaultVoice || hostTts.unavailable()) {
-        speakWithBrowserSynth();
-        return;
-      }
-
-      // Gemini neural voice. The line is usually already cached by the
-      // prefetch; if it is not here within the wait budget the browser
-      // voice says it, so the host never sits silent on a slow request.
-      const isCurrent = () => attempt === hostAttemptSeqRef.current && !utterCancelledRef.current;
-      withDeadline(hostTts.get(spoken), NEURAL_VOICE_WAIT_MS)
-        .then(async (audio) => {
-          if (!isCurrent()) return;
-          neural.stop();
-          const playingMs = await neural.play(
-            audio,
-            () => {
-              if (attempt !== hostAttemptSeqRef.current) return;
-              stampTiming("speechEnd");
-              finishSpeech();
-            },
-            isCurrent,
-          );
-          if (playingMs === -1 || !isCurrent()) return;
-          if (playingMs === null) {
-            speakWithBrowserSynth();
-            return;
-          }
-          setHostSilent(false);
-          setRecovery((current) => (current?.kind === "host-silent" ? null : current));
-          hostAudioRef.current.started += 1;
-          hostAudioRef.current.lastVoice = "Gemini (Aoede)";
-          hostAudioRef.current.lastVolume = settingsRef.current.volume;
-          hostAudioRef.current.lastRate = settingsRef.current.rate;
-          hostAudioRef.current.lastStartedAt = Date.now();
-          logEvent("host voice started Gemini (Aoede)");
-          // Web Audio should always report the end; never trust it to.
-          speechWatchdogRef.current = setTimeout(() => {
-            speechWatchdogRef.current = null;
-            if (attempt !== hostAttemptSeqRef.current) return;
-            neural.stop();
-            finishSpeech();
-          }, playingMs + 1500);
-        })
-        .catch(() => {
-          if (!isCurrent()) return;
-          speakWithBrowserSynth();
-        });
-    };
-
-    afterNextPaint(speakAfterPaint);
-    return true;
+    return host.speak(text, onDone, options);
   }
 
   function speakHost(text: string) {
@@ -1520,7 +1273,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     const busyNow =
       recordingRef.current ||
       busyRef.current ||
-      hostSpeakingRef.current ||
+      turn.get().hostSpeaking ||
       speechQueue.isSpeaking();
     if (busyNow) {
       summaryDeliverAttemptsRef.current += 1;
@@ -1906,7 +1659,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         return true;
       }
       case "test-voice": {
-        setHostSilent(false);
+        host.setHostSilent(false);
         if (!settingsRef.current.voiceOn || settingsRef.current.volume <= 0.01) {
           updateVoiceSettings({ voiceOn: true, volume: Math.max(0.25, settingsRef.current.volume) });
         }
@@ -2330,7 +2083,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
             if (transcript) {
               // Only treat words as self-echo while the host is actually
               // speaking. Once the host stops, the user's reply is theirs.
-              const hostActive = hostSpeakingRef.current || speechQueue.isSpeaking();
+              const hostActive = turn.get().hostSpeaking || speechQueue.isSpeaking();
               if (echoFilter.checkWhileHostActive(hostActive, turnId, transcript)) {
                 return;
               }
@@ -2351,7 +2104,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
             if (completedStreamingTurnRef.current === turnId) return;
             if (
               echoFilter.checkWhileHostActive(
-                hostSpeakingRef.current || speechQueue.isSpeaking(),
+                turn.get().hostSpeaking || speechQueue.isSpeaking(),
                 turnId,
                 transcript,
               )
@@ -2539,7 +2292,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       rec.interimResults = true;
       rec.continuous = true;
       rec.onresult = (event: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal?: boolean }> }) => {
-        if (hostSpeakingRef.current || speechQueue.isSpeaking()) return;
+        if (turn.get().hostSpeaking || speechQueue.isSpeaking()) return;
         let text = "";
         let isFinal = false;
         for (let i = 0; i < event.results.length; i++) {
@@ -2593,7 +2346,6 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     return () => {
       cleanupAudio();
       stopWebSpeech();
-      clearSpeechWatchdog();
       clearRearmTimer();
       clearConfirmationTimer();
       if (recoveryTimerRef.current !== null) clearTimeout(recoveryTimerRef.current);
@@ -2605,7 +2357,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       summaryBuildRef.current = null;
       summarySpeakTimerRef.current = null;
       summaryBuildTokenRef.current += 1;
-      utteranceRef.current = null;
+      host.dispose();
       if (travelFrameRef.current !== null) cancelAnimationFrame(travelFrameRef.current);
       neural.dispose();
       try {
@@ -2809,7 +2561,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
     // Silence while the app is actively building or speaking is not a
     // stalled turn. The no-speech guard must not cut into the async
     // summary start/completion.
-    if (summaryBuildRef.current || summarySpeakTimerRef.current || hostSpeakingRef.current) return;
+    if (summaryBuildRef.current || summarySpeakTimerRef.current || turn.get().hostSpeaking) return;
     if (finishingRef.current) return;
     finishingRef.current = true;
     recordingRef.current = false;
@@ -2940,7 +2692,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
         return;
       }
       // Mic gated during host playback to eliminate acoustic self-echo
-      if (hostSpeakingRef.current || speechQueue.isSpeaking()) {
+      if (turn.get().hostSpeaking || speechQueue.isSpeaking()) {
         audioStatsRef.current.hostDropped += 1;
         return;
       }
@@ -3330,7 +3082,7 @@ function Canvas({ autoStart = false, resumed = false, initialState, initialSetti
       getLastSpoken: () => lastHostLineRef.current,
       getEvents: () => [...eventsRef.current],
       getAudioStats: () => ({ ...audioStatsRef.current }),
-      getHostAudio: () => ({ ...hostAudioRef.current }),
+      getHostAudio: () => host.stats(),
       getAsrState: () => ({
         ready: streamingReadyRef.current,
         socket: asrSocketRef.current?.readyState ?? -1,
