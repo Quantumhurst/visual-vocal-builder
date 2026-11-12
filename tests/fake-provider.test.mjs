@@ -25,7 +25,7 @@ test("fake mode is chosen only explicitly, needs no key, and never auto-selects"
 });
 
 test("fake mode uses buffered transcription and the browser voice", () => {
-  assert.deepEqual(providerInfo("fake"), { provider: "fake", streamingAsr: false, neuralVoice: false, label: "Offline test" });
+  assert.deepEqual(providerInfo("fake"), { provider: "fake", streamingAsr: false, neuralVoice: false, label: "Offline test", offline: true });
   assert.equal(parseProviderInfo(providerInfo("fake"))?.provider, "fake");
 });
 

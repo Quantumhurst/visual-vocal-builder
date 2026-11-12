@@ -3,7 +3,7 @@ import { createRateLimiter } from "../../../lib/request-guard";
 import { transcribePcm as geminiTranscribePcm } from "../../../lib/gemini-asr";
 import { transcribePcm as metaTranscribePcm } from "../../../lib/meta-asr";
 import { fakeTranscribePcm } from "../../../lib/fake-provider";
-import { resolveProvider } from "../../../lib/provider";
+import { isOfflineProvider, resolveProvider } from "../../../lib/provider";
 
 // Keep ws on its pure-JS masking path in every runtime (see next.config.ts).
 process.env.WS_NO_BUFFER_UTIL = "true";
@@ -30,7 +30,7 @@ export async function POST(req: Request) {
     transcribe: (pcm) =>
       provider === "meta"
         ? metaTranscribePcm(pcm, apiKey)
-        : provider === "fake"
+        : isOfflineProvider(provider)
           ? fakeTranscribePcm(pcm)
           : geminiTranscribePcm(pcm, apiKey),
   });

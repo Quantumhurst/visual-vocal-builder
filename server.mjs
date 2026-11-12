@@ -4,6 +4,7 @@ import { parse } from "node:url";
 import next from "next";
 import { WebSocketServer } from "ws";
 import { handleStreamClient } from "./lib/meta-stream-relay.ts";
+import { handleFakeStreamClient } from "./lib/fake-stream-relay.ts";
 import { providerInfo, resolveProvider } from "./lib/provider.ts";
 import {
   checkOrigin,
@@ -57,7 +58,11 @@ const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD });
 
 wss.on("connection", (clientWs, _req, key) => {
   clientWs.once("close", () => streamLimiter.release(key));
-  handleStreamClient(clientWs);
+  // Offline test mode (VOICE_PROVIDER=fake-meta) answers with the same
+  // protocol and no network; every other mode relays to Meta.
+  const resolved = resolveProvider();
+  if (resolved.ok && resolved.provider === "fake-meta") handleFakeStreamClient(clientWs);
+  else handleStreamClient(clientWs);
 });
 
 const nextUpgrade = app.getUpgradeHandler();

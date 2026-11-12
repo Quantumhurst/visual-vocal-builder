@@ -33,7 +33,7 @@ The app runs the same guided voice loop on either provider. Put the key for the 
 | `META_API_KEY` only | Meta |
 | both keys | Gemini, unless `VOICE_PROVIDER=meta` |
 | `VOICE_PROVIDER=gemini` or `meta` | that provider (its key must be set) |
-| `VOICE_PROVIDER=fake` | offline test mode — no key, no network ([see below](#offline-test-mode)) |
+| `VOICE_PROVIDER=fake` or `fake-meta` | offline test modes — no key, no network ([see below](#offline-test-mode)) |
 
 Get a Gemini key from [Google AI Studio](https://aistudio.google.com) and a Meta key from the Meta Model API. The server prints the provider it chose when it starts. Restart the server after changing `.env`.
 
@@ -81,7 +81,14 @@ VOICE_PROVIDER=fake NODE_ENV=production node server.mjs   # terminal 1
 node scripts/headset-walk.mjs --headless                  # terminal 2
 ```
 
-`VOICE_PROVIDER=fake` replaces only the outside services (`lib/fake-provider.ts`). The microphone pipeline, turn-taking, re-arming, slow-speech hold, recovery and downloads are the real app. Speech-to-text returns the words the walk tells it (`/api/fake`) for each clip it plays, and still returns nothing for silence. The agent answers with one fixed line and the host speaks in the browser voice. The mode is never chosen automatically, and `/api/fake` answers 404 in every other mode. Before merging changes to recognition, the agent prompt, or the neural voice, still run the walk once on a live provider.
+There are two offline modes, one for each provider's speech path:
+
+| Mode | Shaped like | Speech-to-text path exercised |
+| --- | --- | --- |
+| `VOICE_PROVIDER=fake` | Gemini | buffered: each utterance is posted to `/api/transcribe` |
+| `VOICE_PROVIDER=fake-meta` | Meta | realtime: the `/api/asr-stream` socket, partials, fast commits, `speechComplete` |
+
+Both replace only the outside services (`lib/fake-provider.ts`, `lib/fake-stream-relay.ts`). The microphone pipeline, turn-taking, re-arming, slow-speech hold, recovery and downloads are the real app, and in `fake-meta` the browser runs exactly the Meta client path. The words come from the walk, which posts each clip's text to `/api/fake` before playing it; silence still yields nothing. The fake relay finds speech from the audio level and sends the same events as the real Meta relay. The agent answers with one fixed line and the host speaks in the browser voice. Neither mode is ever chosen automatically, and `/api/fake` answers 404 in every other mode. Before merging changes to recognition, the agent prompt, or the neural voice, still run the walk once on a live provider.
 
 Tests import TypeScript sources directly and need Node 22.18+ for type stripping; the app itself runs on Node 20.9+.
 

@@ -9,7 +9,7 @@ import { checkOrigin, clientKey, createRateLimiter } from "../../../../lib/reque
 import { VVB_SYSTEM_PROMPT } from "../../../../lib/agent-prompt";
 import { BRAIN_MODEL as GEMINI_BRAIN_MODEL, VOICE_TURN_THINKING_BUDGET } from "../../../../lib/gemini-models";
 import { BRAIN_MODEL as META_BRAIN_MODEL } from "../../../../lib/meta-models";
-import { resolveProvider, type VoiceProvider } from "../../../../lib/provider";
+import { isOfflineProvider, resolveProvider, type VoiceProvider } from "../../../../lib/provider";
 import { createFakeBrain } from "../../../../lib/fake-provider";
 
 type BrainModel = ReturnType<ReturnType<typeof createGoogleGenerativeAI>>;
@@ -34,7 +34,7 @@ function guard(req: Request): Response | null {
 //           forceReasoning makes the AI SDK send that effort on the wire
 //           instead of dropping it for a model it does not know reasons.
 function agentConfigFor(provider: VoiceProvider, apiKey: string, isVoiceTurn: boolean) {
-  if (provider === "fake") {
+  if (isOfflineProvider(provider)) {
     // Offline test mode (lib/fake-provider.ts): one fixed reply, no network.
     const model: BrainModel = createFakeBrain();
     return { model, prompt: VVB_SYSTEM_PROMPT };

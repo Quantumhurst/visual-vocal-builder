@@ -15,6 +15,7 @@ export function parseProviderInfo(data: unknown): ProviderInfo | null {
     streamingAsr: d.streamingAsr === true,
     neuralVoice: d.neuralVoice === true,
     label: typeof d.label === "string" ? d.label : "",
+    offline: d.offline === true,
   };
 }
 

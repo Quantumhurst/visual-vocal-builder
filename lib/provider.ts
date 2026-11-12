@@ -13,11 +13,19 @@
 // Select with VOICE_PROVIDER=gemini|meta. When it is unset the provider is
 // whichever key is present; Gemini wins when both are.
 //
-// VOICE_PROVIDER=fake is the offline test mode (lib/fake-provider.ts): no
-// key, no network. It is never chosen automatically.
+// VOICE_PROVIDER=fake and fake-meta are the offline test modes
+// (lib/fake-provider.ts): no key, no network. fake is shaped like Gemini
+// (buffered speech-to-text); fake-meta like Meta (the realtime streaming
+// socket, answered by lib/fake-stream-relay.ts). Neither is ever chosen
+// automatically.
 
 export type KeyedProvider = "gemini" | "meta";
-export type VoiceProvider = KeyedProvider | "fake";
+export type OfflineProvider = "fake" | "fake-meta";
+export type VoiceProvider = KeyedProvider | OfflineProvider;
+
+export function isOfflineProvider(provider: VoiceProvider): provider is OfflineProvider {
+  return provider === "fake" || provider === "fake-meta";
+}
 
 // The providers chosen automatically from the keys present, in order.
 export const PROVIDERS: readonly KeyedProvider[] = ["gemini", "meta"];
@@ -40,9 +48,11 @@ function keyFor(env: Env, provider: KeyedProvider): string {
 export function resolveProvider(env: Env = process.env): ProviderResolution {
   const requested = (env.VOICE_PROVIDER ?? "").trim().toLowerCase();
   if (requested) {
-    if (requested === "fake") return { ok: true, provider: "fake", apiKey: "", source: "explicit" };
+    if (requested === "fake" || requested === "fake-meta") {
+      return { ok: true, provider: requested, apiKey: "", source: "explicit" };
+    }
     if (requested !== "gemini" && requested !== "meta") {
-      return { ok: false, provider: null, error: "VOICE_PROVIDER must be \"gemini\", \"meta\" or \"fake\"" };
+      return { ok: false, provider: null, error: "VOICE_PROVIDER must be \"gemini\", \"meta\", \"fake\" or \"fake-meta\"" };
     }
     const apiKey = keyFor(env, requested);
     if (!apiKey) {
@@ -65,20 +75,27 @@ export function resolveProvider(env: Env = process.env): ProviderResolution {
   };
 }
 
-// What the browser needs to know. Never includes a key.
+// What the browser needs to know. Never includes a key. `provider` is the
+// client code path: fake-meta reports "meta" so the browser runs exactly
+// the Meta path; `offline` says a test mode is answering.
+export type ClientProvider = KeyedProvider | "fake";
 export type ProviderInfo = {
-  provider: VoiceProvider;
+  provider: ClientProvider;
   // Realtime streaming speech-to-text over /api/asr-stream.
   streamingAsr: boolean;
   // Server-synthesised host voice over /api/tts.
   neuralVoice: boolean;
   label: string;
+  offline: boolean;
 };
 
 export function providerInfo(provider: VoiceProvider): ProviderInfo {
-  if (provider === "meta") return { provider, streamingAsr: true, neuralVoice: false, label: "Meta Muse" };
-  if (provider === "fake") return { provider, streamingAsr: false, neuralVoice: false, label: "Offline test" };
-  return { provider, streamingAsr: false, neuralVoice: true, label: "Google Gemini" };
+  if (provider === "meta") return { provider, streamingAsr: true, neuralVoice: false, label: "Meta Muse", offline: false };
+  if (provider === "fake-meta") {
+    return { provider: "meta", streamingAsr: true, neuralVoice: false, label: "Offline test (Meta streaming)", offline: true };
+  }
+  if (provider === "fake") return { provider, streamingAsr: false, neuralVoice: false, label: "Offline test", offline: true };
+  return { provider, streamingAsr: false, neuralVoice: true, label: "Google Gemini", offline: false };
 }
 
 // Used before /api/provider answers, and when it cannot be reached. It
@@ -89,4 +106,5 @@ export const SAFE_PROVIDER_INFO: ProviderInfo = {
   streamingAsr: false,
   neuralVoice: false,
   label: "",
+  offline: false,
 };

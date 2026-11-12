@@ -37,16 +37,19 @@ test("provider: unknown names and missing keys are errors, and blank keys do not
 });
 
 test("provider: each provider reports its engines and never a key", () => {
-  assert.deepEqual(providerInfo("gemini"), { provider: "gemini", streamingAsr: false, neuralVoice: true, label: "Google Gemini" });
-  assert.deepEqual(providerInfo("meta"), { provider: "meta", streamingAsr: true, neuralVoice: false, label: "Meta Muse" });
+  assert.deepEqual(providerInfo("gemini"), { provider: "gemini", streamingAsr: false, neuralVoice: true, label: "Google Gemini", offline: false });
+  assert.deepEqual(providerInfo("meta"), { provider: "meta", streamingAsr: true, neuralVoice: false, label: "Meta Muse", offline: false });
 });
 
 test("provider client: malformed answers are rejected", () => {
   assert.equal(parseProviderInfo(null), null);
   assert.equal(parseProviderInfo({ provider: "other" }), null);
   assert.deepEqual(parseProviderInfo({ provider: "meta", streamingAsr: true, neuralVoice: "yes" }), {
-    provider: "meta", streamingAsr: true, neuralVoice: false, label: "",
+    provider: "meta", streamingAsr: true, neuralVoice: false, label: "", offline: false,
   });
+  // Only an explicit true marks a test mode.
+  assert.equal(parseProviderInfo({ provider: "gemini", offline: "yes" }).offline, false);
+  assert.equal(parseProviderInfo({ provider: "meta", offline: true }).offline, true);
 });
 
 test("provider client: asks once, remembers the answer, and retries after a failure", async () => {
@@ -91,7 +94,7 @@ test("provider route: answers per request from the environment and never returns
 
     process.env.VOICE_PROVIDER = "meta";
     res = await GET(req());
-    assert.deepEqual(await res.json(), { provider: "meta", streamingAsr: true, neuralVoice: false, label: "Meta Muse" });
+    assert.deepEqual(await res.json(), { provider: "meta", streamingAsr: true, neuralVoice: false, label: "Meta Muse", offline: false });
 
     delete process.env.META_API_KEY;
     assert.equal((await GET(req())).status, 500);

@@ -1,4 +1,6 @@
-// Offline test provider (VOICE_PROVIDER=fake) — no network, no key.
+// Offline test providers (VOICE_PROVIDER=fake, fake-meta) — no network,
+// no key. fake-meta also answers the realtime streaming socket
+// (lib/fake-stream-relay.ts) with the same expected line.
 //
 // The headset walk drives the real app (real microphone pipeline, real
 // turn-taking, re-arm and slow-speech hold) with synthesised audio. In
@@ -40,6 +42,11 @@ export function expectTranscript(text: string): void {
 
 export function clearExpectedTranscript(): void {
   slot().next = null;
+}
+
+// The expected line without using it up (partial transcripts).
+export function peekTranscript(): string {
+  return slot().next ?? "";
 }
 
 export function takeTranscript(): string {

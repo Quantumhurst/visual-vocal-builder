@@ -1,13 +1,13 @@
 import { checkOrigin } from "../../../lib/request-guard.ts";
-import { resolveProvider } from "../../../lib/provider.ts";
+import { isOfflineProvider, resolveProvider } from "../../../lib/provider.ts";
 import { MAX_FAKE_TRANSCRIPT_CHARS, clearExpectedTranscript, expectTranscript } from "../../../lib/fake-provider.ts";
 
-// Offline test mode only (VOICE_PROVIDER=fake): the headset walk posts the
+// Offline test modes only (VOICE_PROVIDER=fake or fake-meta): the headset walk posts the
 // words of the clip it is about to play, so /api/transcribe can return
 // them. Every other mode answers 404, as if the route did not exist.
 function fakeMode(): boolean {
   const resolved = resolveProvider();
-  return resolved.ok && resolved.provider === "fake";
+  return resolved.ok && isOfflineProvider(resolved.provider);
 }
 
 export async function POST(req: Request) {

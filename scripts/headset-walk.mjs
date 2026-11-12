@@ -258,7 +258,7 @@ async function detectProvider() {
   try {
     const res = await fetch(`${URL}/api/provider`);
     const info = await res.json();
-    fakeProvider = info?.provider === "fake";
+    fakeProvider = info?.offline === true;
     return info?.label || info?.provider || "unknown";
   } catch {
     return "unknown";
